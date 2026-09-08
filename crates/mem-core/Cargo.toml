@@ -1,0 +1,16 @@
+[package]
+name = "mem-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+okm.workspace = true
+okm-derive.workspace = true
+fjall.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

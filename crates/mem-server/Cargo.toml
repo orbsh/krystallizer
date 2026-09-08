@@ -1,0 +1,10 @@
+[package]
+name = "mem-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mem-core = { path = "../mem-core" }
+axum.workspace = true
+tokio.workspace = true
