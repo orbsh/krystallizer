@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
+name = "mem_ffi"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

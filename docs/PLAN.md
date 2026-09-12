@@ -2,7 +2,7 @@
 
 Phases reference ADRs; design content lives in the ADRs, never here.
 
-- [ ] Phase 0 — Skeleton: mem-core crate + Fjall engine + PyO3 binding channel smoke test (one store / one search). (ADR-0002)
+- [x] Phase 0 — Skeleton: mem-core crate + Fjall engine + PyO3 binding channel smoke test (one store / one search). (ADR-0002)
 - [ ] Phase 1 — Flat memory parity: store / search / forget / list / stats semantics on Fjall; hybrid retrieval = arroy + BM25 + RRF. Python-side API equivalent. PG exit gate: retrieval-quality comparison (recall not worse on a fixed query set). (ADR-0002, ADR-0003)
 - [ ] Phase 2 — Session & task migration: ConversationMemory (append + prefix checkpoint, WriteBatch atomic) with session-control primitives (branch / tail / summarize); TaskList + task_links DAG edges. (ADR-0001, ADR-0002)
 - [ ] Phase 2.5 — View-layer serialization: full-session read path with tool-call pruning in the view (storage always full; read-side only), enabling the stateless-agent integration contract (fetch session → run → persist). (ADR-0006)
