@@ -1,6 +1,6 @@
 # ADR-0004: 提取管线留在 Python — 核心零 LLM 依赖
 
-**状态**：Accepted（设计定案，实现未开始）
+**状态**：Accepted（设计定案）；归属已被 [ADR-0007](0007-consumption-boundary.zh-CN.md) 取代——无 Python 层，LLM 编排归 gravity；确定性 `ingest(fact)` 接口面与融合拆分照旧成立
 **日期**：2026-09-08
 **英文版**：[0004-extraction-python-boundary.md](0004-extraction-python-boundary.md)
 

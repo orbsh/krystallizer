@@ -1,6 +1,6 @@
 # ADR-0004: Extraction Pipeline Stays in Python — Core Is LLM-Free
 
-**Status**: Accepted (design; implementation pending)
+**Status**: Accepted; ownership superseded by [ADR-0007](0007-consumption-boundary.md) (no Python layer — LLM orchestration belongs to gravity; the deterministic `ingest(fact)` surface and the fusion split carry over)
 **Date**: 2026-09-08
 **Chinese**: [0004-extraction-python-boundary.zh-CN.md](0004-extraction-python-boundary.zh-CN.md)
 
