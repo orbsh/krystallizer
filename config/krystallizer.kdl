@@ -1,0 +1,20 @@
+// Krystallizer configuration. One file; each subsystem gets a top-level
+// node. Credentials are NEVER stored here — every secret is referenced
+// by the environment variable name that holds it.
+//
+// Node names are kebab-case (knus maps Rust field names via kebab-case).
+//
+// === embedding ===
+// Provider for mem-core retrieval (ADR-0003/0007). OpenAI-compatible;
+// the Rust process calls it directly — embedding is an internal detail,
+// its model locked with the data.
+embedding {
+    provider "dashscope"
+    base-url "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    endpoint "/embeddings"
+    model "text-embedding-v4"
+    dimensions 1024
+    metric "cosine"
+    api-key-env "DASHSCOPE_API_KEY"  // env var holding the Bearer token
+    timeout-ms 10000
+}

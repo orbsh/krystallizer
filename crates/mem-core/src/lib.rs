@@ -5,6 +5,8 @@
 //! memory (full-session / assist). Zero LLM dependency, zero transport
 //! dependency. Design: docs/adr/.
 
+pub mod config;
 pub mod memory;
 
+pub use config::{ConfigError, EmbeddingConfig, KrystallizerConfig};
 pub use memory::{MemoryKey, MemoryRow, MemoryStore};

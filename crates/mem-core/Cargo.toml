@@ -11,6 +11,8 @@ fjall.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+knus = "3.4.0"
+miette = "7.6.0"
 
 [dev-dependencies]
 tempfile.workspace = true
