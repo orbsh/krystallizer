@@ -508,6 +508,7 @@ version = "0.1.0"
 dependencies = [
  "fjall",
  "okm-derive",
+ "okm-wire",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -522,6 +523,10 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
+
+[[package]]
+name = "okm-wire"
+version = "0.1.0"
 
 [[package]]
 name = "once_cell"

@@ -37,6 +37,28 @@ fn reopens_from_disk() {
 }
 
 #[test]
+fn next_id_recovered_after_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut mem = MemoryStore::open(dir.path()).unwrap();
+    let id1 = mem.store(101, "first", 1);
+    mem.store(202, "second", 2);
+    mem.persist().unwrap();
+    drop(mem);
+
+    // Reopen: the recovered counter must continue past the highest
+    // stored id — no reuse, no silent overwrite.
+    let mut mem = MemoryStore::open(dir.path()).unwrap();
+    let id3 = mem.store(101, "after reopen", 3);
+    assert!(id3 > id1);
+    mem.persist().unwrap();
+    drop(mem);
+
+    let mem = MemoryStore::open(dir.path()).unwrap();
+    assert_eq!(mem.search(101, "first").len(), 1, "id1 not overwritten");
+    assert_eq!(mem.search(101, "after reopen").len(), 1);
+}
+
+#[test]
 fn key_layout_hex_stability() {
     let key = MemoryKey {
         user_id: 0x0102_0304_0506_0708,

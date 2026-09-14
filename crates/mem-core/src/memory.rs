@@ -3,7 +3,7 @@
 //! in Phase 1). Proves the OKM RowEncode -> Table -> FjallStore channel
 //! end to end.
 
-use okm_core::{FjallStore, KeyEncode, RowEncode};
+use okm_core::{FjallStore, KeyEncode, Row, RowEncode};
 
 /// Flat memory identity: user-scoped surrogate id.
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -14,8 +14,12 @@ pub struct MemoryKey {
 }
 
 /// Flat memory row: free text plus a monotonic insert counter.
+///
+/// The ns is declared here (#[kv_ns]) — the row is the table's
+/// declaration point; Table::new no longer takes an ns argument.
 #[derive(RowEncode, Clone, PartialEq, Debug)]
 #[kv_ref(MemoryKey)]
+#[kv_ns(32)]
 pub struct MemoryRow {
     pub text: String,
     pub created_at: u64,
@@ -31,13 +35,22 @@ pub struct MemoryStore {
 
 impl MemoryStore {
     /// Open (or create) the memory keyspace at `path`.
+    ///
+    /// `next_id` is recovered by scanning existing keys: ids are
+    /// per-user surrogate keys, so a fresh process must not hand out
+    /// an id that collides with (and silently overwrites) a stored
+    /// row. Empty table → counter starts at 1.
     pub fn open(path: &std::path::Path) -> Result<Self, fjall::Error> {
         let store = FjallStore::open(path, "memories")?;
-        Ok(Self {
-            // Table::new takes the store by value; ns matches #[kv_ns(32)].
-            table: okm_core::Table::new(store, 32),
-            next_id: 1,
-        })
+        // ns comes from the row's #[kv_ns(32)] — not a constructor arg.
+        let table = MemoryRow::table(store);
+        // Key layout is [user_id 8B BE][id 8B BE], so the last key in
+        // scan order carries the highest id seen (across any user).
+        let next_id = table
+            .scan_keys()
+            .last()
+            .map_or(1, |k| k.id.saturating_add(1));
+        Ok(Self { table, next_id })
     }
 
     /// Store one memory for `user_id`; returns the assigned id.
