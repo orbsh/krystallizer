@@ -59,6 +59,33 @@ fn next_id_recovered_after_reopen() {
 }
 
 #[test]
+fn forget_list_stats() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut mem = MemoryStore::open(dir.path()).unwrap();
+    let id1 = mem.store(101, "first memory", 1);
+    let id2 = mem.store(101, "second memory", 2);
+    mem.store(202, "other user memory", 3);
+
+    // list: user-scoped, insert order
+    let listed = mem.list(101);
+    assert_eq!(listed, vec![(id1, "first memory".into()), (id2, "second memory".into())]);
+    assert_eq!(mem.list(303), Vec::new());
+
+    // stats: per-user counts + total
+    let stats = mem.stats();
+    assert_eq!(stats.total, 3);
+    assert_eq!(stats.per_user.get(&101), Some(&2));
+    assert_eq!(stats.per_user.get(&202), Some(&1));
+
+    // forget: removes exactly one row, other users untouched
+    assert!(mem.forget(101, id1));
+    assert!(!mem.forget(101, id1), "second forget finds nothing");
+    assert!(!mem.forget(303, id1), "another user cannot forget someone else's row");
+    assert_eq!(mem.list(101), vec![(id2, "second memory".into())]);
+    assert_eq!(mem.stats().total, 2);
+}
+
+#[test]
 fn key_layout_hex_stability() {
     let key = MemoryKey {
         user_id: 0x0102_0304_0506_0708,

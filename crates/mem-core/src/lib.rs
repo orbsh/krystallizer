@@ -9,4 +9,4 @@ pub mod config;
 pub mod memory;
 
 pub use config::{ConfigError, EmbeddingConfig, KrystallizerConfig};
-pub use memory::{MemoryKey, MemoryRow, MemoryStore};
+pub use memory::{MemoryKey, MemoryRow, MemoryStats, MemoryStore};

@@ -70,3 +70,16 @@ name that holds it.
   planned once the third consumer need (KDL-shaped CLI) is real; for
   now knus alone covers decode, env reads stay one `std::env::var`
   away.
+- **Storage carriage splits by run form.** CLI/standalone form: k10r
+  owns its Fjall directory (ADR-0002) — "one directory on disk" stands.
+  Aura-actor form: a wasm sandbox cannot hold a filesystem, so storage
+  carriage moves to aura — the OKM schema code compiles into the wasm
+  unchanged, with the `VirtualStorage` implementation swapped for a
+  frame up-call (okm-wire `OpFrame`/`OpResponse`); the host side
+  receives via a NestStorage executor (aura PLAN Phase 6.6 Storage
+  Actor): prepend the app ns prefix allocated by the registry, execute
+  on aura's okm instance, fill the response back. Schema semantics
+  (derives, Table/EdgeTable, WriteBatch framing) stay self-held;
+  physical storage and engine belong to aura. In this form k10r uses
+  static OKM derives — **no** okm-dynamic needed; the compile-time
+  schema is already there.

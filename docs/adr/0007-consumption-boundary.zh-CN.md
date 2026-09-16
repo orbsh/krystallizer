@@ -57,3 +57,13 @@ agent。gravity 有两种运行形态——CLI 进程，以及 Aura 内部的 ac
 - 私有配置解析 crate（基于 knus，含 env 合并）在第三个消费需求
   （KDL 形态的 CLI）真实落地后再建；当下 knus 单独覆盖 decode，env
   读取离 `std::env::var` 只有一行。
+- **存储承载按运行形态分流。** CLI/独立进程形态：k10r 自持 Fjall
+  目录（ADR-0002），"磁盘上一个目录"照旧成立。Aura actor 形态：
+  wasm 沙箱内无法自持文件系统，存储承载归 aura——k10r 的 OKM
+  schema 代码原样编译进 wasm，`VirtualStorage` 的实现替换为帧上抛
+  （okm-wire `OpFrame`/`OpResponse`），host 侧由 NestStorage 执行器
+  （aura PLAN Phase 6.6 Storage Actor）接收：prepend registry 分配
+  的 app ns 前缀，在 aura 的 okm 实例上执行，回填。schema 语义
+  （derive、Table/EdgeTable、WriteBatch 组帧）自持；物理存储与引
+  擎归 aura。此形态下 k10r 走静态 OKM derive，**不需要** okm
+  dynamic——编译期 schema 是它本来就有的。
