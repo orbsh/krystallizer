@@ -593,7 +593,6 @@ dependencies = [
 [[package]]
 name = "okm-core"
 version = "0.1.0"
-source = "git+https://github.com/orbsh/okm?branch=main#ec07a33c82acb71f5ea98ba6a8c1bbf1c9724d46"
 dependencies = [
  "fjall",
  "okm-derive",
@@ -607,7 +606,6 @@ dependencies = [
 [[package]]
 name = "okm-derive"
 version = "0.1.0"
-source = "git+https://github.com/orbsh/okm?branch=main#ec07a33c82acb71f5ea98ba6a8c1bbf1c9724d46"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -618,7 +616,6 @@ dependencies = [
 [[package]]
 name = "okm-wire"
 version = "0.1.0"
-source = "git+https://github.com/orbsh/okm?branch=main#ec07a33c82acb71f5ea98ba6a8c1bbf1c9724d46"
 
 [[package]]
 name = "once_cell"

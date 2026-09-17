@@ -1,9 +1,9 @@
 //! Phase 0 smoke: one flat-memory table over Fjall (ADR-0002), with a
 //! brute-force substring search (ADR-0003 bring-up stance; BM25/arroy land
-//! in Phase 1). Proves the OKM ObjEncode -> Table -> FjallStore channel
+//! in Phase 1). Proves the OKM DocumentEncode -> Table -> FjallStore channel
 //! end to end.
 
-use okm_core::{FjallStore, KeyEncode, Row, ObjEncode, VirtualStorage};
+use okm_core::{FjallStore, KeyEncode, Document, DocumentEncode, VirtualStorage};
 
 /// Flat memory identity: user-scoped surrogate id.
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -17,7 +17,7 @@ pub struct MemoryKey {
 ///
 /// The ns is declared here (#[ok_ns]) — the row is the table's
 /// declaration point; Table::new no longer takes an ns argument.
-#[derive(ObjEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(MemoryKey)]
 #[ok_ns(32)]
 pub struct MemoryRow {
@@ -36,7 +36,7 @@ pub struct MemoryStats {
 pub struct MemoryStore {
     // Ownership of the underlying Database lives with the FjallStore
     // instance bound into the table (single store = atomicity boundary).
-    table: okm_core::Table<FjallStore, MemoryKey, MemoryRow>,
+    table: okm_core::Collection<FjallStore, MemoryKey, MemoryRow>,
     next_id: u64,
 }
 
@@ -50,7 +50,7 @@ impl MemoryStore {
     pub fn open(path: &std::path::Path) -> Result<Self, fjall::Error> {
         let store = FjallStore::open(path, "memories")?;
         // ns comes from the row's #[ok_ns(32)] — not a constructor arg.
-        let table = MemoryRow::table(store);
+        let table = <MemoryRow as okm_core::Document>::table(store);
         // Key layout is [user_id 8B BE][id 8B BE], so the last key in
         // scan order carries the highest id seen (across any user).
         let next_id = table
