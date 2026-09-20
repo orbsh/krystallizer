@@ -50,7 +50,7 @@ impl MemoryStore {
     pub fn open(path: &std::path::Path) -> Result<Self, fjall::Error> {
         let store = FjallStore::open(path, "memories")?;
         // ns comes from the row's #[ok_ns(32)] — not a constructor arg.
-        let table = <MemoryRow as okm_core::Document>::table(store);
+        let table = <MemoryRow as okm_core::Document>::collection(store);
         // Key layout is [user_id 8B BE][id 8B BE], so the last key in
         // scan order carries the highest id seen (across any user).
         let next_id = table
@@ -87,11 +87,11 @@ impl MemoryStore {
             .scan_suffix(&prefix)
             .iter()
             .filter_map(|sfx| {
-                // suffix = `[id 8B]` (after `[ns 2B][slot][user_id 8B]`);
+                // suffix = `[id 8B]` (after `[ns 2B][slot 2B][user_id 8B]`);
                 // decode via full-key reconstruction.
                 let mut full = prefix.clone();
                 full.extend_from_slice(sfx);
-                let key = MemoryKey::decode(&full[3..]);
+                let key = MemoryKey::decode(&full[4..]);
                 let row = self.table.get(&key)?;
                 row.text
                     .contains(query)
@@ -116,7 +116,7 @@ impl MemoryStore {
             .filter_map(|sfx| {
                 let mut full = prefix.clone();
                 full.extend_from_slice(sfx);
-                let key = MemoryKey::decode(&full[3..]);
+                let key = MemoryKey::decode(&full[4..]);
                 let row = self.table.get(&key)?;
                 Some((key.id, row.text.clone()))
             })
@@ -145,16 +145,17 @@ impl MemoryStore {
     }
 
     /// Scan prefix for one user's primary entries:
-    /// `[ns 2B][slot 0][user_id 8B]`. Returns the prefix bytes and the
-    /// header length (3) — the key payload starts right after it, so a
-    /// suffix byte range reconstructs to `MemoryKey::decode(&full[3..])`.
+    /// `[ns 2B][slot 2B BE = 0x0000][user_id 8B]` (ADR-0016 4-byte head).
+    /// Returns the prefix bytes and the header length (4) — the key
+    /// payload starts right after it, so a suffix byte range reconstructs
+    /// to `MemoryKey::decode(&full[4..])`.
     fn user_prefix(&self, user_id: u64) -> (Vec<u8>, usize) {
-        let mut prefix = Vec::with_capacity(3 + 8);
+        let mut prefix = Vec::with_capacity(4 + 8);
         prefix.extend_from_slice(MemoryRow::NS_PREFIX);
-        prefix.push(okm_core::index::PRIMARY_SLOT);
+        prefix.extend_from_slice(&okm_core::index::PRIMARY_SLOT.to_be_bytes());
         let probe = MemoryKey { user_id, id: 0 };
         probe.encode_prefix_named(&mut prefix, &["user_id"]);
-        let payload_len = prefix.len() - 3;
+        let payload_len = prefix.len() - 4;
         (prefix, payload_len)
     }
 }
