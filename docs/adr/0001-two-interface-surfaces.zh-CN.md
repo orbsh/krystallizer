@@ -63,3 +63,11 @@ summarize(...)        组合操作：注入压缩指令（经 tail）→ 回收�
   顺序全序）。这是存储 schema（ADR-0002）必须遵守的约束。
 - "历史纯净性"（尾提示词永不落盘）从"靠小心代码维持的约定"变成
   "单回合分支的结构性质"。
+
+## Update（2026-09-22，ADR-0008）
+
+session 文档变为 **channel 日志**，agent 上下文成为投影。summarize
+失去截断步骤：压缩是对不可变日志的追加（checkpoint 记录 + coverage
+前移），坏摘要是一次重试而非永久损失。branch（agent 私有的
+checkpoint 前缀树）与 thread（公开子 channel）保持区分——两者都是
+带 parent 的日志，差别在可见性。

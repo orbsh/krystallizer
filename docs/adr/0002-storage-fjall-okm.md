@@ -66,3 +66,19 @@ macros.**
 - Fjall's single-writer model is acceptable at single-agent scale; the
   multi-agent shared-memory future is gated behind SlateDB+S3, not fought
   with Fjall.
+
+## Update (2026-09-22, ADR-0008)
+
+The session message key is superseded: `(ns, user_id, session_id, seq)`
+becomes `(ns, channel_id, timestamp + tiebreaker)` — the human-chat and
+LLM-conversation logs unify into one channel container, and ordering
+moves to gravity-assigned timestamps. The original rejection of
+wall-clock ordering ("same-millisecond reorder") considered only
+cross-sender disorder, which is harmless for causally unrelated
+messages; it missed that a shared seq counter breaks causal order (a
+reply could sort between messages it logically follows), which a
+gravity-side timestamp cannot. Checkpoint immutability and stable
+total order — the constraints this ADR was bound to honor — are
+preserved; the seq column itself disappears (events carry timestamps
+anyway). Message-session tables also split into messages / members /
+cursors / checkpoints (per member) per ADR-0008's schema.

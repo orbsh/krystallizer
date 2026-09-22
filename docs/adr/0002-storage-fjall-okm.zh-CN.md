@@ -57,3 +57,15 @@ graph-memory 设计（wiki）已给出原子图的 KV 编码模式；剩余的 f
   目录。
 - Fjall 单写者模型在单 agent 规模下可接受；多 agent 共享记忆的未来
   由 SlateDB+S3 承接，不与 Fjall 硬掰。
+
+## Update（2026-09-22，ADR-0008）
+
+session 消息键被取代：`(ns, user_id, session_id, seq)` 变为
+`(ns, channel_id, timestamp + 决胜段)`——人的聊天与 LLM 对话的日志
+统一为 channel 容器，排序改为 gravity 打的时间戳。本文当初拒绝
+墙钟定序的理由（「同毫秒乱序」）只考虑了跨发送方乱序——对无因果
+关系的消息无害；漏掉的是共享 seq 计数器会破坏因果序（回复可能排到
+它逻辑上跟随的消息之间），而 gravity 侧时间戳不会。checkpoint
+不可变与稳定全序——本文承诺遵守的约束——保持不变；seq 列本身
+消失（事件本来就要带时间戳）。消息/session 表同时按 ADR-0008 的
+schema 拆为 messages / members / cursors / checkpoints（按成员）。

@@ -72,3 +72,14 @@ holds no state between calls, and scale-to-zero falls out for free.
 - View-layer trimming must stay strictly read-side: any write-path
   trimming would fork session truth between what is stored and what
   agents see.
+
+## Update (2026-09-22, ADR-0008)
+
+The read/write shape restates: "fetch full session, write back session"
+becomes **append own records, read own projection**. The container is a
+channel log (multi-party capable, append-only); the agent's context is
+its projection — checkpoint records + post-coverage increment + unread
+tail — assembled at read time. The stateless-loop property, scale-to-
+zero, and "the loop never mutates history" all carry over; the storage
+layer now structurally forbids mutation instead of relying on loop
+discipline.

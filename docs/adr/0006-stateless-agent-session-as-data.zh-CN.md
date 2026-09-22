@@ -56,3 +56,12 @@ f(session, user_input) -> session'
   是它的问题，但不阻塞本决策。
 - 视图层裁剪必须严格只在读侧：任何写路径裁剪会让「存储的会话」与
   「agent 看到的会话」分叉成两个真相。
+
+## Update（2026-09-22，ADR-0008）
+
+读写形态重述：「fetch 全量 session、写回 session」改为 **append
+自己的记录、读自己的投影**。容器是 channel 日志（可承载多方，
+append-only）；agent 的上下文是它的投影——checkpoint 记录 +
+coverage 后增量 + 未读尾部——读取时组装。无状态循环、scale-to-zero、
+「循环不改写历史」全部照旧成立；且存储层从结构上禁止改写，不再
+依赖循环侧的纪律。

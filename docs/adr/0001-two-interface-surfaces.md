@@ -79,3 +79,12 @@ Two modes:
 - The "history purity" property (tail prompts never persisted) stops being
   a convention enforced by careful code and becomes a structural property
   of one-turn branches.
+
+## Update (2026-09-22, ADR-0008)
+
+The session document becomes a **channel log** with the agent's context
+as a projection. summarize loses its truncation step: compression is
+append (checkpoint record + coverage advance) over an immutable log,
+so a bad summary is a retry, not a permanent loss. branch (agent-
+private checkpoint-prefix tree) and thread (public sub-channel) stay
+distinct — both parented logs differing in visibility.
