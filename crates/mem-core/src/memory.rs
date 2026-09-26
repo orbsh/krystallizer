@@ -81,7 +81,7 @@ impl MemoryStore {
         if query.is_empty() {
             return Vec::new();
         }
-        let (prefix, prefix_len) = self.user_prefix(user_id);
+        let prefix = self.user_prefix(user_id);
         self.table
             .store()
             .scan_suffix(&prefix)
@@ -108,7 +108,7 @@ impl MemoryStore {
 
     /// All of a user's memories, key order (insert order by id).
     pub fn list(&self, user_id: u64) -> Vec<(u64, String)> {
-        let (prefix, prefix_len) = self.user_prefix(user_id);
+        let prefix = self.user_prefix(user_id);
         self.table
             .store()
             .scan_suffix(&prefix)
@@ -146,16 +146,14 @@ impl MemoryStore {
 
     /// Scan prefix for one user's primary entries:
     /// `[ns 2B][slot 2B BE = 0x0000][user_id 8B]` (ADR-0016 4-byte head).
-    /// Returns the prefix bytes and the header length (4) — the key
-    /// payload starts right after it, so a suffix byte range reconstructs
-    /// to `MemoryKey::decode(&full[4..])`.
-    fn user_prefix(&self, user_id: u64) -> (Vec<u8>, usize) {
+    /// The key payload starts right after the 4-byte header, so a suffix
+    /// byte range reconstructs to `MemoryKey::decode(&full[4..])`.
+    fn user_prefix(&self, user_id: u64) -> Vec<u8> {
         let mut prefix = Vec::with_capacity(4 + 8);
         prefix.extend_from_slice(MemoryRow::NS_PREFIX);
         prefix.extend_from_slice(&okm_core::index::PRIMARY_SLOT.to_be_bytes());
         let probe = MemoryKey { user_id, id: 0 };
         probe.encode_prefix_named(&mut prefix, &["user_id"]);
-        let payload_len = prefix.len() - 4;
-        (prefix, payload_len)
+        prefix
     }
 }
