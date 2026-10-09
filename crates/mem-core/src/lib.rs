@@ -5,8 +5,13 @@
 //! memory (full-session / assist). Zero LLM dependency, zero transport
 //! dependency. Design: docs/adr/.
 
+pub mod channel;
 pub mod config;
 pub mod memory;
 
+pub use channel::{
+    role, kind, ChannelStore, CheckpointKey, CheckpointRow, MessageKey, MessageRow, SessionView,
+    DEFAULT_MEMBER,
+};
 pub use config::{ConfigError, EmbeddingConfig, KrystallizerConfig};
 pub use memory::{MemoryKey, MemoryRow, MemoryStats, MemoryStore};

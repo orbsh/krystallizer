@@ -1,6 +1,6 @@
 # ADR-0008: Unified Channel Log — Agent Context as a Projection, Heuristic Compression
 
-**Status**: Accepted (design; implementation pending)
+**Status**: Partially landed (2026-10-09: the minimal slice — channel messages ns 33 + per-member checkpoints ns 34, `ChannelStore::append`/`fetch_full`/`append_checkpoint`, serving gravity Phase 0; overwriting checkpoints is a recorded deviation from "append a checkpoint record" pending Phase 2.6's decision log; pending: threads, topic tags, members, cursors, the policy engine)
 **Date**: 2026-09-22
 **Chinese**: [0008-unified-channel-log.zh-CN.md](0008-unified-channel-log.zh-CN.md)
 **Amends**: ADR-0001 (summarize's truncation step), ADR-0002 (session message key), ADR-0006 (session read/write shape)

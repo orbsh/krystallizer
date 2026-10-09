@@ -1,6 +1,6 @@
 # ADR-0008: 统一 channel 日志——agent 上下文是投影，启发式压缩
 
-**状态**：Accepted（设计定案，实现未开始）
+**状态**：部分落地（2026-10-09：最小切片——channel 消息 ns 33 + 每成员 checkpoint ns 34，`ChannelStore::append`/`fetch_full`/`append_checkpoint`，服务 gravity Phase 0；checkpoint 采用覆盖写，与「追加 checkpoint 记录」的偏差已记录，待 Phase 2.6 decision log 裁决；待办：thread、topic tag、members、读游标、策略引擎）
 **日期**：2026-09-22
 **英文版**：[0008-unified-channel-log.md](0008-unified-channel-log.md)
 **修订**：ADR-0001（summarize 的截断步骤）、ADR-0002（session 消息键）、ADR-0006（session 读写形态）

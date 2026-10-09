@@ -15,7 +15,9 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
 | ns  | 实体              | 状态                     | ADR      |
 |-----|-------------------|--------------------------|----------|
 | 32  | Flat memory       | 已实现（Phase 0）        | ADR-0002 |
-| —   | Session 消息      | 已声明（ADR-0002）       | ADR-0001, 0002 |
+| 33  | Channel 消息日志   | 已实现（最小切片，2026-10-09） | ADR-0008 |
+| 34  | Checkpoint（每成员）| 已实现（最小切片，2026-10-09） | ADR-0008 |
+| —   | Session 消息      | 被 channel log 取代      | ADR-0008 |
 | —   | Tasks / task_links DAG | 已声明（ADR-0002）  | ADR-0002 |
 | —   | Fact graph 边     | 已声明（ADR-0002）       | ADR-0002 |
 
@@ -87,3 +89,40 @@ Key 布局由 `key_layout_hex_stability` 锁定
 （`crates/mem-core/tests/smoke_test.rs`）：`[user_id 8B BE][id 8B BE]`，
 不含 ns 头（`KeyEncode::encode()` 只返回 payload，不含 ns；Table 自
 行前置 `[ns 2B][slot 1B]`）。
+
+## Channel 日志（ns 33）+ checkpoint（ns 34）
+
+统一 channel 日志与 agent 投影（ADR-0008，服务 gravity Phase 0 的最小切片）。
+声明在 `crates/mem-core/src/channel.rs`。
+
+### 键
+
+- `MessageKey`（ns 33）：`[channel_id 8B][ts_ms 8B][sub 2B]`——BE 定宽，
+  字节序 == `(ts_ms, sub)` 序；日志即索引（无排序步骤、无二级索引）。
+  `sub` = 同毫秒 tiebreaker（单写者顺序追加；u16 溢出 = 一毫秒 65 536 条，
+  病态信号）。ns/slot 在条目入址时拼接（ADR-0011）。
+- `CheckpointKey`（ns 34）：`[channel_id 8B][member_id 8B]`——每
+  (channel, member) 一条 checkpoint，**覆盖写**（同键 RMW）：投影只读最新
+  一条；压缩决策的审计史属于 Phase 2.6 的 decision log（另一张表）。若
+  未来重切分需要 checkpoint 历史，本表改为按 coverage point 键控的
+  append-only 日志——pre-production schema 变更，零迁移（ADR-0018
+  clean-break 规则）。
+
+### 行
+
+- `MessageRow`：`role u8`（user/assistant/tool/system）、`kind u8`
+  （text；tool_call/tool_result 预留给视图层剪枝）、`content String`。
+  存储永远持有完整行；剪枝在视图侧（ADR-0006）。
+- `CheckpointRow`：`coverage_ts u64`（投影增量严格晚于此点）、
+  `summary String`。
+
+### 访问面（mem-core `ChannelStore`）
+
+`append(channel_id, ts_ms, sub, role, kind, content)`——时钟由调用方
+（gravity）持有；`fetch_full(channel_id, member_id)` →
+`SessionView { coverage_ts, summary, increment }`——投影：checkpoint +
+严格晚于 coverage 的增量，键序；`append_checkpoint(channel_id, member_id,
+coverage_ts, summary)`。
+
+尚未落地（后续切片）：thread、topic tag、members、读游标、压缩策略
+引擎（ADR-0008/0009）。

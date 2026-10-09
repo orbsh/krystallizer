@@ -35,7 +35,9 @@ and no Python layer.**
    talks to k10r over its HTTP interface. mem-server graduates from
    "deferred shell" to the carrier of the HTTP access mode.
 3. **Aura invoke** (actor-to-actor): when gravity runs inside Aura as
-   an actor, k10r is itself an actor; gravity calls it via invoke.
+   an actor, k10r is itself an actor; gravity calls it via invoke. The
+   carrier form is **bgi (a standalone k10r process spawned by aura)** —
+   revised 2026-10-09, see Consequences.
 
 **LLM orchestration belongs to gravity.** Extraction-pipeline LLM
 decisions (stage classification, out-of-domain fusion decisions,
@@ -72,14 +74,21 @@ name that holds it.
   away.
 - **Storage carriage splits by run form.** CLI/standalone form: k10r
   owns its Fjall directory (ADR-0002) — "one directory on disk" stands.
-  Aura-actor form: a wasm sandbox cannot hold a filesystem, so storage
-  carriage moves to aura — the OKM schema code compiles into the wasm
-  unchanged, with the `VirtualStorage` implementation swapped for a
-  frame up-call (okm-wire `OpFrame`/`OpResponse`); the host side
-  receives via a NestStorage executor (aura PLAN Phase 6.6 Storage
-  Actor): prepend the app ns prefix allocated by the registry, execute
-  on aura's okm instance, fill the response back. Schema semantics
-  (derives, Table/EdgeTable, WriteBatch framing) stay self-held;
-  physical storage and engine belong to aura. In this form k10r uses
-  static OKM derives — **no** okm-dynamic needed; the compile-time
-  schema is already there.
+  **Aura-actor form (revised 2026-10-09): k10r stays a STANDALONE
+  PROCESS carried by aura's bgi carrier** — aura registers a booth type
+  with `language: "bgi"` whose spawn spec launches the k10r binary; the
+  fifo line protocol carries the invoke round trip. The original draft
+  compiled the OKM schema into a wasm module with storage moved to aura
+  via a NestStorage frame up-call; that shape is superseded — it had an
+  unresolvable hole: a wasm sandbox holds no filesystem (fine, storage
+  moved) but ALSO no outbound network, and the embedding call is the
+  one network surface k10r owns (ADR-0003: the embedding space is bound
+  to the data — moving it out is a correctness violation, not a
+  preference). ADR-0034's withdrawal of wasi-http closed the only
+  planned wasm egress path. Under bgi everything stays where it
+  belongs: k10r keeps its Fjall directory AND its in-process embedding
+  calls; aura allocates no ns for it and needs no Storage Actor
+  (aura PLAN Phase 6.6's NestStorage executor stays deferred until a
+  consumer actually wants hosted storage). The cost is honest: k10r's
+  data is process-local, so aura booths reach it ONLY through invoke —
+  which is already ADR-0007's contract (access mode 3), not a loss.

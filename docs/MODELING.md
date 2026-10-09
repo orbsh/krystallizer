@@ -16,7 +16,9 @@ One entity class = one ns (OKM rule). Current state:
 | ns  | Entity        | Status                  | ADR      |
 |-----|---------------|-------------------------|----------|
 | 32  | Flat memory   | Implemented (Phase 0)   | ADR-0002 |
-| —   | Session messages | Declared (ADR-0002) | ADR-0001, 0002 |
+| 33  | Channel messages | Implemented (minimal slice, 2026-10-09) | ADR-0008 |
+| 34  | Checkpoints (per member) | Implemented (minimal slice, 2026-10-09) | ADR-0008 |
+| —   | Session messages | superseded by the channel log | ADR-0008 |
 | —   | Tasks / task_links DAG | Declared (ADR-0002) | ADR-0002 |
 | —   | Fact graph edges | Declared (ADR-0002) | ADR-0002 |
 
@@ -94,3 +96,43 @@ Key layout is locked by `key_layout_hex_stability`
 (`crates/mem-core/tests/smoke_test.rs`): `[user_id 8B BE][id 8B BE]`,
 ns header excluded (`KeyEncode::encode()` returns payload without the
 ns; the Table prepends `[ns 2B][slot 1B]`).
+
+## Channel log (ns 33) + checkpoints (ns 34)
+
+The unified channel log and the agent's projection (ADR-0008, minimal
+slice serving gravity Phase 0). Declared in
+`crates/mem-core/src/channel.rs`.
+
+### Keys
+
+- `MessageKey` (ns 33): `[channel_id 8B][ts_ms 8B][sub 2B]` — BE,
+  byte order == `(ts_ms, sub)` order; the log IS the index (no sort, no
+  secondary index). `sub` = same-millisecond tiebreaker (single writer,
+  sequential; u16 overflow at 65 536 msgs/ms is pathological). ns/slot
+  join at entry time per ADR-0011.
+- `CheckpointKey` (ns 34): `[channel_id 8B][member_id 8B]` — one
+  checkpoint per (channel, member), OVERWRITTEN (same-key RMW): the
+  projection reads only the latest; audit history belongs to Phase
+  2.6's decision log. If re-segmentation later needs checkpoint
+  history, this becomes an append-only log keyed by coverage point —
+  a pre-production schema change.
+
+### Rows
+
+- `MessageRow`: `role u8` (user/assistant/tool/system), `kind u8`
+  (text; tool_call/tool_result reserved for view-layer pruning),
+  `content String`. Storage always holds full rows; pruning is view
+  side (ADR-0006).
+- `CheckpointRow`: `coverage_ts u64` (the projection's increment starts
+  STRICTLY after), `summary String`.
+
+### Access (mem-core `ChannelStore`)
+
+`append(channel_id, ts_ms, sub, role, kind, content)` — the caller
+(gravity) assigns the clock; `fetch_full(channel_id, member_id)` →
+`SessionView { coverage_ts, summary, increment }` — the projection:
+checkpoint + increment strictly after coverage, key order;
+`append_checkpoint(channel_id, member_id, coverage_ts, summary)`.
+
+Not yet (later slices): threads, topic tags, members, read cursors,
+compression policy engine (ADR-0008/0009).

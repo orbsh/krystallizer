@@ -30,7 +30,9 @@ agent。gravity 有两种运行形态——CLI 进程，以及 Aura 内部的 ac
 2. **HTTP**（mem-server）：gravity 以 CLI 进程执行时，走 k10r 的
    HTTP 接口。mem-server 从"预留壳"转正为 HTTP 接入方式的承载者。
 3. **Aura invoke**（actor 间调用）：gravity 作为 Aura actor 运行
-   时，k10r 本身也是 actor，gravity 经 invoke 调用它。
+   时，k10r 本身也是 actor，gravity 经 invoke 调用它。承载形态为
+   **bgi（独立 k10r 进程，由 aura spawn）**——2026-10-09 修订，
+   见「后果」节。
 
 **LLM 编排归 gravity。** 抽取管线的 LLM 决策（分类抽取、out-of-domain
 融合判断、策略需要时的摘要）是 gravity 的工作——k10r 只交出确定性
@@ -58,12 +60,18 @@ agent。gravity 有两种运行形态——CLI 进程，以及 Aura 内部的 ac
   （KDL 形态的 CLI）真实落地后再建；当下 knus 单独覆盖 decode，env
   读取离 `std::env::var` 只有一行。
 - **存储承载按运行形态分流。** CLI/独立进程形态：k10r 自持 Fjall
-  目录（ADR-0002），"磁盘上一个目录"照旧成立。Aura actor 形态：
-  wasm 沙箱内无法自持文件系统，存储承载归 aura——k10r 的 OKM
-  schema 代码原样编译进 wasm，`VirtualStorage` 的实现替换为帧上抛
-  （okm-wire `OpFrame`/`OpResponse`），host 侧由 NestStorage 执行器
-  （aura PLAN Phase 6.6 Storage Actor）接收：prepend registry 分配
-  的 app ns 前缀，在 aura 的 okm 实例上执行，回填。schema 语义
-  （derive、Table/EdgeTable、WriteBatch 组帧）自持；物理存储与引
-  擎归 aura。此形态下 k10r 走静态 OKM derive，**不需要** okm
-  dynamic——编译期 schema 是它本来就有的。
+  目录（ADR-0002），"磁盘上一个目录"照旧成立。
+  **Aura actor 形态（2026-10-09 修订）：k10r 保持独立进程，由
+  aura 的 bgi 载体承载**——aura 注册一个 `language: "bgi"` 摊位
+  类型，spawn spec 启动 k10r 二进制，fifo 行协议承载 invoke 往返。
+  原方案的 wasm 形态（OKM schema 编译进 wasm，存储经 NestStorage
+  帧上抛归 aura）被取代——它有一个无法闭环的洞：wasm 沙箱既装不下
+  文件系统（存储移动没问题）也**没有出网能力**，而 embedding 调用
+  是 k10r 唯一自持的网络面（ADR-0003：嵌入空间与数据绑定，外移是
+  正确性违规不是偏好）；ADR-0034 撤销 wasi-http 后，wasm 出网的唯一
+  规划路径关闭。bgi 形态下一切各归其位：k10r 同时自持 Fjall 目录与
+  进程内 embedding 调用；aura 不为它分配 ns、不需要 Storage Actor
+  （aura PLAN Phase 6.6 的 NestStorage 执行器继续搁置，直到真有
+  消费者需要 hosted 存储）。代价是诚实的：k10r 的数据是进程本地的，
+  aura 摊位只能经 invoke 到达它——这本就是 ADR-0007 的契约
+  （接入方式 3），不是损失。
