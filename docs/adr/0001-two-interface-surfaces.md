@@ -88,3 +88,40 @@ append (checkpoint record + coverage advance) over an immutable log,
 so a bad summary is a retry, not a permanent loss. branch (agent-
 private checkpoint-prefix tree) and thread (public sub-channel) stay
 distinct — both parented logs differing in visibility.
+
+## Update (2026-10-10, third application shape: memory-primary)
+
+The interface surfaces are unchanged; a third consumption stance
+appears: **programs that are not chat applications but need memory —
+mudra, task managers.**
+
+Three shapes, divided by which surface stars:
+
+| Shape | Surface 1 (session) | Surface 2 (memory) |
+|---|---|---|
+| Session-primary (gravity / chat) | The main surface: channel log + projection | Assist: retrieval injected alongside the session, never replacing it |
+| Memory-primary (mudra / task management) | Unused, or residual use only (below) | **Everything**: store / search / forget IS the application's memory |
+
+Memory-primary is **not a third interface surface** — the two surfaces'
+primitives already cover it; the third shape is a change of consumption
+stance. This retroactively validates this ADR's core boundary: the core
+decides *how*, never *when*; in shape B, when-to-extract / when-to-
+store is likewise caller-side policy (the chat side delegates it to
+gravity; the task side to the application's own agent or deterministic
+rules).
+
+**Structured application state does not enter the memory pipeline.**
+Task records, status fields, due dates are the application's own KV/
+tables — exactly enumerable queries ("how many open tasks") do not go
+through the approximate-retrieval pipeline, or "search for one memory"
+gets mixed up with "count one status". What k10r gives these
+applications is **cross-session factual memory**: user preferences,
+past decisions, experience with how things were done. The approximate-
+retrieval vs exact-enumeration line sits here and is not caller-
+configurable.
+
+**Surface 1's residual use**: if the application has agentic turn
+sequences (multi-turn LLM work units), those turns are a sequential log
+and can ride the channel log — keyed by task id rather than session
+id. That is mechanism reuse, not chat semantics; purely retrieval-style
+applications never touch Surface 1 at all.
