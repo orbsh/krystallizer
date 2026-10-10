@@ -1,4 +1,4 @@
-# ADR-0007: 消费边界——三种接入方式，无 Python 层
+# ADR-0007: 消费边界——唯一跨进程形态（HTTP），无 Python 层
 
 **Status**: Accepted
 **Date**: 2026-09-14
@@ -13,26 +13,36 @@ ADR-0004 把抽取管线的 LLM 编排放进了"Python 层（skillforge 侧，�
 其它项目消费的 Rust 记忆核心；mem-ffi 是其中一种绑定，不是架构的
 一层。
 
-与此同时，消费 k10r 的 agent 已定型（ADR-0006）：gravity，无状态
-agent。gravity 有两种运行形态——CLI 进程，以及 Aura 内部的 actor。
-两种形态到达 k10r 的方式不同，而 wiki 的无状态 Agent 架构页已精确
-固定了一条边界：LLM 调用归 gravity（模型身份绑定到发起推理的一
-侧）；唯一例外是 k10r 内部的 embedding（嵌入空间与数据正确性绑
-定，归记忆系统自持）。
+消费 k10r 的 agent 已定型（ADR-0006）：gravity，无状态 agent。两条
+边界已在别处精确固定，照旧成立：
+
+- **LLM 调用归 gravity**（模型身份绑定到发起推理的一侧）；唯一例外
+  是 k10r 内部的 embedding（嵌入空间与数据正确性绑定，归记忆系统
+  自持）。
+- **aura 世界的公民是 gravity，不是 k10r**（Milestone B Phase 6：
+  gravity 作为摊位类型被承载）。k10r 完全站在 aura 之外，与 AI 端
+  点同类——外部依赖，契约是 URL 可达。
 
 ## Decision
 
-**k10r 是纯 Rust 记忆服务，三种接入方式，无 Python 层。**
+**k10r 是独立网络服务——Fjall 存储、embedding 自持、HTTP API——纯
+Rust，无 Python 层。它不是 aura 公民：不注册摊位、不被 aura spawn、
+不占 ns。**
 
-1. **FFI**（进程内）：mem-ffi（PyO3）——可能的消费者之一，一个绑
-   定壳。它是消费通道，不是 k10r 的层；其它绑定（或不用绑定）同样
-   合法。
-2. **HTTP**（mem-server）：gravity 以 CLI 进程执行时，走 k10r 的
-   HTTP 接口。mem-server 从"预留壳"转正为 HTTP 接入方式的承载者。
-3. **Aura invoke**（actor 间调用）：gravity 作为 Aura actor 运行
-   时，k10r 本身也是 actor，gravity 经 invoke 调用它。承载形态为
-   **bgi（独立 k10r 进程，由 aura spawn）**——2026-10-09 修订，
-   见「后果」节。
+1. **HTTP（mem-server）是唯一的跨进程形态。** mem-server 从"预留
+   壳"转正为唯一远端面，承载 channel-log 端点（ADR-0008 最小切片
+   起步：append / fetch_full / append_checkpoint）。
+2. **进程内 mem-core 是本地同机实现细节，不是一种接入方式。**
+   gravity Phase 0 直接 link mem-core、进程内调 `ChannelStore`，那是
+   一台机器上的一种部署选择，对边界不可见。MemorySurface 缝合层
+   （进程内 / HTTP 两个实现）是 gravity 侧的事，不是 k10r 的接入
+   方式。
+3. **FFI 保留**（mem-ffi，PyO3）：绑定已存在，并继续充当 Phase 0
+   绑定冒烟测试。它是消费通道，不是 k10r 的层；其它绑定（或不用绑
+   定）同样合法。
+
+早先的"三种接入方式"提法撤销：跨进程边界到达 k10r 的方式不是三
+种——恰好一种（HTTP）；进程内 link 与绑定根本不是边界形态。
 
 **LLM 编排归 gravity。** 抽取管线的 LLM 决策（分类抽取、out-of-domain
 融合判断、策略需要时的摘要）是 gravity 的工作——k10r 只交出确定性
@@ -52,26 +62,26 @@ agent。gravity 有两种运行形态——CLI 进程，以及 Aura 内部的 ac
 - ADR-0004 的归属主张（"抽取在 Python 层"）被取代；其余内容——确
   定性 `ingest(fact)` KDL 接口面、融合拆分（核心=便宜半步，调用
   方=昂贵半步）——照旧成立，调用方改为 gravity。
-- mem-ffi 不再是交付面；保留为 Phase 0 绑定冒烟测试和一种可用的消
-  费方式。
-- 核心的网络面恰好一个调用：embedding API。无 LLM client，无传输
-  框架。
+- **aura-actor 接入方式撤销（2026-10-10），连同其 2026-10-09 的 bgi
+  修订一并撤销。** k10r 永远不会作为 `language: "bgi"` 摊位类型被
+  aura spawn 的独立进程，也永远不以 aura 内 actor 身份运行。
+  gravity 支持 booth/cli 等载体模式；aura 托管的 k10r 进程没有存在
+  必要——aura 侧经 gravity 到达记忆，gravity 经 HTTP 到达 k10r。
+  在案的两代被取代形态：最初的 wasm 形态（OKM schema 编译进 wasm，
+  存储经 NestStorage 帧上抛归 aura）死于自身的洞——wasm 沙箱既装
+  不下文件系统也**没有出网能力**，而 embedding 调用是 k10r 唯一自
+  持的网络面（ADR-0003：嵌入空间与数据绑定，外移是正确性违规不是
+  偏好；ADR-0034 撤销 wasi-http 后，wasm 出网的唯一规划路径关闭）。
+  bgi 形态补上了那个洞，却保留了错误的前提：k10r 作为 aura 托管进
+  程。
+- **aura PLAN Phase 6.6（Storage Booth / NestStorage 执行器）随之出
+  局**——k10r 的存储从来不需要 aura 托管执行器。无论调用方是谁，
+  k10r 自持 Fjall 目录（ADR-0002）；"磁盘上一个目录"照旧成立，不存
+  在承载分流。
+- mem-server 是交付物而非预留壳：先落三个端点（append / fetch_full
+  / append_checkpoint），随消费需求增长。
+- 核心自身的网络面仍恰好一个出站调用：embedding API。无 LLM
+  client，无传输框架。
 - 私有配置解析 crate（基于 knus，含 env 合并）在第三个消费需求
   （KDL 形态的 CLI）真实落地后再建；当下 knus 单独覆盖 decode，env
   读取离 `std::env::var` 只有一行。
-- **存储承载按运行形态分流。** CLI/独立进程形态：k10r 自持 Fjall
-  目录（ADR-0002），"磁盘上一个目录"照旧成立。
-  **Aura actor 形态（2026-10-09 修订）：k10r 保持独立进程，由
-  aura 的 bgi 载体承载**——aura 注册一个 `language: "bgi"` 摊位
-  类型，spawn spec 启动 k10r 二进制，fifo 行协议承载 invoke 往返。
-  原方案的 wasm 形态（OKM schema 编译进 wasm，存储经 NestStorage
-  帧上抛归 aura）被取代——它有一个无法闭环的洞：wasm 沙箱既装不下
-  文件系统（存储移动没问题）也**没有出网能力**，而 embedding 调用
-  是 k10r 唯一自持的网络面（ADR-0003：嵌入空间与数据绑定，外移是
-  正确性违规不是偏好）；ADR-0034 撤销 wasi-http 后，wasm 出网的唯一
-  规划路径关闭。bgi 形态下一切各归其位：k10r 同时自持 Fjall 目录与
-  进程内 embedding 调用；aura 不为它分配 ns、不需要 Storage Actor
-  （aura PLAN Phase 6.6 的 NestStorage 执行器继续搁置，直到真有
-  消费者需要 hosted 存储）。代价是诚实的：k10r 的数据是进程本地的，
-  aura 摊位只能经 invoke 到达它——这本就是 ADR-0007 的契约
-  （接入方式 3），不是损失。

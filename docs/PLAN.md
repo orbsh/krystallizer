@@ -27,16 +27,17 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   flat-memory category (extraction-routed, weight-governed); interrupt
   trigger (seconds-scale passive window) with silent outcomes in the
   decision log. (ADR-0009)
-- [ ] Phase 3 — Atomic-fact graph: fact node/edge tables, KDL ingestion, write-time fusion (in-domain id / out-of-domain embedding convergence + small-candidate LLM decision — the LLM decision is gravity's, via the access modes of ADR-0007), weight system (delta counts, read-write quadrants, tool_invoke_count, W: index). (ADR-0004, ADR-0005, ADR-0007)
+- [ ] Phase 3 — Atomic-fact graph: fact node/edge tables, KDL ingestion, write-time fusion (in-domain id / out-of-domain embedding convergence + small-candidate LLM decision — the LLM decision is gravity's, per ADR-0007's boundary), weight system (delta counts, read-write quadrants, tool_invoke_count, W: index). (ADR-0004, ADR-0005, ADR-0007)
 - [ ] Phase 4 — Clustered retrieval: entity-anchored / temporal / causal-chain views; progressive loading (Top-K by weight). (ADR-0005)
-- [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), SKILL topological four-part nodes, Aura Actor nodes, mem-server transport shell.
+- [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), SKILL topological four-part nodes, Aura Actor nodes. (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.)
 
 Deferred gates:
 
-- Multi-consumer service shell: mem-server carries the HTTP access mode
-  (ADR-0007); its build-out is deferred until the memory graph is a real
-  multi-consumer deployment need; core is transport-free (embedding
-  excepted) so the shell is additive.
+- Multi-consumer service shell: mem-server is the single cross-process
+  form (ADR-0007 as revised 2026-10-10); it graduates from deferred to
+  deliverable with the channel-log endpoints (append / fetch_full /
+  append_checkpoint) first, grown as consumers need; core is
+  transport-free (embedding excepted) so the server is additive.
 - Delta-append weight counts: single-process serial start uses direct RMW;
   key layout stays delta-compatible so multi-agent switchover changes no schema.
 - tantivy: not adopted (see ADR-0003); revisit only if hand-written BM25 hits

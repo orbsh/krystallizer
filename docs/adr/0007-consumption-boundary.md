@@ -1,4 +1,4 @@
-# ADR-0007: Consumption Boundary — Three Access Modes, No Python Layer
+# ADR-0007: Consumption Boundary — One Cross-Process Form (HTTP), No Python Layer
 
 **Status**: Accepted
 **Date**: 2026-09-14
@@ -14,37 +14,50 @@ this project. Krystallizer's direction is **Python-free**: it is a
 Rust memory core consumed by other projects; mem-ffi is one binding,
 not an architecture layer.
 
-Meanwhile the agent that consumes k10r settled into a definite shape
-(ADR-0006): gravity, the stateless agent. Gravity runs in two modes —
-as a CLI process, and inside Aura as an actor. Each mode reaches k10r
-differently, and the wiki's stateless-agent page already fixes one
-boundary precisely: LLM calls belong to gravity (model identity is
-bound to the side that initiates inference); the single exception is
-krystallizer's internal embedding (the embedding space is bound to
-data correctness, so the memory system holds it).
+The consumer of k10r is settled (ADR-0006): gravity, the stateless
+agent. Two boundaries are already fixed elsewhere and carry over:
+
+- **LLM calls belong to gravity** (model identity is bound to the side
+  that initiates inference); the single exception is krystallizer's
+  internal embedding (the embedding space is bound to data correctness,
+  so the memory system holds it).
+- **gravity — not k10r — is the aura-world citizen** (Milestone B
+  Phase 6: gravity is hosted as a booth type). k10r stands outside
+  aura entirely, in the same class as the AI endpoint: an external
+  dependency whose contract is URL reachability.
 
 ## Decision
 
-**Krystallizer is a Rust-only memory service with three access modes,
-and no Python layer.**
+**Krystallizer is an independent network service — Fjall storage,
+self-held embedding, HTTP API — pure Rust, no Python layer. It is not
+an aura citizen: it registers no booth, is not spawned by aura, and
+occupies no ns.**
 
-1. **FFI** (in-process): mem-ffi (PyO3) — one binding shell among
-   possible consumers. It is a consumption channel, not a layer of
-   krystallizer; other bindings (or none) are equally legitimate.
-2. **HTTP** (mem-server): when gravity executes as a CLI process, it
-   talks to k10r over its HTTP interface. mem-server graduates from
-   "deferred shell" to the carrier of the HTTP access mode.
-3. **Aura invoke** (actor-to-actor): when gravity runs inside Aura as
-   an actor, k10r is itself an actor; gravity calls it via invoke. The
-   carrier form is **bgi (a standalone k10r process spawned by aura)** —
-   revised 2026-10-09, see Consequences.
+1. **HTTP (mem-server) is the ONLY cross-process form.** mem-server
+   graduates from "deferred shell" to the single remote surface, with
+   the channel-log endpoints gravity needs (append / fetch_full /
+   append_checkpoint as of ADR-0008's minimal slice).
+2. **In-process mem-core is a local same-machine implementation
+   detail, not an access mode.** Gravity Phase 0 links mem-core
+   directly and calls `ChannelStore` in-process; that is one
+   deployment choice on one machine, invisible to the boundary. The
+   MemorySurface seam (in-process / HTTP implementations) is gravity's
+   concern, not a krystallizer access mode.
+3. **FFI stays** (mem-ffi, PyO3): it has existing bindings and remains
+   the Phase 0 binding smoke test. It is a consumption channel, not a
+   layer of krystallizer; other bindings (or none) are equally
+   legitimate.
+
+The earlier "three access modes" framing is withdrawn: there are not
+three ways to reach k10r across a process boundary — there is exactly
+one (HTTP), plus local-linking and bindings that are not boundary
+shapes at all.
 
 **LLM orchestration belongs to gravity.** Extraction-pipeline LLM
 decisions (stage classification, out-of-domain fusion decisions,
 summarize when policy needs one) are gravity's work — k10r hands over
 deterministic primitives and cheap half-steps (candidate sets), the
-model-bound decisions happen on the side that owns the model
-identity.
+model-bound decisions happen on the side that owns the model identity.
 
 **Embedding is internal to krystallizer** — the only network call in
 the core (already conceded by ADR-0003). The embedding model is locked
@@ -64,31 +77,32 @@ name that holds it.
   `ingest(fact)` KDL surface, the fusion split (core = cheap half,
   caller = expensive half) — carries over with the caller now being
   gravity.
-- mem-ffi stops being a deliverable surface; it stays as the Phase 0
-  binding smoke test and a usable consumption mode.
-- The core's network surface is exactly one call: the embedding API.
-  No LLM client, no transport framework.
+- **The aura-actor access mode is withdrawn (2026-10-10), including
+  its 2026-10-09 bgi revision.** k10r is never a standalone process
+  spawned by aura via a `language: "bgi"` booth type, and k10r never
+  runs as an in-aura actor at all. gravity supports booth/cli carrier
+  modes; a k10r process hosted by aura has no reason to exist — the
+  aura side reaches memory through gravity, which reaches k10r over
+  HTTP. Two superseded shapes are on record: the original wasm form
+  (OKM schema compiled into wasm, storage moved to aura via a
+  NestStorage frame up-call) died on its own hole — a wasm sandbox
+  holds no filesystem AND no outbound network, while the embedding
+  call is the one network surface k10r owns (ADR-0003: the embedding
+  space is bound to the data — moving it out is a correctness
+  violation, not a preference; ADR-0034's withdrawal of wasi-http
+  closed the only planned wasm egress path). The bgi form fixed that
+  hole but kept the wrong premise: k10r as an aura-hosted process.
+- **aura PLAN Phase 6.6 (Storage Booth / NestStorage executor) is
+  withdrawn with it** — no aura-hosted executor was ever needed for
+  k10r's storage. k10r always owns its Fjall directory (ADR-0002)
+  regardless of who calls it; "one directory on disk" stands without a
+  carriage split.
+- mem-server is a deliverable, not a deferred shell: three endpoints
+  first (append / fetch_full / append_checkpoint), grown as consumers
+  need.
+- The core's own network surface remains exactly one outbound call:
+  the embedding API. No LLM client, no transport framework.
 - A private config-parsing crate (knus-based, env-merge included) is
   planned once the third consumer need (KDL-shaped CLI) is real; for
   now knus alone covers decode, env reads stay one `std::env::var`
   away.
-- **Storage carriage splits by run form.** CLI/standalone form: k10r
-  owns its Fjall directory (ADR-0002) — "one directory on disk" stands.
-  **Aura-actor form (revised 2026-10-09): k10r stays a STANDALONE
-  PROCESS carried by aura's bgi carrier** — aura registers a booth type
-  with `language: "bgi"` whose spawn spec launches the k10r binary; the
-  fifo line protocol carries the invoke round trip. The original draft
-  compiled the OKM schema into a wasm module with storage moved to aura
-  via a NestStorage frame up-call; that shape is superseded — it had an
-  unresolvable hole: a wasm sandbox holds no filesystem (fine, storage
-  moved) but ALSO no outbound network, and the embedding call is the
-  one network surface k10r owns (ADR-0003: the embedding space is bound
-  to the data — moving it out is a correctness violation, not a
-  preference). ADR-0034's withdrawal of wasi-http closed the only
-  planned wasm egress path. Under bgi everything stays where it
-  belongs: k10r keeps its Fjall directory AND its in-process embedding
-  calls; aura allocates no ns for it and needs no Storage Actor
-  (aura PLAN Phase 6.6's NestStorage executor stays deferred until a
-  consumer actually wants hosted storage). The cost is honest: k10r's
-  data is process-local, so aura booths reach it ONLY through invoke —
-  which is already ADR-0007's contract (access mode 3), not a loss.
