@@ -13,6 +13,15 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   timestamp ordering; session-control primitives (tail / summarize-as-
   append) over the projection; thread = parented sub-channel; topic tag
   index. (ADR-0001, ADR-0002, ADR-0008)
+  - [x] Minimal slice LANDED (2026-10-09): ns 33 messages + ns 34
+    checkpoints, `ChannelStore::append`/`fetch_full`/`append_checkpoint`.
+  - [x] HTTP surface LANDED (2026-10-10): mem-server carries the three
+    channel-log endpoints over axum (`POST /channels/{id}/messages`,
+    `GET /channels/{id}/members/{m}/session`,
+    `POST /channels/{id}/members/{m}/checkpoint`); caller owns the
+    clock (ts_ms/sub ride the request); 4 integration tests against a
+    real server (key echo, checkpoint/increment semantics, channel +
+    member isolation).
 - [ ] Phase 2.5 — View-layer serialization: projection read path
   (checkpoint + increment assembly) with tool-call pruning in the view
   (storage always full; read-side only), enabling the stateless-agent
@@ -42,3 +51,10 @@ Deferred gates:
   key layout stays delta-compatible so multi-agent switchover changes no schema.
 - tantivy: not adopted (see ADR-0003); revisit only if hand-written BM25 hits
   a structural wall, not a tuning one.
+- Backup export endpoint: one HTTP endpoint that exports the okm data
+  as Parquet for direct download (backup = bulk read over the same
+  HTTP boundary, no admin CLI). Deferred until the flat-memory tables
+  are real (Phase 1); format/open questions — table granularity
+  (per-ns vs per-collection), whether to reuse okm's export surface if
+  one lands — recorded here so the endpoint grows with consumers, not
+  ahead of them.
