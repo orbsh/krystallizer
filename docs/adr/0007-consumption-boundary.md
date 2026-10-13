@@ -79,7 +79,7 @@ name that holds it.
   gravity.
 - **The aura-actor access mode is withdrawn (2026-10-10), including
   its 2026-10-09 bgi revision.** k10r is never a standalone process
-  spawned by aura via a `language: "bgi"` booth type, and k10r never
+  spawned by aura via a `language: "induction"` booth type, and k10r never
   runs as an in-aura actor at all. gravity supports booth/cli carrier
   modes; a k10r process hosted by aura has no reason to exist — the
   aura side reaches memory through gravity, which reaches k10r over

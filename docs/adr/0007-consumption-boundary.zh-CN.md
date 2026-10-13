@@ -63,7 +63,7 @@ Rust，无 Python 层。它不是 aura 公民：不注册摊位、不被 aura sp
   定性 `ingest(fact)` KDL 接口面、融合拆分（核心=便宜半步，调用
   方=昂贵半步）——照旧成立，调用方改为 gravity。
 - **aura-actor 接入方式撤销（2026-10-10），连同其 2026-10-09 的 bgi
-  修订一并撤销。** k10r 永远不会作为 `language: "bgi"` 摊位类型被
+  修订一并撤销。** k10r 永远不会作为 `language: "induction"` 摊位类型被
   aura spawn 的独立进程，也永远不以 aura 内 actor 身份运行。
   gravity 支持 booth/cli 等载体模式；aura 托管的 k10r 进程没有存在
   必要——aura 侧经 gravity 到达记忆，gravity 经 HTTP 到达 k10r。
