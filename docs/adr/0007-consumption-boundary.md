@@ -106,3 +106,15 @@ name that holds it.
   planned once the third consumer need (KDL-shaped CLI) is real; for
   now knus alone covers decode, env reads stay one `std::env::var`
   away.
+
+## Update (2026-10-14): the core's outbound network surface is empty
+
+ADR-0003's embedding question is decided as a **built-in local model**
+(ADR-0003 Update 2026-10-14), so the one network call this ADR conceded
+("the only network call in the core", "exactly one outbound call: the
+embedding API") no longer exists. Nothing else moves: embedding still
+belongs to krystallizer — the vector space is bound to data correctness
+and the model stays locked with the data — and callers still never supply
+vectors. The consequence is a strictly narrower boundary, not a new
+freedom: no LLM client, no transport framework, and now no embedding API
+either.

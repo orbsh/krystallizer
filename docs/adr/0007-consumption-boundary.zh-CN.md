@@ -85,3 +85,12 @@ Rust，无 Python 层。它不是 aura 公民：不注册摊位、不被 aura sp
 - 私有配置解析 crate（基于 knus，含 env 合并）在第三个消费需求
   （KDL 形态的 CLI）真实落地后再建；当下 knus 单独覆盖 decode，env
   读取离 `std::env::var` 只有一行。
+
+## Update（2026-10-14）：核心的外向网络面已经空了
+
+ADR-0003 的 embedding 问题定案为**内置本地模型**（ADR-0003 Update
+2026-10-14），于是本文档让出的那一次网络调用（"核心自身的网络面仍恰好
+一个出站调用：embedding API"）不再存在。其余不动：embedding 仍归
+krystallizer——向量空间绑定数据正确性，模型与数据锁定——调用方仍从不
+提供向量。后果是边界严格变窄，不是新增自由：没有 LLM client、没有传输
+框架，现在也没有 embedding API。

@@ -64,8 +64,11 @@ pub struct MemoryRow {
 - No `#[kv_index]` access methods yet — retrieval is the Phase 0
   brute-force substring scan (`scan_keys` + filter). This is the
   declared bring-up posture (ADR-0003), not the end state; Phase 1
-  adds BM25 inverted index (a function index over tokens) + arroy
-  vectors + weight metadata (ADR-0005).
+  adds the built-in local embedding model (vectors as `Vector<f32>`
+  frames, searched from an in-memory table) + name/alias point lookup
+  + weight metadata (ADR-0005). The lexical branch (jieba / inverted
+  index / BM25 / RRF / arroy) is withdrawn — ADR-0003 Update
+  2026-10-14.
 
 ### Identity generation
 
@@ -82,9 +85,10 @@ Mandatory-per-OKM discipline: every entity's queries must be declared
 access methods, not scans. Current standing:
 
 - Flat memory: none declared (brute-force scan is the Phase 0 posture).
-  Phase 1 commitments: user-prefix scan (key prefix), token function
-  index (BM25 postings), weight secondary index `W:{weight}:{edge_id}`
-  (ADR-0005).
+  Phase 1 commitments: user-prefix scan (key prefix), name/alias point
+  lookup (entity identity), embedding vectors (`Vector<f32>` frames +
+  an in-memory search table), weight secondary index
+  `W:{weight}:{edge_id}` (ADR-0005).
 - Session messages: prefix scan by `[user_id][session_id]` with `seq`
   in the key tail — replay/range reads are one prefix scan (ADR-0002).
 - Fact graph: `edge:{src}:{label}:{dst}` + EdgeTable bidirectional

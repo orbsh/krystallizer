@@ -61,8 +61,10 @@ pub struct MemoryRow {
   版本默认 1。
 - 尚无 `#[kv_index]` 访问方法——检索是 Phase 0 的暴力 substring 扫描
   （`scan_keys` + 过滤）。这是声明的 bring-up 姿态（ADR-0003），非终
-  态；Phase 1 增加 BM25 倒排索引（token 上的 function index）+ arroy
-  向量 + weight 元数据（ADR-0005）。
+  态；Phase 1 增加内置本地 embedding 模型（向量存为 `Vector<f32>`
+  帧，从内存表检索）+ 名/别名点查 + weight 元数据（ADR-0005）。词法
+  分支（jieba / 倒排索引 / BM25 / RRF / arroy）已撤销——ADR-0003
+  Update 2026-10-14。
 
 ### 身份生成
 
@@ -76,8 +78,9 @@ id），从其之后继续。后果：id 唯一但不按 user 连续，计数器
 OKM 强制纪律：每个实体的查询必须是声明的访问方法，不是扫描。现状：
 
 - Flat memory：未声明（暴力扫描是 Phase 0 姿态）。Phase 1 承诺：
-  user 前缀扫描（key 前缀）、token function index（BM25 postings）、
-  weight 二级索引 `W:{weight}:{edge_id}`（ADR-0005）。
+  user 前缀扫描（key 前缀）、名/别名点查（实体身份）、embedding 向量
+  （`Vector<f32>` 帧 + 内存检索表）、weight 二级索引
+  `W:{weight}:{edge_id}`（ADR-0005）。
 - Session 消息：`[user_id][session_id]` 前缀扫描，`seq` 在 key 尾
   ——回放/范围读就是一次前缀扫描（ADR-0002）。
 - Fact graph：`edge:{src}:{label}:{dst}` + EdgeTable 双向邻接

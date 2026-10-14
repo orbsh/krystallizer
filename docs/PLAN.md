@@ -3,11 +3,11 @@
 Phases reference ADRs; design content lives in the ADRs, never here.
 
 - [x] Phase 0 — Skeleton: mem-core crate + Fjall engine + PyO3 binding channel smoke test (one store / one search). (ADR-0002)
-- [ ] Phase 1 — Flat memory parity: store / search / forget / list / stats semantics on Fjall; hybrid retrieval = arroy + BM25 + RRF, embeddings computed in-process (internal detail, model locked). PG exit gate: retrieval-quality comparison (recall not worse on a fixed query set). (ADR-0002, ADR-0003, ADR-0007)
+- [ ] Phase 1 — Flat memory parity: store / search / forget / list / stats semantics on Fjall; retrieval = built-in local embedding model (in-process, no API, model locked with the data) landing into graph traversal, plus an exact name/alias point lookup as the second entrance. PG exit gate: end-to-end recall comparison on a fixed query set. (ADR-0002, ADR-0003 + Update 2026-10-14, ADR-0007)
   - [x] 1a. Semantics: store / search (user-prefix scan) / forget / list / stats; config loading (`config/krystallizer.kdl`, knus, env-resolved secrets)
-  - [ ] 1b. BM25: jieba tokenization, inverted index as a multi-value function index, BM25 scoring
-  - [ ] 1c. arroy: vectors written/queried in-process via the embedding API
-  - [ ] 1d. RRF fusion (k=60) + PG exit gate (recall comparison on a fixed query set)
+  - [ ] 1b. Built-in embedder: local small model loaded in-process (no endpoint, no key), embeddings written as `Vector<f32>` frames; name/alias → node id point lookup
+  - [ ] 1c. In-memory vector search: per-ns float table loaded from okm, brute-force inner-product Top-K (ANN re-opened only when a measured corpus crosses the threshold)
+  - [ ] 1d. PG exit gate: end-to-end recall comparison on a fixed query set (landing confidence floor + a legal "nothing landed" outcome)
 - [ ] Phase 2 — Channel log & agent projection: messages / members /
   cursors / checkpoints (per member) tables with gravity-assigned
   timestamp ordering; session-control primitives (tail / summarize-as-
@@ -46,11 +46,9 @@ Deferred gates:
   form (ADR-0007 as revised 2026-10-10); it graduates from deferred to
   deliverable with the channel-log endpoints (append / fetch_full /
   append_checkpoint) first, grown as consumers need; core is
-  transport-free (embedding excepted) so the server is additive.
+  transport-free so the server is additive.
 - Delta-append weight counts: single-process serial start uses direct RMW;
   key layout stays delta-compatible so multi-agent switchover changes no schema.
-- tantivy: not adopted (see ADR-0003); revisit only if hand-written BM25 hits
-  a structural wall, not a tuning one.
 - Backup export endpoint: one HTTP endpoint that exports the okm data
   as Parquet for direct download (backup = bulk read over the same
   HTTP boundary, no admin CLI). Deferred until the flat-memory tables

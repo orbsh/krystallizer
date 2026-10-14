@@ -49,7 +49,11 @@ async fn append_returns_full_key() {
         .unwrap();
     assert_eq!(
         key,
-        MessageKeyDto { channel_id: 7, ts_ms: 1000, sub: 1 },
+        MessageKeyDto {
+            channel_id: 7,
+            ts_ms: 1000,
+            sub: 1
+        },
         "the key must echo channel/ts/sub verbatim"
     );
 }
@@ -70,7 +74,13 @@ async fn append_fetch_checkpoint_flow() {
     ] {
         let status = client
             .post(format!("{base}/channels/7/messages"))
-            .json(&AppendMessage { ts_ms: ts, sub: 1, role: r, kind: 0, content: text.into() })
+            .json(&AppendMessage {
+                ts_ms: ts,
+                sub: 1,
+                role: r,
+                kind: 0,
+                content: text.into(),
+            })
             .send()
             .await
             .unwrap()
@@ -100,7 +110,10 @@ async fn append_fetch_checkpoint_flow() {
     // keeps only strictly-after entries and the summary rides along.
     let status = client
         .post(format!("{base}/channels/7/members/1/checkpoint"))
-        .json(&AppendCheckpoint { coverage_ts: 1000, summary: "greeting done".into() })
+        .json(&AppendCheckpoint {
+            coverage_ts: 1000,
+            summary: "greeting done".into(),
+        })
         .send()
         .await
         .unwrap()
@@ -174,7 +187,10 @@ async fn member_checkpoints_are_independent() {
 
     client
         .post(format!("{base}/channels/9/members/1/checkpoint"))
-        .json(&AppendCheckpoint { coverage_ts: 10, summary: "m1".into() })
+        .json(&AppendCheckpoint {
+            coverage_ts: 10,
+            summary: "m1".into(),
+        })
         .send()
         .await
         .unwrap();

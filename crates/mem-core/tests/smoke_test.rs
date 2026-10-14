@@ -68,7 +68,10 @@ fn forget_list_stats() {
 
     // list: user-scoped, insert order
     let listed = mem.list(101);
-    assert_eq!(listed, vec![(id1, "first memory".into()), (id2, "second memory".into())]);
+    assert_eq!(
+        listed,
+        vec![(id1, "first memory".into()), (id2, "second memory".into())]
+    );
     assert_eq!(mem.list(303), Vec::new());
 
     // stats: per-user counts + total
@@ -80,7 +83,10 @@ fn forget_list_stats() {
     // forget: removes exactly one row, other users untouched
     assert!(mem.forget(101, id1));
     assert!(!mem.forget(101, id1), "second forget finds nothing");
-    assert!(!mem.forget(303, id1), "another user cannot forget someone else's row");
+    assert!(
+        !mem.forget(303, id1),
+        "another user cannot forget someone else's row"
+    );
     assert_eq!(mem.list(101), vec![(id2, "second memory".into())]);
     assert_eq!(mem.stats().total, 2);
 }

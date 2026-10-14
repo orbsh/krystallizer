@@ -18,7 +18,7 @@
 //! layout makes byte order == time order: a prefix scan over
 //! `channel_id` returns the log in conversation order, no sort step.
 
-use okm_core::{FjallStore, KeyEncode, Document, DocumentEncode, VirtualStorage};
+use okm_core::{Document, DocumentEncode, FjallStore, KeyEncode, VirtualStorage};
 
 /// Append-only message log (ns 33 — the channel-log band, next to flat
 /// memory's 32; one entity class = one ns, per MODELING).
@@ -120,7 +120,11 @@ impl ChannelStore {
         kind: u8,
         content: &str,
     ) -> MessageKey {
-        let key = MessageKey { channel_id, ts_ms, sub };
+        let key = MessageKey {
+            channel_id,
+            ts_ms,
+            sub,
+        };
         let row = MessageRow {
             role,
             kind,
@@ -138,12 +142,12 @@ impl ChannelStore {
     /// read, never the whole table (same discipline as MemoryStore's
     /// user-prefix scan).
     pub fn fetch_full(&self, channel_id: u64, member_id: u64) -> SessionView {
-        let checkpoint = self
-            .checkpoints
-            .get(&CheckpointKey { channel_id, member_id });
+        let checkpoint = self.checkpoints.get(&CheckpointKey {
+            channel_id,
+            member_id,
+        });
         let coverage_ts = checkpoint.as_ref().map_or(0, |c| c.coverage_ts);
-        let increment = self
-            .messages_after(channel_id, coverage_ts);
+        let increment = self.messages_after(channel_id, coverage_ts);
         SessionView {
             coverage_ts,
             summary: checkpoint.map(|c| c.summary),
@@ -162,7 +166,10 @@ impl ChannelStore {
         summary: &str,
     ) {
         self.checkpoints.put(
-            &CheckpointKey { channel_id, member_id },
+            &CheckpointKey {
+                channel_id,
+                member_id,
+            },
             &CheckpointRow {
                 coverage_ts,
                 summary: summary.to_string(),
@@ -179,7 +186,11 @@ impl ChannelStore {
         let mut prefix = Vec::with_capacity(4 + 8);
         prefix.extend_from_slice(MessageRow::NS_PREFIX);
         prefix.extend_from_slice(&okm_core::index::PRIMARY_SLOT.to_be_bytes());
-        let probe = MessageKey { channel_id, ts_ms: 0, sub: 0 };
+        let probe = MessageKey {
+            channel_id,
+            ts_ms: 0,
+            sub: 0,
+        };
         probe.encode_prefix_named(&mut prefix, &["channel_id"]);
         self.messages
             .store()

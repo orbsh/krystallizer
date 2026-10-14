@@ -63,3 +63,28 @@ the Python layer?
 - If a future non-Python consumer appears (mem-server), it re-implements
   the orchestration layer or speaks to a Python sidecar; the core API does
   not change.
+
+## Update (2026-10-14): the graph's intake criterion; network-call note
+
+One criterion joins the caller-side set (specificity × generality):
+**a memory earns a graph node when it can be coded — it has a canonical
+name and at least one typable relation.** The reason is an argument, not a
+taste: the code domain is where graph retrieval demonstrably works, and
+what code hands over for free is exactly (a) one canonical identity per
+thing and (b) typed, directed relations (wiki graph-memory, "Why Graphs
+Work: the Existence Proof in Code"). A memory with neither — chat chatter,
+unanchored impressions — enters the graph only as weight dilution: nothing
+can link to it by identity and its relations cannot be typed. What it does
+have, semantic similarity, belongs to the entrance layer, not the graph.
+
+Consequences: the graph's cost condition is *construction* — identity
+(canonical name + alias entries) and relation typing are where the work
+sits, so ingestion that skips them produces isolated nodes rather than
+bad retrieval. This gate restricts what earns a node, never what may be
+stored: flat memory keeps everything, and the intake decision itself stays
+caller-side (it is a judging criterion, like specificity × generality).
+
+Network-call note: ADR-0003's embedding question is decided as a built-in
+local model (ADR-0003 Update 2026-10-14), so the Consequences bullet below
+about "the only network call in the core is the embedding API" no longer
+holds — the core's outbound surface is now empty.

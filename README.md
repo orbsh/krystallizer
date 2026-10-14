@@ -1,6 +1,6 @@
 # Krystallizer — Agent Memory Core
 
-Graph-native agent memory: session control, atomic-fact graph, hybrid retrieval — as an embedded Rust core with Python bindings.
+Graph-native agent memory: session control, atomic-fact graph, vector-landing retrieval — as an embedded Rust core with Python bindings.
 
 ## What it is
 
@@ -21,8 +21,10 @@ and [图谱化记忆](https://github.com/orbsh/wiki/blob/main/graph-memory.md):
   clustering as views, weight system (read-write quadrants,
   `tool_invoke_count`), fusion on write (in-domain id lookup / out-of-domain
   embedding convergence).
-- **Self-built retrieval** — arroy (HNSW) vectors + hand-written BM25 inverted
-  index + RRF fusion. Full-chain control over tokenization and scoring.
+- **Built-in retrieval** — a small local embedding model runs in-process
+  (no API, no key; the vector space is locked with the data), landing into
+  graph traversal alongside an exact name/alias lookup and weight-ordered
+  Top-K. No lexical index, no fusion stage, no second storage engine.
 
 ## Crates
 
@@ -30,7 +32,7 @@ and [图谱化记忆](https://github.com/orbsh/wiki/blob/main/graph-memory.md):
 |---|---|
 | `mem-core` | Storage + retrieval core. Zero LLM dependency, zero transport dependency. |
 | `mem-ffi` | PyO3 bindings (maturin). |
-| `mem-server` | axum service shell (deferred until multi-consumer sharing is a real need). |
+| `mem-server` | axum HTTP surface — the single cross-process form (ADR-0007 as revised; three channel-log endpoints landed 2026-10-10). |
 
 Storage: Fjall, with schemas declared via OKM derive macros (compile-time key
 encoding, hex stability tests).

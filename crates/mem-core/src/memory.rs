@@ -3,7 +3,7 @@
 //! in Phase 1). Proves the OKM DocumentEncode -> Table -> FjallStore channel
 //! end to end.
 
-use okm_core::{FjallStore, KeyEncode, Document, DocumentEncode, VirtualStorage};
+use okm_core::{Document, DocumentEncode, FjallStore, KeyEncode, VirtualStorage};
 
 /// Flat memory identity: user-scoped surrogate id.
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -93,9 +93,7 @@ impl MemoryStore {
                 full.extend_from_slice(sfx);
                 let key = MemoryKey::decode(&full[4..]);
                 let row = self.table.get(&key)?;
-                row.text
-                    .contains(query)
-                    .then(|| (key.id, row.text.clone()))
+                row.text.contains(query).then(|| (key.id, row.text.clone()))
             })
             .collect()
     }

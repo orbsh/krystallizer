@@ -51,9 +51,11 @@ macros.**
   them into graph facts would fabricate relations. They load into the Phase-1
   flat table as-is; only new knowledge goes through extraction. Old data
   keeps its shape.
-- **Quality gate**: Phase 1 is not "done" until hybrid retrieval on the new
+- **Quality gate**: Phase 1 is not "done" until retrieval on the new
   core matches or beats PG retrieval on a fixed query set (recall-oriented;
-  exact ordering may differ).
+  exact ordering may differ). Restated 2026-10-14 (ADR-0003 Update): the
+  comparison is end-to-end retrieval quality, not a per-branch recall
+  comparison against pgvector + pdb.bm25 + RRF.
 
 ## Consequences
 

@@ -83,11 +83,12 @@ impl KrystallizerConfig {
             path: path.to_path_buf(),
             source,
         })?;
-        knus::parse::<KrystallizerConfig>(path.to_string_lossy().as_ref(), &text)
-            .map_err(|report| ConfigError::Parse {
+        knus::parse::<KrystallizerConfig>(path.to_string_lossy().as_ref(), &text).map_err(
+            |report| ConfigError::Parse {
                 path: path.to_path_buf(),
                 report: report.into(),
-            })
+            },
+        )
     }
 
     /// Resolve the embedding API key from the environment at call
@@ -106,8 +107,7 @@ mod tests {
     use super::*;
 
     fn parse(text: &str) -> Result<KrystallizerConfig, miette::Report> {
-        knus::parse::<KrystallizerConfig>("test.kdl", text)
-            .map_err(miette::Report::new)
+        knus::parse::<KrystallizerConfig>("test.kdl", text).map_err(miette::Report::new)
     }
 
     const FULL: &str = r#"
@@ -180,7 +180,10 @@ embedding {
         };
         let err = cfg.embedding_api_key().unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("KRYSTALLIZER_TEST_UNSET_KEY_VAR"), "names the var: {msg}");
+        assert!(
+            msg.contains("KRYSTALLIZER_TEST_UNSET_KEY_VAR"),
+            "names the var: {msg}"
+        );
 
         // Empty counts as missing too.
         std::env::set_var("KRYSTALLIZER_TEST_EMPTY_KEY_VAR", "");

@@ -23,7 +23,11 @@ fn open() -> (tempfile::TempDir, ChannelStore) {
 /// Changing the layout breaks this test first, NOT stored data.
 #[test]
 fn key_layout_is_hex_locked() {
-    let key = mem_core::MessageKey { channel_id: 7, ts_ms: 1_700_000_000_123, sub: 5 };
+    let key = mem_core::MessageKey {
+        channel_id: 7,
+        ts_ms: 1_700_000_000_123,
+        sub: 5,
+    };
     let buf = key.encode();
     assert_eq!(buf.len(), 8 + 8 + 2, "channel 8 + ts 8 + sub 2");
     assert_eq!(&buf[0..8], &7u64.to_be_bytes(), "channel_id");
@@ -49,7 +53,11 @@ fn fetch_returns_entries_in_time_order() {
     let view = store.fetch_full(CH, DEFAULT_MEMBER);
     assert_eq!(view.coverage_ts, 0, "no checkpoint yet");
     assert!(view.summary.is_none());
-    let texts: Vec<&str> = view.increment.iter().map(|(_, r)| r.content.as_str()).collect();
+    let texts: Vec<&str> = view
+        .increment
+        .iter()
+        .map(|(_, r)| r.content.as_str())
+        .collect();
     assert_eq!(
         texts,
         vec!["earlier ms", "first", "same-ms tiebreak", "last"],
@@ -93,9 +101,20 @@ fn checkpoint_coverage_splits_the_projection() {
     store.append_checkpoint(CH, DEFAULT_MEMBER, 20, "m1 and m2 were about testing");
     let view = store.fetch_full(CH, DEFAULT_MEMBER);
     assert_eq!(view.coverage_ts, 20);
-    assert_eq!(view.summary.as_deref(), Some("m1 and m2 were about testing"));
-    let texts: Vec<&str> = view.increment.iter().map(|(_, r)| r.content.as_str()).collect();
-    assert_eq!(texts, vec!["m3"], "strictly after coverage — m2 itself is summarized");
+    assert_eq!(
+        view.summary.as_deref(),
+        Some("m1 and m2 were about testing")
+    );
+    let texts: Vec<&str> = view
+        .increment
+        .iter()
+        .map(|(_, r)| r.content.as_str())
+        .collect();
+    assert_eq!(
+        texts,
+        vec!["m3"],
+        "strictly after coverage — m2 itself is summarized"
+    );
 
     // Advancing coverage overwrites the same checkpoint row (and the
     // summary): m3 becomes covered too, increment drains.

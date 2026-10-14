@@ -115,7 +115,11 @@ pub struct MessageRowDto {
 
 impl From<MessageRow> for MessageRowDto {
     fn from(r: MessageRow) -> Self {
-        Self { role: r.role, kind: r.kind, content: r.content }
+        Self {
+            role: r.role,
+            kind: r.kind,
+            content: r.content,
+        }
     }
 }
 
@@ -135,7 +139,10 @@ impl From<SessionView> for SessionDto {
             increment: v
                 .increment
                 .into_iter()
-                .map(|(key, row)| IncrementEntry { key: key.into(), row: row.into() })
+                .map(|(key, row)| IncrementEntry {
+                    key: key.into(),
+                    row: row.into(),
+                })
                 .collect(),
         }
     }

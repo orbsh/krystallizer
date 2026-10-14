@@ -10,7 +10,7 @@ pub mod config;
 pub mod memory;
 
 pub use channel::{
-    role, kind, ChannelStore, CheckpointKey, CheckpointRow, MessageKey, MessageRow, SessionView,
+    kind, role, ChannelStore, CheckpointKey, CheckpointRow, MessageKey, MessageRow, SessionView,
     DEFAULT_MEMBER,
 };
 pub use config::{ConfigError, EmbeddingConfig, KrystallizerConfig};

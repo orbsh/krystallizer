@@ -15,7 +15,6 @@ license = "MIT"
 okm-core = { git = "https://github.com/orbsh/okm", branch = "main", features = ["fjall"] }
 okm-derive = { git = "https://github.com/orbsh/okm", branch = "main" }
 fjall = "3"
-arroy = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 kdl = "4"
