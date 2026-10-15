@@ -3,8 +3,9 @@
 //! in-process mem-core linking is a local deployment detail, not a
 //! second access mode).
 //!
-//! Endpoints mirror `ChannelStore`'s three primitives exactly; wire
-//! types restate the store's rows for serde (the core stays wire-free).
+//! Endpoints mirror `ChannelStore`'s primitives (channel log) and
+//! `CodeStore`'s (the code store) exactly; wire types restate the
+//! stores' rows for serde (the core stays wire-free).
 //! Ordering discipline carries over: the CALLER owns the clock —
 //! `ts_ms` and `sub` ride the request (ADR-0008 §3, gravity's clock is
 //! the order authority; the server never assigns).
@@ -17,6 +18,7 @@ use axum::{
     Json, Router,
 };
 use mem_core::channel::{ChannelStore, MessageKey, MessageRow, SessionView};
+use mem_core::code::{CodeRow, CodeStore};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -28,13 +30,19 @@ use std::sync::Arc;
 /// of adding a sync layer to the core.
 pub struct MemState {
     store: tokio::sync::Mutex<ChannelStore>,
+    code: tokio::sync::Mutex<CodeStore>,
 }
 
-/// Open the keyspace at `path` and build the router.
+/// Open the database at `path` and build the router.
+///
+/// One database per process (one directory, one lock file): mem-core's
+/// service assembly attaches every table group to it, so mem-server holds
+/// one handle and one lock per group.
 pub fn open(path: PathBuf) -> Result<Router, fjall::Error> {
-    let store = ChannelStore::open(&path)?;
+    let stores = mem_core::open_service(&path)?;
     let state = Arc::new(MemState {
-        store: tokio::sync::Mutex::new(store),
+        store: tokio::sync::Mutex::new(stores.channels),
+        code: tokio::sync::Mutex::new(stores.code),
     });
     Ok(Router::new()
         .route("/channels/{channel_id}/messages", post(append_message))
@@ -46,6 +54,8 @@ pub fn open(path: PathBuf) -> Result<Router, fjall::Error> {
             "/channels/{channel_id}/members/{member_id}/checkpoint",
             post(append_checkpoint),
         )
+        .route("/code", post(put_code).get(list_code))
+        .route("/code/{code_id}", get(fetch_code))
         .with_state(state))
 }
 
@@ -179,7 +189,108 @@ async fn append_checkpoint(
     StatusCode::NO_CONTENT
 }
 
-/// Errors the shell itself can produce (the store's three primitives
+// ---- the code store (gravity ADR-0001/0003) --------------------------
+//
+// The delivered script's home: gravity writes a script once (the
+// authoring act) and re-reads it on every call, so the read goes to the
+// row's identity — no name, no content hash (code identity = the id).
+
+/// Request body of `POST /code` — one piece of code: the language it is
+/// written in, what it is (description, parameter definition) and its
+/// source. The language is required data, never defaulted; the
+/// description and the parameter definition are what a skill-to-code
+/// link is decided from without reading the source.
+#[derive(Deserialize, Serialize)]
+pub struct PutCode {
+    pub language: String,
+    pub description: String,
+    /// Parameter definition as a JSON document in TEXT (the store does
+    /// not parse it; the caller that delivered the code owns its shape).
+    pub parameters: String,
+    pub source: String,
+}
+
+/// The assigned identity, returned by `POST /code` (the caller's record).
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct CodeIdDto {
+    pub code_id: u64,
+}
+
+/// Wire restatement of `CodeRow` (the core's row has no serde).
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct CodeRowDto {
+    pub language: String,
+    pub description: String,
+    pub parameters: String,
+    pub source: String,
+}
+
+impl From<CodeRow> for CodeRowDto {
+    fn from(r: CodeRow) -> Self {
+        Self {
+            language: r.language,
+            description: r.description,
+            parameters: r.parameters,
+            source: r.source,
+        }
+    }
+}
+
+/// One entry of the pool read: identity, language and description — the
+/// shape a linker or resolver decides from. NO source and no parameter
+/// definition (a pool read must not carry KB-scale payloads).
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct CodeCandidateDto {
+    pub code_id: u64,
+    pub language: String,
+    pub description: String,
+}
+
+/// `POST /code` — store one piece of code; the store assigns the id.
+async fn put_code(
+    State(state): State<Arc<MemState>>,
+    Json(body): Json<PutCode>,
+) -> Json<CodeIdDto> {
+    let mut code = state.code.lock().await;
+    Json(CodeIdDto {
+        code_id: code.put(
+            &body.language,
+            &body.description,
+            &body.parameters,
+            &body.source,
+        ),
+    })
+}
+
+/// `GET /code/{code_id}` — the script gravity reads at call time.
+/// Unknown id = 404 (the caller turns it into an error value for the
+/// model; the store has no opinion).
+async fn fetch_code(
+    State(state): State<Arc<MemState>>,
+    Path(code_id): Path<u64>,
+) -> Result<Json<CodeRowDto>, StatusCode> {
+    let code = state.code.lock().await;
+    code.get(code_id)
+        .map(|r| Json(r.into()))
+        .ok_or(StatusCode::NOT_FOUND)
+}
+
+/// `GET /code` — what the store holds, in id order.
+async fn list_code(State(state): State<Arc<MemState>>) -> Json<Vec<CodeCandidateDto>> {
+    let code = state.code.lock().await;
+    Json(
+        code.list()
+            .into_iter()
+            .map(|(code_id, language, description)| CodeCandidateDto {
+                code_id,
+                language,
+                description,
+            })
+            .collect(),
+    )
+}
+
+/// Errors the shell itself can produce (the stores' primitives
 /// are infallible; only engine-level failures bubble). Message passed
 /// through verbatim — the original error text never stops here.
 #[derive(Serialize)]

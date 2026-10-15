@@ -36,6 +36,31 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   flat-memory category (extraction-routed, weight-governed); interrupt
   trigger (seconds-scale passive window) with silent outcomes in the
   decision log. (ADR-0009)
+- [ ] Phase 2.8 — Code store: the delivered script's home, and the one
+  table an executor's call reads (gravity ADR-0001/0003 — the script
+  travels as a call argument, so identity is a bare surrogate id: no
+  name, no content hash). A row is a reusable piece of code, NOT a
+  skill: it carries the language, a description and the parameter
+  definition, so a skill-to-code link is decided from the row instead of
+  reading every source — while what a skill IS stays with the graph (a
+  structured node: preconditions / steps / experience / verification).
+  Nothing defaults the language. gravity is the only client (the node
+  never talks to krystallizer).
+  LANDED 2026-10-15 (bring-up slice): ns 35 `CodeKey`/`CodeRow`
+  (`language`, `description`, `parameters`, `source`) + `CodeStore`
+  (`put` / `get` / `list`); mem-server `POST /code` (the store assigns
+  the id), `GET /code/{code_id}` (404 on an unknown id), `GET /code`
+  (identity + language + description, no source); one Fjall database per
+  process with one keyspace per table group (`service::open_service`
+  attaches both groups with `FjallStore::from_db` — Fjall locks the
+  directory, so a second `open` on it fails), leaving the server one
+  handle and one lock per group. k10r stays what ADR-0007 made it: a
+  standalone service with its own storage, reached only over HTTP.
+  Gates: mem-core 4/0 (layout lock, round trip, pool shape, id recovery
+  across reopen), mem-server 4/0 (round trip, 404, pool shape, code +
+  channel coexistence in one database), clippy 0, fmt clean. Owed: this
+  repo's own ADR for the store, and `list()` is the declared bring-up
+  posture for a resolver's pool read — the graph's retrieval replaces it.
 - [ ] Phase 3 — Atomic-fact graph: fact node/edge tables, KDL ingestion, write-time fusion (in-domain id / out-of-domain embedding convergence + small-candidate LLM decision — the LLM decision is gravity's, per ADR-0007's boundary), weight system (delta counts, read-write quadrants, tool_invoke_count, W: index). (ADR-0004, ADR-0005, ADR-0007)
 - [ ] Phase 4 — Clustered retrieval: entity-anchored / temporal / causal-chain views; progressive loading (Top-K by weight). (ADR-0005)
 - [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), SKILL topological four-part nodes, Aura Actor nodes. (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.)

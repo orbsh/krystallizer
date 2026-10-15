@@ -1,0 +1,134 @@
+//! The code store (gravity ADR-0001/0003): the delivered script's home.
+//!
+//! One entity class = one ns; a code row is identity + what the code IS
+//! (language, description, parameter definition) + its source. Identity
+//! is a bare surrogate id — no name, no content hash: the caller
+//! re-reads the row on every call and the source travels as a call
+//! argument, so there is no cache to stale (gravity ADR-0003, "Code
+//! identity").
+//!
+//! **A row is a reusable piece of code, not a skill.** A login script is
+//! written once, and many skills carry a step pointing at it. That is why
+//! the row carries a description and the parameter definition: whoever
+//! links a skill to this code — or reads the graph afterwards — decides
+//! from the row, instead of reading every script's source to find out
+//! what it takes. Neither field is an LLM search surface: what a skill IS
+//! lives in the graph (a structured node: preconditions / steps /
+//! experience / verification).
+//!
+//! The language is DATA ON THE ROW — a script is data, and data has a
+//! language. Nothing defaults it; the caller routes the call to the mount
+//! serving that language, and a language with no mount is the caller's
+//! error value, never a fallback here.
+//!
+//! gravity is the only client (ADR-0001: the node never talks to
+//! krystallizer; the byte path is gravity → control path → node).
+
+use okm_core::{Document, DocumentEncode, FjallStore, KeyEncode};
+
+/// The keyspace this table group lives in. `crate::service` attaches it
+/// to the process's one database; this store's `open` uses the same name
+/// for the single-group form.
+pub const KEYSPACE: &str = "code";
+
+/// Code identity: a surrogate id, nothing else (no name, no hash —
+/// gravity ADR-0003).
+#[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
+#[ok_ns(35)]
+pub struct CodeKey {
+    pub code_id: u64,
+}
+
+/// One piece of deliverable code: what it is, and its source.
+///
+/// `parameters` is the parameter definition, carried as a JSON document
+/// in TEXT — the store does not parse it (storage stores, the reader
+/// interprets), and the caller that delivered the code owns its shape.
+/// `description` is the reference a skill-to-code link is made from.
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(CodeKey)]
+#[ok_ns(35)]
+pub struct CodeRow {
+    pub language: String,
+    pub description: String,
+    pub parameters: String,
+    pub source: String,
+}
+
+/// Assembly point: the code table on a store handle.
+pub struct CodeStore {
+    table: okm_core::Collection<FjallStore, CodeKey, CodeRow>,
+    next_id: u64,
+}
+
+impl CodeStore {
+    /// Open (or create) this group's keyspace at `path` and attach the
+    /// code table — the standalone form (tests, single-table tools). A
+    /// process serving several groups uses `crate::service::open_service`
+    /// (one database, one keyspace per group), or attaches both groups to
+    /// a handle it opened with [`CodeStore::wrap`].
+    pub fn open(path: &std::path::Path) -> Result<Self, fjall::Error> {
+        Ok(Self::wrap(FjallStore::open(path, KEYSPACE)?))
+    }
+
+    /// Attach the code table to an already-open store handle.
+    pub fn wrap(store: FjallStore) -> Self {
+        let table = <CodeRow as Document>::collection(store);
+        // Surrogate ids are assigned here, so a fresh process must not
+        // hand out an id that collides with (and silently overwrites) a
+        // stored row. `code_id` is the whole key: the last key in scan
+        // order carries the highest id. Empty table → counter starts 1.
+        let next_id = table
+            .scan_keys()
+            .last()
+            .map_or(1, |k| k.code_id.saturating_add(1));
+        Self { table, next_id }
+    }
+
+    /// Store one piece of code; returns the assigned id. Every field is
+    /// stored verbatim — the store does not police them (storage stores;
+    /// the caller routes, parses and decides).
+    pub fn put(
+        &mut self,
+        language: &str,
+        description: &str,
+        parameters: &str,
+        source: &str,
+    ) -> u64 {
+        let code_id = self.next_id;
+        self.next_id += 1;
+        self.table.put(
+            &CodeKey { code_id },
+            &CodeRow {
+                language: language.to_string(),
+                description: description.to_string(),
+                parameters: parameters.to_string(),
+                source: source.to_string(),
+            },
+        );
+        code_id
+    }
+
+    /// One piece of code by id — the read gravity makes at call time.
+    /// Unknown id = absent, not an error (the caller's error value, its
+    /// choice).
+    pub fn get(&self, code_id: u64) -> Option<CodeRow> {
+        self.table.get(&CodeKey { code_id })
+    }
+
+    /// What the store holds, in id order: `(code_id, language,
+    /// description)` — enough to decide a skill-to-code link or pick a
+    /// step WITHOUT reading sources. A whole-table scan, and the declared
+    /// bring-up posture (the graph's retrieval replaces this answer,
+    /// ADR-0003/0018); source and parameter definition stay out of it (a
+    /// pool read must not carry KB-scale payloads).
+    pub fn list(&self) -> Vec<(u64, String, String)> {
+        let mut out = Vec::new();
+        for key in self.table.scan_keys() {
+            if let Some(row) = self.table.get(&key) {
+                out.push((key.code_id, row.language, row.description));
+            }
+        }
+        out
+    }
+}

@@ -17,6 +17,7 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
 | 32  | Flat memory       | 已实现（Phase 0）        | ADR-0002 |
 | 33  | Channel 消息日志   | 已实现（最小切片，2026-10-09） | ADR-0008 |
 | 34  | Checkpoint（每成员）| 已实现（最小切片，2026-10-09） | ADR-0008 |
+| 35  | Code（交付的脚本） | 已实现（bring-up 切片，2026-10-15） | gravity ADR-0001/0003 |
 | —   | Session 消息      | 被 channel log 取代      | ADR-0008 |
 | —   | Tasks / task_links DAG | 已声明（ADR-0002）  | ADR-0002 |
 | —   | Fact graph 边     | 已声明（ADR-0002）       | ADR-0002 |
@@ -129,3 +130,68 @@ coverage_ts, summary)`。
 
 尚未落地（后续切片）：thread、topic tag、members、读游标、压缩策略
 引擎（ADR-0008/0009）。
+
+## Code 存储（ns 35）
+
+交付脚本的家——执行方的调用会读的那唯一一张表。声明在
+`crates/mem-core/src/code.rs`；设计在 gravity（ADR-0001/0003：节点 mount
+读的脚本以调用参数形态走），本仓为这张表自己的 ADR 仍欠。
+
+### Key：`CodeKey`（`KeyEncode`）
+
+```rust
+#[derive(KeyEncode, ...)]
+#[ok_ns(35)]
+pub struct CodeKey {
+    pub code_id: u64,
+}
+```
+
+物理布局：`[code_id 8B BE]`——只有身份。没有 name，也没有内容哈希：
+调用方每次调用都重读这一行，脚本以参数形态走，所以没有会被读旧的缓存
+（gravity ADR-0003「Code identity」）。
+
+### Row：`CodeRow`（`DocumentEncode`）
+
+```rust
+#[derive(DocumentEncode, ...)]
+#[ok_ref(CodeKey)]
+#[ok_ns(35)]
+pub struct CodeRow {
+    pub language: String,
+    pub description: String,
+    pub parameters: String,
+    pub source: String,
+}
+```
+
+- **一行是一段可复用的代码，不是 skill。** 一个「登录」脚本写一次，很多
+  skill 都有一道步骤指向它——所以行上带 `description` 与参数定义
+  （`parameters`，以文本形态承载的 JSON 文档：store 不解析它，投递这段
+  代码的调用方拥有它的形态）。无论是把 skill 关联到这段代码，还是之后读
+  图谱，判断依据都在行上，不必挨个读源码才知道它要什么参数。这两个字段
+  都不是给 LLM 搜索用的面：**一个 skill 是什么**由图谱持有（有结构的节
+  点：前置条件／流程步骤／经验／后置验证）。
+- **语言是行上的数据。** 脚本即数据，数据带语言；没有任何组件替它默
+  认。调用方按该语言把调用路由到对应的 mount，没有 mount 的语言是调用
+  方的错误值——绝不在这里兜底。
+- gravity 是唯一客户（ADR-0001：节点永不与 krystallizer 说话；字节路径
+  是 gravity → 控制路径 → 节点）。
+
+### 访问面（mem-core `CodeStore`）
+
+`put(language, description, parameters, source)` → store 分配的
+`code_id`（代理键，重启后扫末键恢复，与 flat memory 同规则）；
+`get(code_id)` → 该行，未知 id = 不存在；`list()` →
+`(code_id, language, description)` 按 id 序——解析方或关联方挑选的依据，
+也是声明的 bring-up 姿态（全表扫描，由图谱检索取代，ADR-0003/0018）。
+`list()` 不带 source 与参数定义。
+
+### 存储组装
+
+一个进程一个 Fjall **database**（一个目录、一把锁文件），每个表组一个
+**keyspace**：`crate::service::open_service` 打开 database，再用
+`FjallStore::from_db` 把各组挂上去。Fjall 锁目录，所以对同一目录第二次
+`FjallStore::open` 会失败——keyspace 挂载就是让所有表组共用同一目录、同
+一把锁的办法。这只是进程内表的组织方式；k10r 仍是 ADR-0007 定下的东西
+（独立服务、自有存储、只经 HTTP 到达）。

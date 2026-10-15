@@ -18,6 +18,7 @@ One entity class = one ns (OKM rule). Current state:
 | 32  | Flat memory   | Implemented (Phase 0)   | ADR-0002 |
 | 33  | Channel messages | Implemented (minimal slice, 2026-10-09) | ADR-0008 |
 | 34  | Checkpoints (per member) | Implemented (minimal slice, 2026-10-09) | ADR-0008 |
+| 35  | Code (delivered scripts) | Implemented (bring-up slice, 2026-10-15) | gravity ADR-0001/0003 |
 | —   | Session messages | superseded by the channel log | ADR-0008 |
 | —   | Tasks / task_links DAG | Declared (ADR-0002) | ADR-0002 |
 | —   | Fact graph edges | Declared (ADR-0002) | ADR-0002 |
@@ -140,3 +141,75 @@ checkpoint + increment strictly after coverage, key order;
 
 Not yet (later slices): threads, topic tags, members, read cursors,
 compression policy engine (ADR-0008/0009).
+
+## Code store (ns 35)
+
+The delivered script's home — the one table an executor's call reads.
+Declared in `crates/mem-core/src/code.rs`; the design is gravity's
+(ADR-0001/0003: the node mount reads a script that travels as a call
+argument), and this repo's own ADR for the store is owed.
+
+### Key: `CodeKey` (`KeyEncode`)
+
+```rust
+#[derive(KeyEncode, ...)]
+#[ok_ns(35)]
+pub struct CodeKey {
+    pub code_id: u64,
+}
+```
+
+Physical layout: `[code_id 8B BE]` — identity and nothing else. No name
+and no content hash: the caller re-reads the row on every call and the
+source travels as a call argument, so there is no cache to stale
+(gravity ADR-0003, "Code identity").
+
+### Row: `CodeRow` (`DocumentEncode`)
+
+```rust
+#[derive(DocumentEncode, ...)]
+#[ok_ref(CodeKey)]
+#[ok_ns(35)]
+pub struct CodeRow {
+    pub language: String,
+    pub description: String,
+    pub parameters: String,
+    pub source: String,
+}
+```
+
+- **A row is a reusable piece of code, not a skill.** A login script is
+  written once and many skills carry a step pointing at it — so the row
+  carries a `description` and the parameter definition (`parameters`, a
+  JSON document carried as TEXT: the store does not parse it, the caller
+  that delivered the code owns its shape). Whoever links a skill to this
+  code, or reads the graph afterwards, decides from the row instead of
+  reading every source to find out what it takes. Neither field is an LLM
+  search surface: what a skill IS lives in the graph (a structured node:
+  preconditions / steps / experience / verification).
+- **The language is data ON the row.** A script is data, and data has a
+  language; nothing defaults it. The caller routes the call to the mount
+  serving that language, and a language with no mount is the caller's
+  error value — never a fallback here.
+- gravity is the only client (ADR-0001: the node never talks to
+  krystallizer; the byte path is gravity → control path → node).
+
+### Access (mem-core `CodeStore`)
+
+`put(language, description, parameters, source)` → the store-assigned
+`code_id` (a surrogate id recovered on reopen by scanning the last key,
+same rule as flat memory); `get(code_id)` → the row, or absent for an
+unknown id; `list()` → `(code_id, language, description)` in id order —
+what a resolver or a linker picks from, and the declared bring-up
+posture (a whole-table scan that the graph's retrieval replaces,
+ADR-0003/0018). Source and parameter definition stay out of `list()`.
+
+### Storage assembly
+
+One Fjall **database** per process (one directory, one lock file), one
+**keyspace** per table group: `crate::service::open_service` opens the
+database and attaches each group with `FjallStore::from_db`. Fjall locks
+the directory, so a second `FjallStore::open` on it fails — the keyspace
+attach is what lets every table group share one directory and one lock.
+This is how a process arranges its tables; k10r stays what ADR-0007 made
+it (a standalone service with its own storage, reached only over HTTP).

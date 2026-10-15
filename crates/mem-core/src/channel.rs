@@ -90,6 +90,11 @@ pub struct SessionView {
 /// fixed so callers need not thread it through Phase 0's turn loop.
 pub const DEFAULT_MEMBER: u64 = 1;
 
+/// The keyspace this table group lives in. `crate::service` attaches it
+/// to the process's one database; this store's `open` uses the same name
+/// for the single-group form.
+pub const KEYSPACE: &str = "channel";
+
 /// Assembly point: one Fjall keyspace holding both tables. Shared
 /// FjallStore = one atomicity domain (same discipline as MemoryStore).
 pub struct ChannelStore {
@@ -98,13 +103,20 @@ pub struct ChannelStore {
 }
 
 impl ChannelStore {
-    /// Open (or create) the channel-log keyspace at `path`.
+    /// Open (or create) this group's keyspace at `path` and attach the
+    /// channel tables — the standalone form (tests, single-table tools).
     pub fn open(path: &std::path::Path) -> Result<Self, fjall::Error> {
-        let store = FjallStore::open(path, "channel")?;
-        Ok(Self {
+        Ok(Self::wrap(FjallStore::open(path, KEYSPACE)?))
+    }
+
+    /// Attach the channel tables to an already-open store handle — the
+    /// attach point `crate::service::open_service` uses so every table
+    /// group shares the process's one database.
+    pub fn wrap(store: FjallStore) -> Self {
+        Self {
             messages: <MessageRow as okm_core::Document>::collection(store.clone()),
             checkpoints: <CheckpointRow as okm_core::Document>::collection(store),
-        })
+        }
     }
 
     /// Append one entry; returns the full key (the caller's delta record
