@@ -189,9 +189,19 @@ pub struct CodeRow {
 
 ### 存储组装
 
-一个进程一个 Fjall **database**（一个目录、一把锁文件），每个表组一个
-**keyspace**：`crate::service::open_service` 打开 database，再用
-`FjallStore::from_db` 把各组挂上去。Fjall 锁目录，所以对同一目录第二次
-`FjallStore::open` 会失败——keyspace 挂载就是让所有表组共用同一目录、同
-一把锁的办法。这只是进程内表的组织方式；k10r 仍是 ADR-0007 定下的东西
-（独立服务、自有存储、只经 HTTP 到达）。
+一个进程一个 Fjall **database**（一个目录、一把锁文件），**两个
+keyspace**：`channel`（日志是类队列的，写频率全库最高，所以单独一棵 LSM
+树，它的 compaction 不会拖着别的表）与 `memory`（flat memory + code，将来
+的 fact graph 与 skill 也进这里——这些表靠 ns 区分）。
+`crate::service::open_service` 打开 database，再用 `FjallStore::from_db`
+把各组挂上去。Fjall 锁目录，所以对同一目录第二次 `FjallStore::open` 会失
+败——keyspace 挂载就是让各组共用同一目录、同一把锁的办法。这只是进程内表
+的组织方式；k10r 仍是 ADR-0007 定下的东西（独立服务、自有存储、只经 HTTP
+到达）。
+
+一个值得知道的后果：Fjall 的 batch 本身可以跨 keyspace
+（`WriteBatch::insert(&keyspace, …)`，一次 commit = 一次 WAL 写），但 okm
+的 `commit_batch` 会把每个 op 写进**它被调用的那个 store handle**，也就是
+一个 keyspace。混着 channel op 与 code op 的批，会全部落进接住这次调用的
+那个 keyspace——所以批必须留在同一个 keyspace 内（读写本来也不需要跨这两
+个）。

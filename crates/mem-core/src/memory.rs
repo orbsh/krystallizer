@@ -48,7 +48,15 @@ impl MemoryStore {
     /// an id that collides with (and silently overwrites) a stored
     /// row. Empty table → counter starts at 1.
     pub fn open(path: &std::path::Path) -> Result<Self, fjall::Error> {
-        let store = FjallStore::open(path, "memories")?;
+        Ok(Self::wrap(FjallStore::open(path, crate::KEYSPACE_MEMORY)?))
+    }
+
+    /// Attach the memory table to an already-open store handle — the
+    /// attach point `crate::service::open_service` uses. Flat memory
+    /// shares the `memory` keyspace with the code table (and, later, the
+    /// graph and the skills): different entity classes, different ns, one
+    /// tree.
+    pub fn wrap(store: FjallStore) -> Self {
         // ns comes from the row's #[ok_ns(32)] — not a constructor arg.
         let table = <MemoryRow as okm_core::Document>::collection(store);
         // Key layout is [user_id 8B BE][id 8B BE], so the last key in
@@ -57,7 +65,7 @@ impl MemoryStore {
             .scan_keys()
             .last()
             .map_or(1, |k| k.id.saturating_add(1));
-        Ok(Self { table, next_id })
+        Self { table, next_id }
     }
 
     /// Store one memory for `user_id`; returns the assigned id.

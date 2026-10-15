@@ -26,11 +26,6 @@
 
 use okm_core::{Document, DocumentEncode, FjallStore, KeyEncode};
 
-/// The keyspace this table group lives in. `crate::service` attaches it
-/// to the process's one database; this store's `open` uses the same name
-/// for the single-group form.
-pub const KEYSPACE: &str = "code";
-
 /// Code identity: a surrogate id, nothing else (no name, no hash —
 /// gravity ADR-0003).
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -56,19 +51,23 @@ pub struct CodeRow {
 }
 
 /// Assembly point: the code table on a store handle.
+///
+/// This group lives in `crate::KEYSPACE_MEMORY` — the SAME keyspace as
+/// flat memory (and, later, the graph and the skills): different entity
+/// classes, different ns, one tree.
 pub struct CodeStore {
     table: okm_core::Collection<FjallStore, CodeKey, CodeRow>,
     next_id: u64,
 }
 
 impl CodeStore {
-    /// Open (or create) this group's keyspace at `path` and attach the
+    /// Open (or create) the group's keyspace at `path` and attach the
     /// code table — the standalone form (tests, single-table tools). A
     /// process serving several groups uses `crate::service::open_service`
     /// (one database, one keyspace per group), or attaches both groups to
     /// a handle it opened with [`CodeStore::wrap`].
     pub fn open(path: &std::path::Path) -> Result<Self, fjall::Error> {
-        Ok(Self::wrap(FjallStore::open(path, KEYSPACE)?))
+        Ok(Self::wrap(FjallStore::open(path, crate::KEYSPACE_MEMORY)?))
     }
 
     /// Attach the code table to an already-open store handle.

@@ -51,16 +51,22 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   (`put` / `get` / `list`); mem-server `POST /code` (the store assigns
   the id), `GET /code/{code_id}` (404 on an unknown id), `GET /code`
   (identity + language + description, no source); one Fjall database per
-  process with one keyspace per table group (`service::open_service`
-  attaches both groups with `FjallStore::from_db` — Fjall locks the
-  directory, so a second `open` on it fails), leaving the server one
-  handle and one lock per group. k10r stays what ADR-0007 made it: a
-  standalone service with its own storage, reached only over HTTP.
-  Gates: mem-core 4/0 (layout lock, round trip, pool shape, id recovery
-  across reopen), mem-server 4/0 (round trip, 404, pool shape, code +
-  channel coexistence in one database), clippy 0, fmt clean. Owed: this
-  repo's own ADR for the store, and `list()` is the declared bring-up
-  posture for a resolver's pool read — the graph's retrieval replaces it.
+  process with TWO keyspaces — `channel` (queue-like, its own LSM tree so
+  its compaction never drags the other tables) and `memory` (flat memory
+  + code, ns-discriminated; the graph and the skills join it later):
+  `service::open_service` opens the database and attaches each group with
+  `FjallStore::from_db` — Fjall locks the directory, so a second `open` on
+  it fails — leaving the server one handle and one lock per keyspace.
+  k10r stays what ADR-0007 made it: a standalone service with its own
+  storage, reached only over HTTP.
+  Gates: mem-core 22/0 (code 4 — layout lock, four-field round trip, pool
+  shape, id recovery across reopen; service 3 — the assembly serves every
+  group, the two memory-keyspace tables declare different ns, a second
+  open of the directory is refused), mem-server 8/0 (round trip, 404, pool
+  shape, code + channel coexisting in one database), clippy 0, fmt clean.
+  Owed: this repo's own ADR for the store, and `list()` is the declared
+  bring-up posture for a resolver's pool read — the graph's retrieval
+  replaces it.
 - [ ] Phase 3 — Atomic-fact graph: fact node/edge tables, KDL ingestion, write-time fusion (in-domain id / out-of-domain embedding convergence + small-candidate LLM decision — the LLM decision is gravity's, per ADR-0007's boundary), weight system (delta counts, read-write quadrants, tool_invoke_count, W: index). (ADR-0004, ADR-0005, ADR-0007)
 - [ ] Phase 4 — Clustered retrieval: entity-anchored / temporal / causal-chain views; progressive loading (Top-K by weight). (ADR-0005)
 - [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), SKILL topological four-part nodes, Aura Actor nodes. (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.)

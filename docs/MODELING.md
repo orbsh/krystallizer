@@ -206,10 +206,21 @@ ADR-0003/0018). Source and parameter definition stay out of `list()`.
 
 ### Storage assembly
 
-One Fjall **database** per process (one directory, one lock file), one
-**keyspace** per table group: `crate::service::open_service` opens the
-database and attaches each group with `FjallStore::from_db`. Fjall locks
-the directory, so a second `FjallStore::open` on it fails — the keyspace
-attach is what lets every table group share one directory and one lock.
-This is how a process arranges its tables; k10r stays what ADR-0007 made
-it (a standalone service with its own storage, reached only over HTTP).
+One Fjall **database** per process (one directory, one lock file), and
+**two keyspaces**: `channel` (the log is queue-like and takes the store's
+highest write rate, so it gets its own LSM tree and its compaction never
+drags the other tables along) and `memory` (flat memory + code, and later
+the fact graph and the skills — those tables are discriminated by ns).
+`crate::service::open_service` opens the database and attaches each group
+with `FjallStore::from_db`. Fjall locks the directory, so a second
+`FjallStore::open` on it fails — the keyspace attach is what lets the
+groups share one directory and one lock. This is how a process arranges
+its tables; k10r stays what ADR-0007 made it (a standalone service with
+its own storage, reached only over HTTP).
+
+One consequence worth knowing: Fjall's batch can span keyspaces
+(`WriteBatch::insert(&keyspace, …)`, one commit = one WAL write), but
+okm's `commit_batch` writes every op into the store handle it was called
+on — i.e. into ONE keyspace. A batch that mixed channel ops with code ops
+would land them in whichever keyspace received the call, so batches stay
+within one keyspace (reads and writes never needed to span the two).

@@ -11,6 +11,20 @@ pub mod config;
 pub mod memory;
 pub mod service;
 
+/// The service's two keyspaces — one Fjall database (one directory, one
+/// lock file) holds both.
+///
+/// `channel` is its own tree because the message log is queue-like: it
+/// takes the highest write rate in the store, so its compaction never
+/// drags the other tables along.
+///
+/// `memory` holds everything else — flat memory, code, and later the fact
+/// graph and the skills. Those tables are discriminated by ns, per okm's
+/// rule (one entity class = one ns; different table types sharing a
+/// keyspace do not conflict).
+pub const KEYSPACE_CHANNEL: &str = "channel";
+pub const KEYSPACE_MEMORY: &str = "memory";
+
 pub use channel::{
     kind, role, ChannelStore, CheckpointKey, CheckpointRow, MessageKey, MessageRow, SessionView,
     DEFAULT_MEMBER,

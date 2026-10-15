@@ -30,19 +30,27 @@ use std::sync::Arc;
 /// of adding a sync layer to the core.
 pub struct MemState {
     store: tokio::sync::Mutex<ChannelStore>,
+    /// The code group — the `memory` keyspace, shared with flat memory
+    /// (different ns).
     code: tokio::sync::Mutex<CodeStore>,
+    /// The flat-memory group — attached at boot with the others so the
+    /// service owns every group it opened. Nothing reads it yet: the
+    /// memory endpoints land with k10r Phase 1.
+    #[allow(dead_code)]
+    memory: tokio::sync::Mutex<mem_core::MemoryStore>,
 }
 
 /// Open the database at `path` and build the router.
 ///
 /// One database per process (one directory, one lock file): mem-core's
 /// service assembly attaches every table group to it, so mem-server holds
-/// one handle and one lock per group.
+/// one handle and one lock per keyspace.
 pub fn open(path: PathBuf) -> Result<Router, fjall::Error> {
     let stores = mem_core::open_service(&path)?;
     let state = Arc::new(MemState {
         store: tokio::sync::Mutex::new(stores.channels),
         code: tokio::sync::Mutex::new(stores.code),
+        memory: tokio::sync::Mutex::new(stores.memory),
     });
     Ok(Router::new()
         .route("/channels/{channel_id}/messages", post(append_message))
