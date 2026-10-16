@@ -47,5 +47,7 @@ encoding, hex stability tests).
 ## Status
 
 Design phase — see `docs/PLAN.md` (phases), `docs/adr/` (design),
-`docs/MODELING.md` (schemas), and `docs/SEAM.md` (a consumer's operations
-against the interfaces above).
+`docs/MODELING.md` (schemas), `docs/SEAM.md` (a consumer's operations
+against the interfaces above), and `docs/PROMPTS.md` (the two prompt
+surfaces: the live active-add tool definition and the write-side capsule
+generator).
