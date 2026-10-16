@@ -18,16 +18,15 @@ the Python layer?
 
 ## Decision
 
-**mem-core receives structured KDL facts; it never calls an LLM.**
+**mem-core receives structured facts (the 9-slot tuple); it never calls an LLM.**
 
 - The two-stage pipeline, entity fusion's LLM decision step, active-memory
   judging criteria (specificity × generality), and any prompt engineering
   live in the Python layer (skillforge side, later the mem adapter
   package).
 - The core's ingestion surface is deterministic: `ingest(fact)` where
-  `fact` is already parsed from KDL
-  (`head <type> <value> [props] / rel <RELATION> [props] / tail <type>
-  <value> [props]`).
+  `fact` is already the 9-slot tuple (head value / head type / head props /
+  rel value / rel type / rel props / tail value / tail type / tail props).
 - Fusion inside the core is split accordingly:
   - *In-domain entities* (org members, projects, tasks, products): resolved
     deterministically by stable id — zero embedding, zero search, zero LLM.
@@ -48,17 +47,17 @@ the Python layer?
 - Python already owns the agent integration (tool injection, tail-prompt
   authoring, checkpoint policies). Extraction is the same kind of work —
   it belongs there.
-- The KDL fact format is the contract across the boundary. It is the
+- The fact tuple is the contract across the boundary. It is the
   wiki's authoritative serialization for atomic facts, renders
-  deterministically to Mermaid/Cytoscape for inspection, and parsing it in
-  Rust is a plain `kdl` crate call.
+  deterministically to Mermaid/Cytoscape for inspection, and reading it in
+  Rust is plain `serde_json` (already a workspace dependency).
 
 ## Consequences
 
 - mem-core has zero LLM dependency, zero network dependency for ingestion;
   the only network call in the core is the embedding API (ADR-0003).
 - The Python adapter is part of the shipped surface (not a disposable
-  demo): pipeline orchestration, KDL generation, fusion LLM decisions,
+  demo): pipeline orchestration, fact serialization, fusion LLM decisions,
   caller-side trigger policies.
 - If a future non-Python consumer appears (mem-server), it re-implements
   the orchestration layer or speaks to a Python sidecar; the core API does
@@ -96,8 +95,35 @@ with its own LLM call) is retired as the mechanism: facts are not produced by a
 separate extraction pass. **The model adds memory actively, in-turn** — the
 memory tool is the producer, and how that call is routed is the caller's
 business (ADR-0007). What this ADR settled does not move: intake stays the
-deterministic `ingest(fact)` over parsed KDL, the fusion split stands (in-domain
+deterministic `ingest(fact)` over the tuple, the fusion split stands (in-domain
 ids resolved deterministically; the out-of-domain cheap half is embedding search
 plus anchored entity nodes, the expensive half is the caller's decision), and
 the specificity × generality criterion is now simply a rule the model applies
 when it decides to add — not a stage of a pipeline.
+
+## Update (2026-10-16, the fact's serialization is a fixed-length 9-slot tuple)
+
+The fact that crosses the boundary is no longer KDL: it is **a fixed-length
+9-slot tuple — a JSON list of three roles in order, head / rel / tail, each
+`[value, type, props]`** — and the `category` field is gone: a fact's form is
+those three roles and nothing else.
+
+- head value / head type / head props, rel value / rel type / rel props, tail
+  value / tail type / tail props — positions 0-8.
+- Empty props are written `{}`; the tuple is fixed-length, so no slot is
+  omitted.
+- The relation carries a type label of its own (position 4) — the same register
+  a node's type label uses (a lowercase single token). What makes a relation
+  kind functional vs multi-valued is still open (ADR-0010).
+
+What it changes elsewhere: nothing on the fact path needs a KDL parser any more
+(the config file stays KDL, ADR-0007), and the packet handed to the capsule LLM
+is a list of these tuples (ADR-0010). What does not move: this ADR's decision —
+the core receives already-structured facts through a deterministic
+`ingest(fact)` and calls no LLM — and the fusion split.
+
+Where the form is written down: the wiki's authoritative serialization section
+(krystallizer, both languages), the knowledge-triplets skill's format section,
+and this repo's PROMPTS pair. ADR-0010's owed list now records that position 4
+has no counterpart in the edge body yet (it carries one `kind_id` for the
+predicate).

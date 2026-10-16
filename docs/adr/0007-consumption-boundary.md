@@ -74,7 +74,7 @@ name that holds it.
 
 - ADR-0004's ownership claim ("extraction lives in the Python layer")
   is superseded; its remaining content — the deterministic
-  `ingest(fact)` KDL surface, the fusion split (core = cheap half,
+  `ingest(fact)` tuple surface, the fusion split (core = cheap half,
   caller = expensive half) — carries over with the caller now being
   gravity.
 - **The aura-actor access mode is withdrawn (2026-10-10), including

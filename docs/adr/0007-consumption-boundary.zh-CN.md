@@ -60,7 +60,7 @@ Rust，无 Python 层。它不是 aura 公民：不注册摊位、不被 aura sp
 ## Consequences
 
 - ADR-0004 的归属主张（"抽取在 Python 层"）被取代；其余内容——确
-  定性 `ingest(fact)` KDL 接口面、融合拆分（核心=便宜半步，调用
+  定性 `ingest(fact)` 元组接口面、融合拆分（核心=便宜半步，调用
   方=昂贵半步）——照旧成立，调用方改为 gravity。
 - **aura-actor 接入方式撤销（2026-10-10），连同其 2026-10-09 的 bgi
   修订一并撤销。** k10r 永远不会作为 `language: "induction"` 摊位类型被

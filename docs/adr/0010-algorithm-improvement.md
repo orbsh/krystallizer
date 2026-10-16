@@ -7,7 +7,7 @@
 ## Context
 
 The 主动 (long-term) side (ADR-0001 Update 2026-10-16) has a table but no
-algorithm. Extracted KDL facts arrive one at a time and land as scattered
+algorithm. The facts arrive one at a time (each a 9-slot tuple) and land as scattered
 nodes; nothing gives them order. Order can be paid for in exactly two
 places: at read time (every search clustering the neighborhood it needs)
 or at write time (a background pass in the typing gap, where the caller
@@ -50,7 +50,7 @@ What constrains every step below:
 ### 0. Pipeline
 
 ```
-[ step 1: new KDL fact ] ──► [ step 2: write-time resolution (upsert) ]
+[ step 1: a fact tuple ] ──► [ step 2: write-time resolution (upsert) ]
                                           │
                                     (Fjall write)
                                           ▼
@@ -64,10 +64,11 @@ algorithm at all.
 ### 1. Write-time normalization and resolution (the layout in okm's terms)
 
 The model's active add produces structured facts (subject / predicate / object
-triples, serialized as KDL), and the caller hands them to the core through the
-deterministic `ingest(fact)` door; the core does not parse prose and does not call a
-model. Three collections carry the track's state; the okm-conformant layout
-is below (ns numbers are proposals — the dictionary is code, okm ADR-0002,
+triples, serialized as the 9-slot tuple), and the caller hands them to the
+core through the deterministic `ingest(fact)` door; the core does not parse
+prose and does not call a model. Three collections carry the track's state; the
+okm-conformant layout is below (ns numbers are proposals — the dictionary is
+code, okm ADR-0002,
 so they are allocated when the tables land, next free after 35).
 
 ```text
@@ -242,8 +243,8 @@ draft).
 
 **Export.** One scan on the `by_community` face pulls the community's
 members; their edges arrive through the traversal faces with an in-memory
-membership filter — the community's subgraph, sliced into a plain-text KDL
-packet, which is the input the next step consumes.
+membership filter — the community's subgraph, sliced into a plain-text packet
+of 9-slot tuples, which is the input the next step consumes.
 
 ### 4. Capsule consolidation (layer 3)
 
@@ -259,12 +260,12 @@ The drafts phrase it as "handed outward through the non-blocking channel
 gravity provides" — that names the carrier the caller uses, and it must not
 be read as an outbound call from mem-core.
 
-**Prompt (carried verbatim from the draft; the packet is KDL):**
+**Prompt (carried verbatim from the draft; the packet is 9-slot tuples):**
 
 ```
-你是一个图谱语义提炼器。以下输入是某个特定知识社区内的全部 KDL 原子事实片段：
+你是一个图谱语义提炼器。以下输入是某个特定知识社区内的全部原子事实片段（定长 9 元组，每行一条）：
 ------------------------
-${KDL_SUBGRAPH_PAYLOAD}
+${FACT_TUPLES}
 ------------------------
 请不要发散，直接执行两项任务：
 1. Title: 为这个知识社区拟定一个 10 字以内的精准概念主题。
@@ -322,7 +323,7 @@ the next rewrite.
 ### 6. Front-end extension (no new mechanism)
 
 The persisted `community_id` can be handed to visualization at zero cost: a
-deterministic KDL → JSON conversion (no LLM involved) feeds
+deterministic tuple → renderer conversion (no LLM involved) feeds
 **3d-force-graph** — the WebGL/three.js force-graph library with orbit-style
 camera control, the carrier this repo already exercises in
 `docs/kg-demo-3d.html`. That demo streams node/edge packets into the running
@@ -385,6 +386,12 @@ inspectable from a dashboard reading `get_stats`.
   endpoints only. Whether it becomes a literal node (kind `Literal`, value in
   the payload, reachable through `by_name`) or a declared attribute field on
   the edge is Phase 3's decision.
+- **The relation's own type label (the fact tuple's position 4).** A node's
+  type label has a home — the entity row's `kind_id` plus the `node-kind` face —
+  but the tuple also labels the RELATION's type, while the edge body carries one
+  `kind_id` for the predicate (the relation itself). Whether a relation's type
+  becomes a second kind dimension, a declared field, or is dropped at ingestion
+  is undecided.
 - **The capsule call's carrier.** Since k10r cannot call out, the
   consolidation request has to be pulled by the caller or marked for it.
   Which door carries it (a pending-consolidation read on the memory surface

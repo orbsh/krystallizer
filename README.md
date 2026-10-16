@@ -23,8 +23,9 @@ and [图谱化记忆](https://github.com/orbsh/wiki/blob/main/graph-memory.md):
   dependency edges, sharing the same graph as the facts; instance state is
   structured (exact enumeration) and travels with the projection. The third
   interface surface (ADR-0001 Update 2026-10-16).
-- **Atomic-fact graph** — append-first KDL facts
-  (`head` / `rel` / `tail`), entity-anchored / temporal / causal-chain
+- **Atomic-fact graph** — append-first facts, a fixed-length 9-slot tuple
+  (roles `head` / `rel` / `tail`, each `[value, type, props]`), entity-anchored
+  / temporal / causal-chain
   clustering as views, weight system (read-write quadrants,
   `tool_invoke_count`), fusion on write (in-domain id lookup / out-of-domain
   embedding convergence).
