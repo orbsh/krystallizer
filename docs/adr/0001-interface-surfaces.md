@@ -1,8 +1,8 @@
-# ADR-0001: Two Interface Surfaces — Session Control and Memory
+# ADR-0001: Interface Surfaces — Session Control, Memory, Tasks
 
 **Status**: Accepted (design; implementation pending)
 **Date**: 2026-09-08
-**Chinese**: [0001-two-interface-surfaces.zh-CN.md](0001-two-interface-surfaces.zh-CN.md)
+**Chinese**: [0001-interface-surfaces.zh-CN.md](0001-interface-surfaces.zh-CN.md)
 
 ## Context
 
@@ -23,9 +23,9 @@ work unit rather than a message count).
 
 ## Decision
 
-The core exposes exactly two interface surfaces.
+The core exposes three interface surfaces.
 
-### Surface 1: Session control (full control mode)
+### Surface 1: Session control (the passive side · short-term)
 
 Three primitives, composable, agent-driven:
 
@@ -55,16 +55,19 @@ mechanism, no special cases.
 strategy. The legacy auto-trigger becomes one optional caller-side policy,
 not core behavior.
 
-### Surface 2: Memory (assist mode)
+### Surface 2: Memory (the active side · long-term)
 
-Two modes:
+Three kinds:
 
-- **Full-session mode** — `get_context` returns the complete context
-  (checkpoint summary + DB increments + pending user messages). The session
-  itself is the memory; retrieval is not involved.
-- **Assist mode** — `store` / `search` / `forget` over flat memories and
-  graph facts. Retrieved context is *auxiliary*: injected alongside the
-  session, never replacing it.
+- **Passive / short-term** — the loop's own current context: the channel log
+  and its projection (`get_context` returns checkpoint summary + DB increments
+  + pending user messages). The session itself is the memory; retrieval is not
+  involved, and the model never touches it.
+- **Active / long-term** — `store` / `search` / `forget` over flat memories and
+  graph facts, queried by the model AS A TOOL. Retrieved context is
+  *injected*: alongside the session, never replacing it.
+- **Initialization (persona / style)** — graph-derived: assembled by k10r as a
+  traversal from the user node, injected at the HEAD of the context.
 
 ## Consequences
 
@@ -102,9 +105,9 @@ Three shapes, divided by which surface stars:
 | Session-primary (gravity / chat) | The main surface: channel log + projection | Assist: retrieval injected alongside the session, never replacing it |
 | Memory-primary (mudra / task management) | Unused, or residual use only (below) | **Everything**: store / search / forget IS the application's memory |
 
-Memory-primary is **not a third interface surface** — the two surfaces'
-primitives already cover it; the third shape is a change of consumption
-stance. This retroactively validates this ADR's core boundary: the core
+Memory-primary is **a consumption stance, not a surface of its own** — the
+existing primitives already cover it, and what changes is the stance, not the
+interface (the third surface is TASKS — see the final Update). This retroactively validates this ADR's core boundary: the core
 decides *how*, never *when*; in shape B, when-to-extract / when-to-
 store is likewise caller-side policy (the chat side delegates it to
 gravity; the task side to the application's own agent or deterministic
@@ -131,7 +134,7 @@ applications never touch Surface 1 at all.
 The pair **full control mode / assist mode** (完全控制模式 / 辅助模式) is
 retired as the naming of the two surfaces: it reads as "full mode makes
 assist redundant" — as if a chat-shaped consumer needed no memory
-retrieval. That is false, so the surfaces are named by **who initiates**:
+retrieval. That is false, so the memory-bearing surfaces are named by **who initiates**:
 
 | | 被动面 (passive) | 主动面 (active) |
 |---|---|---|
@@ -163,3 +166,37 @@ own persona/style.
 Surface 1's primitives (branch / tail / summarize) and Surface 2's
 (store / search / forget) are unchanged; this note renames and adds a
 content kind, nothing else.
+
+## Update (2026-10-16, third interface surface: task management)
+
+A third interface surface joins the two above: **tasks**.
+
+- **Its carrier is a graph, not a table.** Task vertices plus `task_links`
+  dependency edges — the shape the task-forest already assumes (a task row per
+  step, bound to the call that completes it — gravity ADR-0003 §3) and the
+  medium multi-agent coordination runs on (the graph replaces message passing;
+  parallelism comes from topology, not from a scheduler).
+- **Tasks and facts share ONE graph.** Same trust domain: don't split what can
+  be joined. A task node type is a collection (ns IS the type marker); its ns
+  is not assigned yet.
+- **Instance state is structured and exact.** Open / done is a declared field
+  for enumeration ("how many open tasks") — never an approximate-retrieval
+  fact; it travels with the projection, so every in-turn pre-dispatch check on
+  gravity's side is a local read (gravity ADR-0003 §4).
+- **Why this is a surface and not a fourth memory kind:** the memory surface
+  answers *what is known*, by approximate retrieval; the task surface is the
+  coordination and progress medium — dependency order, what may run in
+  parallel, and, when work goes through it, the organizational ledger of who
+  did what. Different question, different access shape.
+- **Who writes what:** k10r holds the task definition, its links and its
+  structured state; the executing side writes completion at the call site —
+  completion is never a model judgement.
+
+- **Where it sits on the 被动 / 主动 axis:** task reads ride the passive
+  channel (they arrive with the projection) and completion is written at the
+  call site by the executing side. The surface is the coordination and progress
+  medium, not a memory kind — the 被动 / 主动 naming above covers the
+  memory-bearing pair.
+
+The two surfaces above are unchanged: their primitives, the 被动 / 主动
+naming, and the three memory kinds.

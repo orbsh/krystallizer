@@ -19,7 +19,11 @@ and [图谱化记忆](https://github.com/orbsh/wiki/blob/main/graph-memory.md):
   (`store` / `search` / `forget` over flat memory and graph facts), and
   initialization memory (persona / style — graph-derived, injected at the
   head of the context).
-- **Atomic-fact graph** — append-only KDL facts
+- **Task surface** — tasks are a graph too: task vertices + `task_links`
+  dependency edges, sharing the same graph as the facts; instance state is
+  structured (exact enumeration) and travels with the projection. The third
+  interface surface (ADR-0001 Update 2026-10-16).
+- **Atomic-fact graph** — append-first KDL facts
   (`head` / `rel` / `tail`), entity-anchored / temporal / causal-chain
   clustering as views, weight system (read-write quadrants,
   `tool_invoke_count`), fusion on write (in-domain id lookup / out-of-domain
@@ -35,11 +39,13 @@ and [图谱化记忆](https://github.com/orbsh/wiki/blob/main/graph-memory.md):
 |---|---|
 | `mem-core` | Storage + retrieval core. Zero LLM dependency, zero transport dependency. |
 | `mem-ffi` | PyO3 bindings (maturin). |
-| `mem-server` | axum HTTP surface — the single cross-process form (ADR-0007 as revised; three channel-log endpoints landed 2026-10-10). |
+| `mem-server` | axum HTTP surface — the single cross-process form (ADR-0007 as revised; channel-log endpoints landed 2026-10-10, the code store 2026-10-15). |
 
 Storage: Fjall, with schemas declared via OKM derive macros (compile-time key
 encoding, hex stability tests).
 
 ## Status
 
-Design phase — see `docs/PLAN.md` and `docs/adr/`.
+Design phase — see `docs/PLAN.md` (phases), `docs/adr/` (design),
+`docs/MODELING.md` (schemas), and `docs/SEAM.md` (a consumer's operations
+against the interfaces above).

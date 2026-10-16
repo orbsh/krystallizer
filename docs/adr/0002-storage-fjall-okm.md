@@ -84,3 +84,28 @@ total order — the constraints this ADR was bound to honor — are
 preserved; the seq column itself disappears (events carry timestamps
 anyway). Message-session tables also split into messages / members /
 cursors / checkpoints (per member) per ADR-0008's schema.
+
+## Update (2026-10-16, append-first — scoped to the graph and the data side)
+
+**Appending is preferred wherever a table holds knowledge or data; the session
+log stays append-only outright.** The two scopes answer different questions:
+
+- **The session log (ns 33 messages) is append-only.** That is an invariant,
+  not a preference: extraction, replay and audit all read it, and a log that
+  can be corrected loses all three at once. The compression point is NOT a
+  mutation of the log — it lives in its **own table** (ns 34), pointing into
+  the log by `coverage_ts`; a row there is latest-wins, and that mutability is
+  confined to its own table.
+- **The graph and the data side are append-first.** Node and edge rows,
+  weights, derived index entries and code rows may be corrected where
+  forbidding it would cost more complexity than the update itself — the live
+  case is the code store, whose `put(id)` rewrites a row identified by that id.
+  The reason appends are the default is SIMPLICITY (no read-modify-write race,
+  replayable, a bad derivation is a retry), not purity; the ban is dropped only
+  where it would buy a delta chain every reader must fold, or an entry that can
+  never be corrected.
+
+Unchanged: one WriteBatch = one transaction; a batch that fails leaves nothing;
+compression never truncates — a bad summary is a retry, not a loss; and the
+store never splits into two truths — view trimming is read-side only, and
+whoever owns the write owns the record.

@@ -19,7 +19,7 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
 | 34  | Checkpoint（每成员）| 已实现（最小切片，2026-10-09） | ADR-0008 |
 | 35  | Code（交付的脚本） | 已实现（bring-up 切片，2026-10-15） | gravity ADR-0001/0003 |
 | —   | Session 消息      | 被 channel log 取代      | ADR-0008 |
-| —   | Tasks / task_links DAG | 已声明（ADR-0002）  | ADR-0002 |
+| —   | Tasks / task_links DAG | 已声明（ADR-0001 Update 2026-10-16——第三个接口面；与事实同图） | ADR-0001, ADR-0002 |
 | —   | Fact graph 边     | 已声明（ADR-0002）       | ADR-0002 |
 | —   | 初始化记忆（人设 / 风格） | 已声明（ADR-0001 Update 2026-10-16） | ADR-0001 |
 

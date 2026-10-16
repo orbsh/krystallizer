@@ -20,7 +20,7 @@ contention, and how to serve Top-K without full scans.
 **Counting: delta-append keys, fold to a count key in the background.**
 
 ```
-put edge:{src}:{label}:{dst}/read/{ts}  → +1        # append-only delta
+put edge:{src}:{label}:{dst}/read/{ts}  → +1        # append-first: this path stays an append
 put edge:{src}:{label}:{dst}/count/read → N         # folded, whole-value put
 ```
 

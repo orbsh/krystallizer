@@ -48,7 +48,7 @@ holds no state between calls, and scale-to-zero falls out for free.
    savings are one round-trip, while it would force the loop to know
    which calls are memory calls and rewrite the mid-turn context,
    privileging one call class inside the loop and breaking the
-   append-only invariant.)
+   "records belong to the data layer, the loop only appends" invariant.)
 
 3. **Loop decomposition.** The agent separates into four parts — UI,
    intelligent session context (krystallizer's session+memory surfaces),

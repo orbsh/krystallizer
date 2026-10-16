@@ -1,6 +1,6 @@
 # ADR-0008: Unified Channel Log — Agent Context as a Projection, Heuristic Compression
 
-**Status**: Partially landed (2026-10-09: the minimal slice — channel messages ns 33 + per-member checkpoints ns 34, `ChannelStore::append`/`fetch_full`/`append_checkpoint`, serving gravity Phase 0; overwriting checkpoints is a recorded deviation from "append a checkpoint record" pending Phase 2.6's decision log; pending: threads, topic tags, members, cursors, the policy engine)
+**Status**: Partially landed (2026-10-09: the minimal slice — channel messages ns 33 + per-member checkpoints ns 34, `ChannelStore::append`/`fetch_full`/`append_checkpoint`, serving gravity Phase 0; the compression point is its OWN table (ns 34), pointing into the log by `coverage_ts` and latest-wins inside that table, while the log itself stays append-only (ADR-0002 Update 2026-10-16); pending: threads, topic tags, members, cursors, the policy engine)
 **Date**: 2026-09-22
 **Chinese**: [0008-unified-channel-log.zh-CN.md](0008-unified-channel-log.zh-CN.md)
 **Amends**: ADR-0001 (summarize's truncation step), ADR-0002 (session message key), ADR-0006 (session read/write shape)
@@ -160,13 +160,13 @@ merge:
 - **summarize** serves the CONTEXT: lossy, for the model's working set,
   within the turn's latency budget.
 - **extraction** serves CROSS-SESSION MEMORY: atomic facts into flat
-  memory / the graph, asynchronous, outside the turn's path. The
-  extraction worker trails the coverage pointer — the log is
-  append-only, so extraction can lag, batch, and re-run freely without
-  contending with conversation latency.
+  memory / the graph — produced by the model's OWN active memory add (the
+  tool call the caller routes to `ingest(fact)`), never by a compression
+  pass. The log being append-only means a caller MAY lag, batch or re-run
+  over the same bytes, but nothing schedules a trailing worker.
 
 The root cause of keeping them separate: different quality/latency
-budgets (summary in-turn, extraction out-of-band).
+budgets (summary in-turn, the fact's producer is whoever is reasoning).
 
 **Multi-party participation** — member identity (display name / role
 in the members table, attribution applied at serialization), user
@@ -210,3 +210,36 @@ one member, every trigger on the turn boundary.
 - The policy engine is pure functions in k10r (threshold evaluation,
   max-gap split, decision log records); LLM calls (summary) stay on
   gravity's side per ADR-0007.
+
+## Update (2026-10-16, the compression point is its own table; the log stays append-only)
+
+The Status line used to call the same-key checkpoint overwrite "a recorded
+deviation from 'append a checkpoint record'". The deviation was never the
+checkpoint's mutability — it is that the compression point must STAND BESIDE
+the log, not inside it. Settled shape: the **log (ns 33) is append-only**, and
+the **compression point is its own table (ns 34), pointing into the log by
+`coverage_ts`** — latest-wins inside that table, so its mutability never
+touches a log row. Append-first (ADR-0002 Update, same date) covers the graph
+and the data side; it does not apply to the log.
+
+## Update (2026-10-16, where the facts come from: the model's active memory add, not a compression pass)
+
+§5's extraction worker is retired as the mechanism. Facts are not produced by
+compressing a tail prompt and then extracting from it, and no trailing worker
+is required: **the model adds memory actively, in-turn** — the memory tool is
+the producer, and that call is the caller's business (ADR-0007). k10r still
+takes only the deterministic `ingest(fact)`. That the log is append-only means
+a caller MAY lag, batch or re-run over the same bytes; it is an available
+property, not a scheduled mechanism. So summarize no longer gates extraction:
+the summary serves the context, the active add serves cross-session memory, and
+nothing obliges them to be one pass.
+
+## Update (2026-10-16, the projection's assembly order)
+
+Assembling the context is ordered, head first: **the global layer (persona /
+style — the initialization memory), then the compression point, then the
+messages after it.** The global layer takes the head position the summary used
+to occupy alone; the compression point follows because it summarizes
+everything up to `coverage_ts`; the increment follows in key order. Assembly
+stays a k10r-internal detail — the caller receives the projection and never
+composes it.

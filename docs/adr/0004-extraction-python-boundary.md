@@ -88,3 +88,16 @@ Network-call note: ADR-0003's embedding question is decided as a built-in
 local model (ADR-0003 Update 2026-10-14), so the Consequences bullet below
 about "the only network call in the core is the embedding API" no longer
 holds — the core's outbound surface is now empty.
+
+## Update (2026-10-16, facts come from the model's active add, not from an extraction stage)
+
+The two-stage pipeline in Context (normalization → classified extraction, each
+with its own LLM call) is retired as the mechanism: facts are not produced by a
+separate extraction pass. **The model adds memory actively, in-turn** — the
+memory tool is the producer, and how that call is routed is the caller's
+business (ADR-0007). What this ADR settled does not move: intake stays the
+deterministic `ingest(fact)` over parsed KDL, the fusion split stands (in-domain
+ids resolved deterministically; the out-of-domain cheap half is embedding search
+plus anchored entity nodes, the expensive half is the caller's decision), and
+the specificity × generality criterion is now simply a rule the model applies
+when it decides to add — not a stage of a pipeline.

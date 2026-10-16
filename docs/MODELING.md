@@ -20,7 +20,7 @@ One entity class = one ns (OKM rule). Current state:
 | 34  | Checkpoints (per member) | Implemented (minimal slice, 2026-10-09) | ADR-0008 |
 | 35  | Code (delivered scripts) | Implemented (bring-up slice, 2026-10-15) | gravity ADR-0001/0003 |
 | —   | Session messages | superseded by the channel log | ADR-0008 |
-| —   | Tasks / task_links DAG | Declared (ADR-0002) | ADR-0002 |
+| —   | Tasks / task_links DAG | Declared (ADR-0001 Update 2026-10-16 — the third interface surface; same graph as the facts) | ADR-0001, ADR-0002 |
 | —   | Fact graph edges | Declared (ADR-0002) | ADR-0002 |
 | —   | Initialization memory (persona / style) | Declared (ADR-0001 Update 2026-10-16) | ADR-0001 |
 

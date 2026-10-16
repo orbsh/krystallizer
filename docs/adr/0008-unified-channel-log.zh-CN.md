@@ -1,6 +1,6 @@
 # ADR-0008: 统一 channel 日志——agent 上下文是投影，启发式压缩
 
-**状态**：部分落地（2026-10-09：最小切片——channel 消息 ns 33 + 每成员 checkpoint ns 34，`ChannelStore::append`/`fetch_full`/`append_checkpoint`，服务 gravity Phase 0；checkpoint 采用覆盖写，与「追加 checkpoint 记录」的偏差已记录，待 Phase 2.6 decision log 裁决；待办：thread、topic tag、members、读游标、策略引擎）
+**状态**：部分落地（2026-10-09：最小切片——channel 消息 ns 33 + 每成员 checkpoint ns 34，`ChannelStore::append`/`fetch_full`/`append_checkpoint`，服务 gravity Phase 0；压缩点是**自己的表**（ns 34），用 `coverage_ts` 指向日志、在该表内 latest-wins，而日志本身保持只追加（ADR-0002 Update 2026-10-16）；待办：thread、topic tag、members、读游标、策略引擎）
 **日期**：2026-09-22
 **英文版**：[0008-unified-channel-log.md](0008-unified-channel-log.md)
 **修订**：ADR-0001（summarize 的截断步骤）、ADR-0002（session 消息键）、ADR-0006（session 读写形态）
@@ -127,11 +127,12 @@ agent B: 游标在 m3 → 未读 [m4][m5]...
 
 - **summarize** 服务上下文：有损，为模型的工作集，受回合内延迟预算
   约束。
-- **提取**服务跨 session 记忆：原子事实进 flat memory / 图，异步，
-  在回合路径之外。提取 worker 跟在 coverage 指针后面跑——日志
-  append-only，提取可以滞后、批量、重跑，完全不挤占对话延迟。
+- **提取**服务跨 session 记忆：原子事实进 flat memory / 图——由模型**自己的
+  主动记忆添加**产生（调用方把那次工具调用接到 `ingest(fact)`），从不靠压缩
+  的那一趟。日志只追加意味着调用方**可以**滞后、批量、重跑同一份字节，但没
+  有任何东西排程一个滞后的 worker。
 
-分开的根因：质量/延迟预算不同（摘要在回合内，提取在回合外）。
+分开的根因：质量/延迟预算不同（摘要在回合内，事实的生产者是推理的那一方）。
 
 **多方参与**——成员身份（members 表的显示名/角色，归属在序列化时
 施加）、用户画像（全局记忆的 `kind=profile` 受管类别，提取产出、
@@ -168,3 +169,28 @@ agent B: 游标在 m3 → 未读 [m4][m5]...
   标签索引。全部 OKM 声明；hex stability test 锁布局。
 - 策略引擎是 k10r 侧的纯函数（阈值评估、max-gap 分界、决策日志
   记录）；LLM 调用（摘要）按 ADR-0007 留在 gravity 侧。
+
+## Update（2026-10-16，压缩点是自己的表；日志保持只追加）
+
+上文状态行曾把同键 checkpoint 覆盖称为「与『追加 checkpoint 记录』的偏
+差」。那个偏差从来不是 checkpoint 的可变性——而是压缩点必须**立在日志旁
+边**，不在日志之内。定下的形态：**日志（ns 33）只追加**，**压缩点是自己的
+表（ns 34），用 `coverage_ts` 指向日志**——在该表内 latest-wins，它的可变
+性从不碰到日志的任何一行。追加优先（ADR-0002 Update，同日期）覆盖的是图与
+数据面，不适用于日志。
+
+## Update（2026-10-16，事实从哪来：模型的主动记忆添加，不是压缩的那一趟）
+
+§5 的 extraction worker 作为机制退役。事实不是「尾提示词压缩之后再从中提
+取」出来的，也不需要滞后的 worker：**模型主动添加记忆，在轮内**——记忆工具
+是生产者，而这次调用是调用方的事（ADR-0007）。k10r 仍然只收确定性的
+`ingest(fact)`。日志只追加这件事意味着调用方**可以**滞后、批量、重跑同一份
+字节；那是一个可用性质，不是被排程的机制。于是 summarize 不再把关提取：摘要
+服务上下文，主动添加服务跨会话记忆，没有谁规定它们得是同一次。
+
+## Update（2026-10-16，投影的组装顺序）
+
+组装上下文是**有序的，从头开始**：**全局层（人设 / 风格——初始化记忆）、
+然后压缩点、然后是压缩点之后的消息。** 全局层占据的正是摘要以前独占的头部
+位置；压缩点紧随其后，因为它概括 `coverage_ts` 之前的一切；增量按 key 序跟
+在后面。组装仍是 k10r 的内部细节——调用方收到投影，从不自己组装。

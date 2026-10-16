@@ -19,7 +19,7 @@ last_write。读写比划分四象限（核心区 / 深水区 / 噪声 / 冷区�
 **计数：delta 追加 key，后台 fold 到计数 key。**
 
 ```
-put edge:{src}:{label}:{dst}/read/{ts}  → +1        # 只追加 delta
+put edge:{src}:{label}:{dst}/read/{ts}  → +1        # 追加优先：这条路径仍是追加
 put edge:{src}:{label}:{dst}/count/read → N         # 归并结果，整值 put
 ```
 
