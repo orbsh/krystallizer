@@ -10,11 +10,13 @@ The 主动 (long-term) side (ADR-0001 Update 2026-10-16) has a table but no
 algorithm. Extracted KDL facts arrive one at a time and land as scattered
 nodes; nothing gives them order. Order can be paid for in exactly two
 places: at read time (every search clustering the neighborhood it needs)
-or at write time (a background pass in the typing gap, where the caller's
-bypass extraction already fires, ADR-0007).
+or at write time (a background pass in the typing gap, where the caller
+already runs its own work, ADR-0007 — the facts themselves arrive from the
+model's active memory add, in-turn).
 
 This ADR takes the second. The write side absorbs the whole cost —
-conflict resolution, binning, subgraph consolidation — inside the bypass,
+conflict resolution, binning, subgraph consolidation — inside that
+write-time pass,
 so the read side runs no graph algorithm at all. It merges the two drafts
 written for the track: a loose `docs/LPA.md` (three-table schema,
 lifecycle phases, visualization extension) and a write-time-resolution
@@ -28,9 +30,9 @@ same three collections expressed in okm's terms.
 What constrains every step below:
 
 - **mem-core holds no LLM, no transport, and is not an actor** (ADR-0007).
-  Everything running inside it is deterministic and local; the extraction
-  that produces the facts is the caller's bypass job, and k10r never calls
-  anyone back.
+  Everything running inside it is deterministic and local; the facts arrive
+  from the model's active memory add (the caller routes that call to
+  `ingest(fact)`), and k10r never calls anyone back.
 - **Retrieval is vector landing + exact name/alias lookup, then traversal
   ranked by weight** (ADR-0003 Update 2026-10-14). There is no lexical
   branch to reuse, and no third retrieval mechanism is to be added.
@@ -55,15 +57,15 @@ What constrains every step below:
 [ step 5: read side ] ◄── [ step 4: subgraph export + capsule ] ◄── [ step 3: incremental LPA ]
 ```
 
-Steps 1–2 run as the bypass lands a fact; steps 3–4 run in the same
-background pass after the write; step 5 is the read path and runs no
+Steps 1–2 run as the fact lands through the caller's `ingest(fact)` call;
+steps 3–4 run in the same background pass after the write; step 5 is the read path and runs no
 algorithm at all.
 
 ### 1. Write-time normalization and resolution (the layout in okm's terms)
 
-The bypass extracts structured facts (subject / predicate / object triples,
-serialized as KDL) and hands them to the core through the deterministic
-`ingest(fact)` door; the core does not parse prose and does not call a
+The model's active add produces structured facts (subject / predicate / object
+triples, serialized as KDL), and the caller hands them to the core through the
+deterministic `ingest(fact)` door; the core does not parse prose and does not call a
 model. Three collections carry the track's state; the okm-conformant layout
 is below (ns numbers are proposals — the dictionary is code, okm ADR-0002,
 so they are allocated when the tables land, next free after 35).
@@ -251,7 +253,7 @@ This is the bridge from layer 4 (fine-grained graph facts) to layer 3
 **The call is the caller's, not the core's.** k10r holds no LLM and no
 transport and never calls out (ADR-0007), so its own part is the packet
 plus the `pending` mark on the community; the inference itself is drawn by
-whichever consumer owns the bypass that produced these facts (gravity for
+whichever consumer produced these facts (gravity for
 chat consumers; a memory-primary consumer's single-pass worker otherwise).
 The drafts phrase it as "handed outward through the non-blocking channel
 gravity provides" — that names the carrier the caller uses, and it must not
@@ -355,9 +357,9 @@ inspectable from a dashboard reading `get_stats`.
   face of the edge collection (`[weight][scope][edge_id]`).
 - **Every number here is a policy parameter** and belongs in
   `config/krystallizer.kdl` (ADR-0008's rule): the density threshold, the
-  uncompressed-fact watermark, the iteration cap, the 2-hop radius. The
-  extraction watermark (the draft's 100 messages) is NOT k10r's — it fires in
-  the caller's bypass (ADR-0007); k10r takes the facts it is given.
+  uncompressed-fact watermark, the iteration cap, the 2-hop radius. A
+  message-count watermark (the draft's 100 messages) is NOT k10r's — when to add
+  belongs to whoever reasons (ADR-0007); k10r takes the facts it is given.
 - **Re-partitioning is cheap by construction.** A node changing community
   rewrites one row field and its face entry follows; repeated binning never
   becomes a read-modify-write across a scan or a wait on a file lock.
@@ -400,7 +402,7 @@ inspectable from a dashboard reading `get_stats`.
 - **Relationship to PLAN.** Community detection sits in Phase 5+ ("dreaming
   consolidation — petgraph community detection + human-reviewed op set, do
   not start early"). This ADR describes the incremental LOCAL form of it,
-  moved into the write bypass. Whether that promotes a slice of Phase 5 ahead
+  moved into the write-time pass. Whether that promotes a slice of Phase 5 ahead
   of Phase 3/4 is a ruling, not a consequence of this document.
 - **Claims carried from the drafts, not measured here:** millisecond read
   latency, ≥90% provider context-cache hit rate, "the Rust core shrinks by

@@ -34,7 +34,7 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   (ADR-0008)
 - [ ] Phase 2.7 — Multi-party participation: member display-name/role
   fields + per-message attribution in serialization; `kind=profile`
-  flat-memory category (extraction-routed, weight-governed); interrupt
+  flat-memory category (model-added, weight-governed); interrupt
   trigger (seconds-scale passive window) with silent outcomes in the
   decision log. (ADR-0009)
 - [ ] Phase 2.8 — Code store: the delivered script's home, and the one
