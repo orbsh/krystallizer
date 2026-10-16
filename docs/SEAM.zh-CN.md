@@ -24,10 +24,12 @@
 | `POST /code` | `CodeStore::put` | code (35) | 已落 |
 | `GET /code` | `CodeStore::list`（池读：id + language + description，无 source） | code (35) | 已落 |
 | `GET /code/{id}` | `CodeStore::get`（整行，含 source） | code (35) | 已落 |
-| — 无路由 | `MemoryStore::store` / `search` / `forget` / `list` | flat memory (32) | core 已落，无端点（PLAN 1e） |
+| `POST /memory` | `MemoryStore::store`（id 由 store 发放；`created_at` 归调用方） | flat memory (32) | 已落（PLAN 1e） |
+| `GET /memory/{user_id}/search?q=` | `MemoryStore::search`（只扫该用户的键区间；空结果合法） | flat memory (32) | 已落（PLAN 1e） |
+| — 无路由 | `MemoryStore::forget` / `list` / `stats` | flat memory (32) | core 已落，无端点 |
 | — 无路由 | `ingest(fact)` + 图读（traversal、权重 Top-K） | fact graph | 已声明（ADR-0002/0003），无 ns |
-| — 无路由 | 初始化记忆装配（从用户节点出发遍历） | initialization memory | 已声明（ADR-0001 Update 2026-10-16），无 ns |
-| — 无路由 | 任务顶点 + `task_links` 边（第三个接口面——一个图，与事实同图） | task graph | 已声明（ADR-0001 Update 2026-10-16），无 ns |
+| — 无路由 | 初始化记忆装配（从用户节点出发遍历） | initialization memory | 已声明（ADR-0001），无 ns |
+| — 无路由 | 任务顶点 + `task_links` 边（第三个接口面——一个图，与事实同图） | task graph | 已声明（ADR-0001），无 ns |
 | 读侧随会话投影；写侧无路由 | 任务实例态（开 / 完——用于精确枚举的结构化字段） | task state | 已声明（gravity ADR-0003 §3/§4） |
 
 in-process 不是第二道门：`InProcessSurface` 在调用方进程内链接同一批原
@@ -40,13 +42,13 @@ in-process 不是第二道门：`InProcessSurface` 在调用方进程内链接�
 | 轮首取投影 | `MemorySurface::fetch_session` | `GET /channels/{c}/members/{m}/session` | `ChannelStore::fetch_full` | 已落 |
 | 轮末追加 delta（用户消息 + 回复，同一个 `ts_ms`，`sub` 0/1） | `MemorySurface::append_message` | `POST /channels/{c}/messages` | `ChannelStore::append` | 已落 |
 | 压缩落地（summarize） | 未接 | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint` | 门已落，gravity 侧欠（Phase 2/2.6） |
-| 任务进度（一步一 task 行；读随轮首投影，完成在执行点写） | ADR-0003 §3/§4 | 读侧随 `GET /channels/{c}/members/{m}/session`；写侧尚无路由 | 任务顶点 + `task_links` 边，与事实同图 | 已声明——第三个接口面（ADR-0001 Update 2026-10-16）；gravity Phase 2.6 |
-| `recall_memory`——长期事实 | 工具面（未进代码） | — 无路由 | `MemoryStore::search`；之后是图的检索（落点 + traversal + 权重 Top-K） | k10r 门欠（PLAN 1e）；工具欠 |
-| `commit_memory`——写事实 | 工具面 | — 无路由 | `MemoryStore::store`（flat）/ `ingest(fact)`（图） | 同上 |
+| 任务进度（一步一 task 行；读随轮首投影，完成在执行点写） | ADR-0003 §3/§4 | 读侧随 `GET /channels/{c}/members/{m}/session`；写侧尚无路由 | 任务顶点 + `task_links` 边，与事实同图 | 已声明——第三个接口面（ADR-0001）；gravity Phase 2.6 |
+| `recall_memory`——长期事实 | 工具面（未进代码） | `GET /memory/{user_id}/search?q=`（flat） | `MemoryStore::search`；图的检索（落点 + traversal + 权重 Top-K）尚欠 | flat 门已落（PLAN 1e）；图门欠（Phase 3）；工具欠 |
+| `commit_memory`——写事实 | 工具面 | `POST /memory`（flat） | `MemoryStore::store`（flat）/ `ingest(fact)`（图） | flat 门已落（PLAN 1e）；图门欠（Phase 3）；工具欠 |
 | `resolve_skills`——可选 skills 列表 | 工具面 | `GET /code`（bring-up：池读） | `CodeStore::list` | bring-up 形态已落；skill 节点（前置 / 步骤 / 经验 / 后验）是 Phase 5+ deferred |
 | `invoke_skill`——计划里取码那一步 | 工具面 | `GET /code/{id}` | `CodeStore::get` | 已落 |
 | `invoke_skill`——调用本身 | 计划里的一步 | **不走 k10r**（见 §3） | — | gravity Phase 4.6 |
-| 初始化记忆（人设 / 风格） | 调用方无操作：它随投影到达 | — | 装配是 k10r 内部细节（从用户节点出发遍历，注入上下文头部） | 已声明（ADR-0001 Update 2026-10-16） |
+| 初始化记忆（人设 / 风格） | 调用方无操作：它随投影到达 | — | 装配是 k10r 内部细节（从用户节点出发遍历，注入上下文头部） | 已声明（ADR-0001） |
 
 ## 3. 不属于 k10r 门的部分
 
@@ -61,7 +63,7 @@ k10r 的任何路由都不会成为 LLM 的工具目标，k10r 也从不回调�
 
 ## 4. 让这张表读得通的几条不变量
 
-- **追加优先是**图**的规则；会话日志只追加**（ADR-0002 Update 2026-10-16）：凡
+- **追加优先是**图**的规则；会话日志只追加**（ADR-0002）：凡
   承载知识或数据的表（节点/边行、权重、派生项、code 行）默认追加——无读改
   写竞态、可重放、坏派生只是一次重试——并在「禁令比更新本身更贵」的地方允许
   修改。日志不属此列：它保持只追加，压缩点住在自己的表里、用 `coverage_ts`

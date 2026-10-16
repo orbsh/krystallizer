@@ -25,10 +25,12 @@ primitives in `crates/mem-core/src/`.
 | `POST /code` | `CodeStore::put` | code (35) | landed |
 | `GET /code` | `CodeStore::list` (pool read: id + language + description, no source) | code (35) | landed |
 | `GET /code/{id}` | `CodeStore::get` (the whole row, source included) | code (35) | landed |
-| — no route | `MemoryStore::store` / `search` / `forget` / `list` | flat memory (32) | core landed, no endpoints (PLAN 1e) |
+| `POST /memory` | `MemoryStore::store` (the store assigns the id; `created_at` is the caller's) | flat memory (32) | landed (PLAN 1e) |
+| `GET /memory/{user_id}/search?q=` | `MemoryStore::search` (one user's key range; an empty result is legal) | flat memory (32) | landed (PLAN 1e) |
+| — no route | `MemoryStore::forget` / `list` / `stats` | flat memory (32) | core landed, no endpoints |
 | — no route | `ingest(fact)` + graph reads (traversal, weight Top-K) | fact graph | Declared (ADR-0002/0003), no ns yet |
-| — no route | initialization-memory assembly (traversal from the user node) | initialization memory | Declared (ADR-0001 Update 2026-10-16), no ns yet |
-| — no route | task vertices + `task_links` edges (the third interface surface — a graph, sharing the facts' graph) | task graph | Declared (ADR-0001 Update 2026-10-16), no ns yet |
+| — no route | initialization-memory assembly (traversal from the user node) | initialization memory | Declared (ADR-0001, no ns yet |
+| — no route | task vertices + `task_links` edges (the third interface surface — a graph, sharing the facts' graph) | task graph | Declared (ADR-0001, no ns yet |
 | rides the session projection (read); no write route | task instance state (open / done — a structured field for exact enumeration) | task state | Declared (gravity ADR-0003 §3/§4) |
 
 `in-process` is not a second door: `InProcessSurface` links the same
@@ -42,13 +44,13 @@ the single cross-process form (ADR-0007 as revised).
 | Turn-start projection read | `MemorySurface::fetch_session` | `GET /channels/{c}/members/{m}/session` | `ChannelStore::fetch_full` | landed |
 | Turn-end delta append (user + reply, one `ts_ms`, `sub` 0/1) | `MemorySurface::append_message` | `POST /channels/{c}/messages` | `ChannelStore::append` | landed |
 | Compression landing (summarize) | not wired | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint` | door landed, gravity side owed (Phase 2/2.6) |
-| Task progress (one task row per step; read with the turn-start projection, completion written at the call site) | ADR-0003 §3/§4 | read side rides `GET /channels/{c}/members/{m}/session`; the write face has no route yet | task vertices + `task_links` edges in the same graph as the facts | Declared — the third interface surface (ADR-0001 Update 2026-10-16); gravity Phase 2.6 |
-| `recall_memory` — long-term facts | tool face (not in code yet) | — no route | `MemoryStore::search`; later the graph's retrieval (landing + traversal + weight Top-K) | k10r door owed (PLAN 1e); tool owed |
-| `commit_memory` — write facts | tool face | — no route | `MemoryStore::store` (flat) / `ingest(fact)` (graph) | same |
+| Task progress (one task row per step; read with the turn-start projection, completion written at the call site) | ADR-0003 §3/§4 | read side rides `GET /channels/{c}/members/{m}/session`; the write face has no route yet | task vertices + `task_links` edges in the same graph as the facts | Declared — the third interface surface (ADR-0001; gravity Phase 2.6 |
+| `recall_memory` — long-term facts | tool face (not in code yet) | `GET /memory/{user_id}/search?q=` (flat) | `MemoryStore::search`; the graph's retrieval (landing + traversal + weight Top-K) is owed | flat door landed (PLAN 1e); graph door owed (Phase 3); tool owed |
+| `commit_memory` — write facts | tool face | `POST /memory` (flat) | `MemoryStore::store` (flat) / `ingest(fact)` (graph) | flat door landed (PLAN 1e); graph door owed (Phase 3); tool owed |
 | `resolve_skills` — the selectable skill list | tool face | `GET /code` (bring-up: the pool read) | `CodeStore::list` | bring-up form landed; the skill NODE (preconditions / steps / experience / verification) is Phase 5+ deferred |
 | `invoke_skill` — plan step: fetch the code row | tool face | `GET /code/{id}` | `CodeStore::get` | landed |
 | `invoke_skill` — the call itself | plan step | **not k10r** (see §3) | — | gravity Phase 4.6 |
-| Initialization memory (persona / style) | — the caller performs no operation: it arrives inside the projection | — | assembly is k10r-internal (a traversal from the user node, injected at the head of the context) | Declared (ADR-0001 Update 2026-10-16) |
+| Initialization memory (persona / style) | — the caller performs no operation: it arrives inside the projection | — | assembly is k10r-internal (a traversal from the user node, injected at the head of the context) | Declared (ADR-0001 |
 
 ## 3. What is not a k10r door
 
@@ -66,7 +68,7 @@ an actor (ADR-0007).
 ## 4. Invariants that make this table readable
 
 - **Append-first is the GRAPH's rule; the session log is append-only**
-  (ADR-0002 Update 2026-10-16): appending is the default wherever a table holds
+  (ADR-0002: appending is the default wherever a table holds
   knowledge or data (node/edge rows, weights, derived entries, code rows) — no
   read-modify-write race, replayable, a bad derivation is a retry — and a
   modification is allowed where the ban would cost more than the update itself.

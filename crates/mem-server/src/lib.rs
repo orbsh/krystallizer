@@ -3,15 +3,16 @@
 //! in-process mem-core linking is a local deployment detail, not a
 //! second access mode).
 //!
-//! Endpoints mirror `ChannelStore`'s primitives (channel log) and
-//! `CodeStore`'s (the code store) exactly; wire types restate the
-//! stores' rows for serde (the core stays wire-free).
+//! Endpoints mirror `ChannelStore`'s primitives (channel log),
+//! `CodeStore`'s (the code store) and `MemoryStore`'s (flat memory)
+//! exactly; wire types restate the stores' rows for serde (the core
+//! stays wire-free).
 //! Ordering discipline carries over: the CALLER owns the clock —
 //! `ts_ms` and `sub` ride the request (ADR-0008 §3, gravity's clock is
 //! the order authority; the server never assigns).
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -19,6 +20,7 @@ use axum::{
 };
 use mem_core::channel::{ChannelStore, MessageKey, MessageRow, SessionView};
 use mem_core::code::{CodeRow, CodeStore};
+use mem_core::memory::MemoryStore;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,11 +35,10 @@ pub struct MemState {
     /// The code group — the `memory` keyspace, shared with flat memory
     /// (different ns).
     code: tokio::sync::Mutex<CodeStore>,
-    /// The flat-memory group — attached at boot with the others so the
-    /// service owns every group it opened. Nothing reads it yet: the
-    /// memory endpoints land with k10r Phase 1.
-    #[allow(dead_code)]
-    memory: tokio::sync::Mutex<mem_core::MemoryStore>,
+    /// The flat-memory group — the `memory` keyspace, shared with the
+    /// code group (different ns). This is the memory family's tool face:
+    /// `commit_memory` stores here, `recall_memory` searches here.
+    memory: tokio::sync::Mutex<MemoryStore>,
 }
 
 /// Open the database at `path` and build the router.
@@ -64,6 +65,8 @@ pub fn open(path: PathBuf) -> Result<Router, fjall::Error> {
         )
         .route("/code", post(put_code).get(list_code))
         .route("/code/{code_id}", get(fetch_code))
+        .route("/memory", post(store_memory))
+        .route("/memory/{user_id}/search", get(search_memory))
         .with_state(state))
 }
 
@@ -294,6 +297,73 @@ async fn list_code(State(state): State<Arc<MemState>>) -> Json<Vec<CodeCandidate
                 language,
                 description,
             })
+            .collect(),
+    )
+}
+
+// ---- flat memory (ns 32) --------------------------------------------
+//
+// The memory family's tool face (ADR-0001 Update 2026-10-16: the standing
+// capability, offered as tools — `commit_memory` / `recall_memory`). One
+// endpoint per core primitive, nothing added: the store assigns the id,
+// and the CALLER owns the clock — `created_at` rides the request, the
+// same rule the channel log carries (ADR-0008 §3); the server never
+// stamps a time.
+
+/// Request body of `POST /memory` — `MemoryStore::store`'s parameters.
+#[derive(Deserialize, Serialize)]
+pub struct StoreMemory {
+    pub user_id: u64,
+    pub text: String,
+    /// The caller's clock, never the server's (ADR-0008 §3).
+    pub created_at: u64,
+}
+
+/// The assigned identity, returned by `POST /memory` (the caller's record).
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct MemoryIdDto {
+    pub memory_id: u64,
+}
+
+/// One search hit: identity plus the stored text.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct MemoryHitDto {
+    pub memory_id: u64,
+    pub text: String,
+}
+
+/// Query string of the search door: `?q=`.
+#[derive(Deserialize)]
+pub struct MemorySearchQuery {
+    pub q: String,
+}
+
+/// `POST /memory` — store one flat memory; the store assigns the id.
+async fn store_memory(
+    State(state): State<Arc<MemState>>,
+    Json(body): Json<StoreMemory>,
+) -> Json<MemoryIdDto> {
+    let mut memory = state.memory.lock().await;
+    Json(MemoryIdDto {
+        memory_id: memory.store(body.user_id, &body.text, body.created_at),
+    })
+}
+
+/// `GET /memory/{user_id}/search?q=` — the user's rows containing `q`, in
+/// key order. One user's range is scanned, never the whole table. An empty
+/// query and "no match" are both an empty list, which is a legal answer
+/// (the caller injects nothing) rather than an error.
+async fn search_memory(
+    State(state): State<Arc<MemState>>,
+    Path(user_id): Path<u64>,
+    Query(query): Query<MemorySearchQuery>,
+) -> Json<Vec<MemoryHitDto>> {
+    let memory = state.memory.lock().await;
+    Json(
+        memory
+            .search(user_id, &query.q)
+            .into_iter()
+            .map(|(memory_id, text)| MemoryHitDto { memory_id, text })
             .collect(),
     )
 }
