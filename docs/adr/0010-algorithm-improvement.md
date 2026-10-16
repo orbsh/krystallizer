@@ -6,8 +6,8 @@
 
 ## Context
 
-The 主动 (long-term) side (ADR-0001 Update 2026-10-16) has a table but no
-algorithm. The facts arrive one at a time (each a 9-slot tuple) and land as scattered
+The 主动 (long-term) side (ADR-0001 has a table but no
+algorithm. The facts arrive one at a time (each an 8-slot tuple) and land as scattered
 nodes; nothing gives them order. Order can be paid for in exactly two
 places: at read time (every search clustering the neighborhood it needs)
 or at write time (a background pass in the typing gap, where the caller
@@ -34,13 +34,13 @@ What constrains every step below:
   from the model's active memory add (the caller routes that call to
   `ingest(fact)`), and k10r never calls anyone back.
 - **Retrieval is vector landing + exact name/alias lookup, then traversal
-  ranked by weight** (ADR-0003 Update 2026-10-14). There is no lexical
+  ranked by weight** (ADR-0003. There is no lexical
   branch to reuse, and no third retrieval mechanism is to be added.
 - **One WriteBatch = one transaction** (ADR-0002): every index change this
   algorithm makes rides the same commit as the data change.
 - **ADR-0005's weight model supplies the vote's edge weights** — no second
   weight semantics is introduced.
-- **Append-first, not append-only** (ADR-0002 Update 2026-10-16): a
+- **Append-first, not append-only** (ADR-0002: a
   modification is allowed where the ban costs more than the update. This
   ADR is a case of that rule, not an exception carved out of an
   immutability dogma.
@@ -64,7 +64,7 @@ algorithm at all.
 ### 1. Write-time normalization and resolution (the layout in okm's terms)
 
 The model's active add produces structured facts (subject / predicate / object
-triples, serialized as the 9-slot tuple), and the caller hands them to the
+triples, serialized as the 8-slot tuple), and the caller hands them to the
 core through the deterministic `ingest(fact)` door; the core does not parse
 prose and does not call a model. Three collections carry the track's state; the
 okm-conformant layout is below (ns numbers are proposals — the dictionary is
@@ -134,6 +134,13 @@ Five points where this differs from the drafts, and why:
   extracted, open-ended attributes ride the dynamic segment and are
   reachable through path indexes (okm ADR-0012 / ADR-0029) when a query
   needs one.
+- **The fact tuple's relation is its name plus props, with no label of its
+  own.** The name IS this `kind_id`: a second, coarser kind would be a
+  class-of-kinds with no face and no reader, and a classification the model
+  wants kept visible rides the props (queryable through a path index). The
+  tuple's three roles are therefore NOT symmetric — head and tail carry a name
+  AND a kind (the node row's `kind_id` plus the `node-kind` face); the relation
+  carries only a name.
 - **Values are native segments, never a JSON blob** (okm ADR-0018): hot
   fixed-width fields contiguous, variable text as a cold TLV segment.
 
@@ -244,7 +251,7 @@ draft).
 **Export.** One scan on the `by_community` face pulls the community's
 members; their edges arrive through the traversal faces with an in-memory
 membership filter — the community's subgraph, sliced into a plain-text packet
-of 9-slot tuples, which is the input the next step consumes.
+of 8-slot tuples, which is the input the next step consumes.
 
 ### 4. Capsule consolidation (layer 3)
 
@@ -260,10 +267,10 @@ The drafts phrase it as "handed outward through the non-blocking channel
 gravity provides" — that names the carrier the caller uses, and it must not
 be read as an outbound call from mem-core.
 
-**Prompt (carried verbatim from the draft; the packet is 9-slot tuples):**
+**Prompt (carried verbatim from the draft; the packet is 8-slot tuples):**
 
 ```
-你是一个图谱语义提炼器。以下输入是某个特定知识社区内的全部原子事实片段（定长 9 元组，每行一条）：
+你是一个图谱语义提炼器。以下输入是某个特定知识社区内的全部原子事实片段（定长 8 元组，每行一条）：
 ------------------------
 ${FACT_TUPLES}
 ------------------------
@@ -296,7 +303,7 @@ assemble — and every step is a named access method.
 // draft sketch — the read path runs no graph algorithm
 pub fn assist_search(query: &str, top_k: usize) -> AssistantContext {
     // 1. in-process local embedding lands the query (top-k seeds; the by_name
-    //    face is the exact entrance for identifiers — ADR-0003 Update)
+    //    face is the exact entrance for identifiers — ADR-0003)
     let landed = local_embedding_engine.seeds(query, top_k);
     let cid = landed.community_id;                 // a declared field on the node row
 
@@ -351,7 +358,7 @@ inspectable from a dashboard reading `get_stats`.
 - **No new retrieval mechanism.** The community index is a projection over
   the fact graph and the capsule is a cached summary read, never a scored
   branch; search still enters by landing or by exact name/alias lookup
-  (ADR-0003 Update 2026-10-14).
+  (ADR-0003.
 - **The vote consumes ADR-0005's weights** (`Weight(e)`, `confidence`, the
   read-write quadrants). ADR-0005's weight index, spelled there as
   `W:{weight}:{edge_id}`, is that same rule one layer down: a declared-field
@@ -386,12 +393,6 @@ inspectable from a dashboard reading `get_stats`.
   endpoints only. Whether it becomes a literal node (kind `Literal`, value in
   the payload, reachable through `by_name`) or a declared attribute field on
   the edge is Phase 3's decision.
-- **The relation's own type label (the fact tuple's position 4).** A node's
-  type label has a home — the entity row's `kind_id` plus the `node-kind` face —
-  but the tuple also labels the RELATION's type, while the edge body carries one
-  `kind_id` for the predicate (the relation itself). Whether a relation's type
-  becomes a second kind dimension, a declared field, or is dropped at ingestion
-  is undecided.
 - **The capsule call's carrier.** Since k10r cannot call out, the
   consolidation request has to be pulled by the caller or marked for it.
   Which door carries it (a pending-consolidation read on the memory surface

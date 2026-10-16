@@ -55,12 +55,18 @@ knowledge a home.
   person in the after-sales channel and the pre-sales channel is one
   profile), so they belong to global memory, not to any channel.
 
-  Storage: a managed category of flat-memory facts (`kind=profile`),
-  maintained incrementally by the existing extraction pipeline
-  (ADR-0004) and governed by the existing weight system (ADR-0005) —
-  a frequently-cited preference grows heavy, a stale one decays. No new
-  table; the agent's context assembly pulls profile facts for the
-  channel's current members in one batch.
+  Storage: the graph — profile knowledge is a set of facts about a member
+  (`member -[PREFERS]-> iced_americano`), the member being an in-domain
+  entity resolved by its stable id (ADR-0004), maintained by whoever
+  reasons (ADR-0004/0007) and governed by the existing weight system
+  (ADR-0005) PER FACT: a frequently-cited preference grows heavy, a stale
+  one decays. The context assembly pulls profile facts for the channel's
+  current members as one traversal from the member nodes. There is no
+  `kind=profile` flat category and no profile table: flat memory is the
+  pre-graph carrier of long-term memory and goes away with the graph
+  (ADR-0001), and its text rows have no per-fact identity — updating,
+  weighting and enumerating them per fact are all out of reach, where an
+  edge does all three.
 
 The two layers stay separate because they change for different reasons:
 identity is admin-time and deterministic; profiles are run-time and
@@ -129,8 +135,9 @@ extends to this trigger unchanged.
 
 - The members table gains the display-name/role fields; the
   serialization path gains per-message attribution.
-- Flat memory gains the `kind=profile` managed category; the extraction
-  pipeline's output routing gains profile facts as a destination.
+- Profile knowledge lands in the graph (a member node plus its edges); the
+  `kind=profile` flat category and its extraction routing do not exist —
+  neither was ever built.
 - The policy engine gains the interrupt trigger (seconds-scale window)
   and the decision log gains silent outcomes.
 - Single-user mode needs no new mechanism: it is the multi-party shape

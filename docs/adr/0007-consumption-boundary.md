@@ -59,11 +59,11 @@ summarize when policy needs one) are gravity's work — k10r hands over
 deterministic primitives and cheap half-steps (candidate sets), the
 model-bound decisions happen on the side that owns the model identity.
 
-**Embedding is internal to krystallizer** — the only network call in
-the core (already conceded by ADR-0003). The embedding model is locked
-with the data: vectors from different models do not share a space, so
-the memory system, not any caller, owns embedding consistency. Write
-and query paths compute embeddings in-process.
+**Embedding is internal to krystallizer, and it is not a network call
+either.** The model is built in and runs in-process (ADR-0003): the
+vector space is bound to data correctness, so the memory system — not
+any caller — owns embedding consistency, and callers never supply
+vectors. Write and query paths compute embeddings in-process.
 
 **Secrets never enter the config file.** Configuration is one KDL
 document (`config/krystallizer.kdl`, one top-level node per
@@ -87,7 +87,7 @@ name that holds it.
   (OKM schema compiled into wasm, storage moved to aura via a
   NestStorage frame up-call) died on its own hole — a wasm sandbox
   holds no filesystem AND no outbound network, while the embedding
-  call is the one network surface k10r owns (ADR-0003: the embedding
+  call was the one network surface k10r owned (ADR-0003: the embedding
   space is bound to the data — moving it out is a correctness
   violation, not a preference; ADR-0034's withdrawal of wasi-http
   closed the only planned wasm egress path). The bgi form fixed that
@@ -97,24 +97,14 @@ name that holds it.
   k10r's storage. k10r always owns its Fjall directory (ADR-0002)
   regardless of who calls it; "one directory on disk" stands without a
   carriage split.
-- mem-server is a deliverable, not a deferred shell: three endpoints
-  first (append / fetch_full / append_checkpoint), grown as consumers
-  need.
-- The core's own network surface remains exactly one outbound call:
-  the embedding API. No LLM client, no transport framework.
+- mem-server is a deliverable, not a deferred shell: the channel-log
+  endpoints first (append / fetch_full / append_checkpoint), then the code
+  store and the flat-memory door, grown as consumers need.
+- **The core's outbound network surface is empty.** The embedding model is
+  built in (ADR-0003), so where this ADR originally conceded exactly one
+  call there is now none: no LLM client, no transport framework, no
+  embedding API. The boundary is strictly narrower, not a new freedom.
 - A private config-parsing crate (knus-based, env-merge included) is
   planned once the third consumer need (KDL-shaped CLI) is real; for
   now knus alone covers decode, env reads stay one `std::env::var`
   away.
-
-## Update (2026-10-14): the core's outbound network surface is empty
-
-ADR-0003's embedding question is decided as a **built-in local model**
-(ADR-0003 Update 2026-10-14), so the one network call this ADR conceded
-("the only network call in the core", "exactly one outbound call: the
-embedding API") no longer exists. Nothing else moves: embedding still
-belongs to krystallizer — the vector space is bound to data correctness
-and the model stays locked with the data — and callers still never supply
-vectors. The consequence is a strictly narrower boundary, not a new
-freedom: no LLM client, no transport framework, and now no embedding API
-either.

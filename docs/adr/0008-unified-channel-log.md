@@ -1,6 +1,6 @@
 # ADR-0008: Unified Channel Log — Agent Context as a Projection, Heuristic Compression
 
-**Status**: Partially landed (2026-10-09: the minimal slice — channel messages ns 33 + per-member checkpoints ns 34, `ChannelStore::append`/`fetch_full`/`append_checkpoint`, serving gravity Phase 0; the compression point is its OWN table (ns 34), pointing into the log by `coverage_ts` and latest-wins inside that table, while the log itself stays append-only (ADR-0002 Update 2026-10-16); pending: threads, topic tags, members, cursors, the policy engine)
+**Status**: Partially landed (2026-10-09: the minimal slice — channel messages ns 33 + per-member checkpoints ns 34, `ChannelStore::append`/`fetch_full`/`append_checkpoint`, serving gravity Phase 0; the compression point is its OWN table (ns 34), pointing into the log by `coverage_ts` and latest-wins inside that table, while the log itself stays append-only (ADR-0002); pending: threads, topic tags, members, cursors, the policy engine)
 **Date**: 2026-09-22
 **Chinese**: [0008-unified-channel-log.zh-CN.md](0008-unified-channel-log.zh-CN.md)
 **Amends**: ADR-0001 (summarize's truncation step), ADR-0002 (session message key), ADR-0006 (session read/write shape)
@@ -66,15 +66,28 @@ agent B: cursor at m3 → unread [m4][m5]...
 
 - **Compression is append, never truncate.** summarize = run the
   summary through a tail (ADR-0001's single-turn branch) → append a
-  checkpoint record (coverage seq + summary text) → the projection
+  checkpoint record (coverage point + summary text) → the projection
   now reads checkpoint + post-coverage increment. The log itself
   never shrinks; a bad summary can be re-run, and history can be
   re-segmented and re-compressed at any time. This breaks the
   "compression must swallow all history" convention: each compression
   covers a bounded span, so summary quality stays bounded.
-- Checkpoints are keyed per member — `(ns, channel_id, member_id,
-  timestamp)` — they are private projection state, not shared log
-  content. Two agents on one channel compress independently.
+- **The compression point stands BESIDE the log, not inside it.** The
+  checkpoint lives in its OWN table (ns 34), pointing into the log by
+  `coverage_ts` — latest-wins inside that table, so the overwrite's
+  mutability never touches a log row. Append-first (ADR-0002) covers the
+  graph and the data side; it does not apply to the log, which is
+  append-only outright.
+- Checkpoints are keyed per member — `(ns, channel_id, member_id)` — they
+  are private projection state, not shared log content, and the row is
+  latest-wins: a checkpoint is a cache, not an audit log (history is the
+  log). Two agents on one channel compress independently.
+- **Assembly is ordered, head first**: the global layer (persona / style —
+  the initialization memory, ADR-0001) → the compression point → the messages
+  after it. The global layer takes the head position the summary used to
+  occupy alone, because it is long-horizon content riding the passive channel;
+  the increment follows in key order. Assembly stays a k10r-internal detail —
+  the caller receives the projection and never composes it.
 - Read cursors `(ns, channel_id, member_id) -> last-read timestamp`
   serve BOTH the IM unread badge and the agent's incremental pull:
   one mechanism, two consumers.
@@ -152,29 +165,33 @@ position, pre/post token counts — which is the future training set.
 The learning loop closes when real feedback signals exist; the engine's
 "engine" today means parameterizable + auditable, not adaptive.
 
-### 5. Division of labor with active memory extraction
+### 5. Division of labor with the memory add
 
 Both consume the same log; they serve different layers and do not
 merge:
 
 - **summarize** serves the CONTEXT: lossy, for the model's working set,
   within the turn's latency budget.
-- **extraction** serves CROSS-SESSION MEMORY: atomic facts into flat
-  memory / the graph — produced by the model's OWN active memory add (the
-  tool call the caller routes to `ingest(fact)`), never by a compression
-  pass. The log being append-only means a caller MAY lag, batch or re-run
-  over the same bytes, but nothing schedules a trailing worker.
+- **The memory add** serves CROSS-SESSION MEMORY: atomic facts into the
+  graph — produced by the model's OWN active memory add (the tool call the
+  caller routes to `ingest(fact)`), never by a compression pass. No trailing
+  extraction worker exists or is scheduled. The log being append-only means a
+  caller MAY lag, batch or re-run over the same bytes; it is an available
+  property, not a mechanism. So summarize does not gate the add: the summary
+  serves the context, the active add serves cross-session memory, and nothing
+  obliges them to be one pass.
 
 The root cause of keeping them separate: different quality/latency
 budgets (summary in-turn, the fact's producer is whoever is reasoning).
 
 **Multi-party participation** — member identity (display name / role
-in the members table, attribution applied at serialization), user
-profiles (a managed `kind=profile` category of global memory,
-extracted and weight-governed), and the interrupt policy (seconds-scale
-passive trigger through the same policy engine, silent outcomes logged)
-— is specified in ADR-0009. The single-user shape needs nothing extra:
-one member, every trigger on the turn boundary.
+in the members table, attribution applied at serialization), profile
+knowledge (graph facts about a member — a member node plus its type label
+and edges; there is no `kind=profile` flat category, ADR-0009), and the
+interrupt policy (seconds-scale passive trigger through the same policy
+engine, silent outcomes logged) — is specified in ADR-0009. The
+single-user shape needs nothing extra: one member, every trigger on the
+turn boundary.
 
 ## Why Not
 
@@ -210,36 +227,3 @@ one member, every trigger on the turn boundary.
 - The policy engine is pure functions in k10r (threshold evaluation,
   max-gap split, decision log records); LLM calls (summary) stay on
   gravity's side per ADR-0007.
-
-## Update (2026-10-16, the compression point is its own table; the log stays append-only)
-
-The Status line used to call the same-key checkpoint overwrite "a recorded
-deviation from 'append a checkpoint record'". The deviation was never the
-checkpoint's mutability — it is that the compression point must STAND BESIDE
-the log, not inside it. Settled shape: the **log (ns 33) is append-only**, and
-the **compression point is its own table (ns 34), pointing into the log by
-`coverage_ts`** — latest-wins inside that table, so its mutability never
-touches a log row. Append-first (ADR-0002 Update, same date) covers the graph
-and the data side; it does not apply to the log.
-
-## Update (2026-10-16, where the facts come from: the model's active memory add, not a compression pass)
-
-§5's extraction worker is retired as the mechanism. Facts are not produced by
-compressing a tail prompt and then extracting from it, and no trailing worker
-is required: **the model adds memory actively, in-turn** — the memory tool is
-the producer, and that call is the caller's business (ADR-0007). k10r still
-takes only the deterministic `ingest(fact)`. That the log is append-only means
-a caller MAY lag, batch or re-run over the same bytes; it is an available
-property, not a scheduled mechanism. So summarize no longer gates extraction:
-the summary serves the context, the active add serves cross-session memory, and
-nothing obliges them to be one pass.
-
-## Update (2026-10-16, the projection's assembly order)
-
-Assembling the context is ordered, head first: **the global layer (persona /
-style — the initialization memory), then the compression point, then the
-messages after it.** The global layer takes the head position the summary used
-to occupy alone; the compression point follows because it summarizes
-everything up to `coverage_ts`; the increment follows in key order. Assembly
-stays a k10r-internal detail — the caller receives the projection and never
-composes it.

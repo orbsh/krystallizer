@@ -48,10 +48,10 @@ Rust，无 Python 层。它不是 aura 公民：不注册摊位、不被 aura sp
 融合判断、策略需要时的摘要）是 gravity 的工作——k10r 只交出确定性
 原语和便宜半步（候选集），绑定模型的决策发生在拥有模型身份的一侧。
 
-**embedding 是 k10r 的内部细节**——核心唯一的网络调用（ADR-0003
-已让步）。embedding 模型与数据锁定：不同模型的向量不共享空间，所
-以持有 embedding 一致性的是记忆系统，不是任何调用方。写入与查询路
-径在进程内计算 embedding。
+**embedding 是 k10r 的内部细节，而且它不是一次网络调用。** 模型内置、
+进程内运行（ADR-0003）：向量空间绑定数据正确性，所以持有 embedding
+一致性的是记忆系统、不是任何调用方，调用方也从不提供向量。写入与查询
+路径在进程内计算 embedding。
 
 **密钥绝不进配置文件。** 配置是一份 KDL 文档
 （`config/krystallizer.kdl`，每个子系统一个顶层 node）；每个密钥通
@@ -69,7 +69,7 @@ Rust，无 Python 层。它不是 aura 公民：不注册摊位、不被 aura sp
   必要——aura 侧经 gravity 到达记忆，gravity 经 HTTP 到达 k10r。
   在案的两代被取代形态：最初的 wasm 形态（OKM schema 编译进 wasm，
   存储经 NestStorage 帧上抛归 aura）死于自身的洞——wasm 沙箱既装
-  不下文件系统也**没有出网能力**，而 embedding 调用是 k10r 唯一自
+  不下文件系统也**没有出网能力**，而 embedding 调用曾是 k10r 唯一自
   持的网络面（ADR-0003：嵌入空间与数据绑定，外移是正确性违规不是
   偏好；ADR-0034 撤销 wasi-http 后，wasm 出网的唯一规划路径关闭）。
   bgi 形态补上了那个洞，却保留了错误的前提：k10r 作为 aura 托管进
@@ -78,19 +78,12 @@ Rust，无 Python 层。它不是 aura 公民：不注册摊位、不被 aura sp
   局**——k10r 的存储从来不需要 aura 托管执行器。无论调用方是谁，
   k10r 自持 Fjall 目录（ADR-0002）；"磁盘上一个目录"照旧成立，不存
   在承载分流。
-- mem-server 是交付物而非预留壳：先落三个端点（append / fetch_full
-  / append_checkpoint），随消费需求增长。
-- 核心自身的网络面仍恰好一个出站调用：embedding API。无 LLM
-  client，无传输框架。
+- mem-server 是交付物而非预留壳：先落 channel-log 端点（append /
+  fetch_full / append_checkpoint），随后是 code 存储与 flat 记忆那扇门，
+  随消费需求增长。
+- **核心的出网面是空的。** embedding 模型内置（ADR-0003），所以本文档
+  当初让出的那一次调用现在并不存在：无 LLM client、无传输框架、无
+  embedding API。边界是严格变窄，不是新增自由。
 - 私有配置解析 crate（基于 knus，含 env 合并）在第三个消费需求
   （KDL 形态的 CLI）真实落地后再建；当下 knus 单独覆盖 decode，env
   读取离 `std::env::var` 只有一行。
-
-## Update（2026-10-14）：核心的外向网络面已经空了
-
-ADR-0003 的 embedding 问题定案为**内置本地模型**（ADR-0003 Update
-2026-10-14），于是本文档让出的那一次网络调用（"核心自身的网络面仍恰好
-一个出站调用：embedding API"）不再存在。其余不动：embedding 仍归
-krystallizer——向量空间绑定数据正确性，模型与数据锁定——调用方仍从不
-提供向量。后果是边界严格变窄，不是新增自由：没有 LLM client、没有传输
-框架，现在也没有 embedding API。

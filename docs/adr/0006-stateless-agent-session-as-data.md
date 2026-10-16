@@ -13,14 +13,15 @@ context assembly. This makes the loop the coupling point for everything
 that touches history — memory injection, compression triggers, and
 framework-specific context plumbing.
 
-Krystallizer already provides the opposite primitive set (ADR-0001):
-the session is an append-only, checkpoint-prefixed *document* addressed
-by `session_id`, with the full history retrievable at any time. Given
-that, the agent loop does not need to maintain anything — it can be a
-pure function:
+Krystallizer provides the opposite primitive set (ADR-0001): the
+conversation container is an append-only channel log (ADR-0008) whose full
+history stays retrievable at any time, and the agent's context is assembled
+at read time as a projection — checkpoint records + the post-coverage
+increment + the unread tail. Given that, the agent loop does not need to
+maintain anything — it can be a pure function:
 
 ```
-f(session, user_input) -> session'
+f(projection, user_input) -> records'
 ```
 
 This is the same shape as Aura's "API is stateful, operations are
@@ -30,14 +31,14 @@ holds no state between calls, and scale-to-zero falls out for free.
 
 ## Decision
 
-1. **Session as data.** The agent fetches the full session by
-   `session_id` from krystallizer, executes, and writes the new session
-   back. The loop's only session responsibility is *append* (plus
-   writing tool results). It never mutates history, never assembles
-   context from parts, and holds no session state between invocations.
-   All function calls — memory ones included — are ordinary records:
-   the loop stays blind to call semantics, and there is exactly one
-   call mode.
+1. **Session as data.** The agent reads its own projection and appends its
+   own records; it never mutates history, never assembles context from
+   parts, and holds no session state between invocations. Its only write is
+   *append* (tool results included). All function calls — memory ones
+   included — are ordinary records: the loop stays blind to call semantics,
+   and there is exactly one call mode. The container being a channel log
+   means this is structural, not discipline: the log itself forbids
+   mutation.
 
 2. **View-layer pruning is a separate mechanism, not loop logic.**
    Trimming tool-call formatting out of the serialized view happens in
@@ -53,33 +54,23 @@ holds no state between calls, and scale-to-zero falls out for free.
 3. **Loop decomposition.** The agent separates into four parts — UI,
    intelligent session context (krystallizer's session+memory surfaces),
    execution (tools), and loop. The loop shrinks to:
-   fetch session → run turns → persist session.
+   read the projection → run turns → append the records.
 
 ## Consequences
 
 - The loop becomes trivial and portable — integration into Aura's actor
   model is direct: the actor wraps the loop, krystallizer is the
-  sleep/wake persistence substrate.
-- Transport volume grows: the full session is shipped each call
-  (tens of records on average, with tool-call formatting pruned in the
-  view). LLM requests are full-context anyway; this is a serialization
-  cost, not a scaling one.
-- State did not disappear — it moved. Krystallizer now owns
-  persistence, concurrent writers, and view-time pruning. It becomes
-  the single owner of session truth; multi-writer semantics and
-  compression-at-read are its concerns, not blocking concerns for this
-  decision.
+  sleep/wake persistence substrate. Scale-to-zero carries over: nothing
+  in the process survives a call, and the projection is re-read on wake.
+- Transport volume grows: the projection is read each turn and the new
+  records are appended (tens of records on average, tool-call formatting
+  pruned in the view). LLM requests are full-context anyway; this is a
+  serialization cost, not a scaling one.
+- State did not disappear — it moved. Krystallizer owns persistence,
+  concurrent writers, view-time pruning and compression (as a checkpoint
+  record pointing into the log, ADR-0008 — never a rewrite). It is the
+  single owner of session truth; multi-writer semantics are its concern,
+  not a blocking concern for this decision.
 - View-layer trimming must stay strictly read-side: any write-path
   trimming would fork session truth between what is stored and what
   agents see.
-
-## Update (2026-09-22, ADR-0008)
-
-The read/write shape restates: "fetch full session, write back session"
-becomes **append own records, read own projection**. The container is a
-channel log (multi-party capable, append-only); the agent's context is
-its projection — checkpoint records + post-coverage increment + unread
-tail — assembled at read time. The stateless-loop property, scale-to-
-zero, and "the loop never mutates history" all carry over; the storage
-layer now structurally forbids mutation instead of relying on loop
-discipline.

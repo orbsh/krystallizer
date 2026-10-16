@@ -14,25 +14,41 @@
 pg_search）——而数据量级是每用户几万条语料。
 
 graph-memory 设计（wiki）已给出原子图的 KV 编码模式；剩余的 flat 记忆、
-会话、任务表都是 CRUD 形状，直接映射。
+channel 日志、任务表都是 CRUD 形状，直接映射。
 
 ## 决策
 
 **Fjall 为存储引擎。所有 schema 用 OKM derive 宏声明。**
 
-- 身份字段（`session_id`、`user_id` 散列为 u64、表 ns）用定宽 key——
-  编译期 `KEY_LEN`，hex stability test 锁布局。
-- Payload 走 `RowEncode` 的 TLV；变长内容（消息文本、事实摘要）作为
+- 身份字段（`user_id`、`channel_id`、表 ns）用定宽 key——编译期
+  `KEY_LEN`，hex stability test 锁布局。
+- Payload 走 `RowEncode` 的 TLV；变长内容（消息文本、实体名）作为
   String payload 字段，永不进 key。
-- 会话消息：key `(ns, user_id, session_id, seq)`——排序用每会话单调
-  seq，与插入同一 WriteBatch 内分配（不用墙钟时间戳：同一毫秒的两条
-  消息不能乱序）。prefix checkpoint 模型要求稳定全序。
-- 任务：`(task_id, seq)` 复合主键沿用旧 PG schema；task_links DAG 边走
-  OKM `EdgeTable`（方向位头）。
-- 原子事实图：`edge:{src}:{label}:{dst}` 按 wiki 编码，正反向邻接用
-  OKM `EdgeTable`。
-- 一个 WriteBatch = 一个事务：checkpoint 写入 + 消息截断 + 事实入库 +
-  权重 delta 原子提交，要么全落要么全不落。
+- 消息（ns 33）：key `(ns, channel_id, ts_ms + 决胜段)`——排序用 gravity
+  打的时间戳（ADR-0008）。回复可证明晚于它所回应的内容，所以物理时钟能
+  保住因果序，而共享 seq 计数器不能；同一毫秒的并发用决胜段分开。
+  prefix checkpoint 模型要求的稳定全序照旧成立，checkpoint 本身
+  （ns 34，按成员）不可变。
+- 任务与事实图是**同一张图**（ADR-0001：第三个接口面与事实同图——任务
+  顶点 + `task_links` 依赖边）。旧 PG schema 的 `(task_id, seq)` 复合主键
+  留档为迁移映射。
+- 原子事实图：一个 OKM 边集合 + 声明式面，按 ADR-0010 §1——实体是节点
+  集合（提议 ns 36），事实是边集合（ns 37），边体带 `kind_id` 与声明字段
+  `since` / `confidence` / `weight`，另有种类面与遍历面。**不是**
+  `edge:{src}:{label}:{dst}` 那种键布局，而 `EdgeTable` 是个旧名：上面那层
+  是 `Graph<S, E: KvGraph>` + `NodeRef` + 种类字典（okm ADR-0017）。
+- **追加优先，不是只追加——按表分范围。** channel 日志（ns 33）无例外地
+  只追加：提取、重放、审计都读它，而一个可以被更正的日志会同时失去这三者。
+  图与数据面是追加优先：节点行/边行、权重、派生索引项、code 行，在「禁止
+  修改比修改本身更贵」的地方可以被更正——活的例子是 code store：它的
+  `put(id)` 重写以该 id 标识的一行。追加成为默认的理由是**更简单**（无读改
+  写竞态、可重放、坏派生只是一次重试），不是因为更纯。
+- 一个 WriteBatch = 一个事务：checkpoint 写入 + 事实入库 + 权重 delta 原子
+  提交，要么全落要么全不落。
+- 没有任何东西截断日志：压缩点住在自己的表里（ns 34），用 `coverage_ts`
+  指向日志——那里的一行是 latest-wins，这种可变性被关在它自己的表内。
+  坏摘要是一次重试，不是损失。
+- 存储永不分裂成两个真相：视图裁剪只在读侧，且谁拥有写谁拥有记录。
 - SlateDB+S3 后端藏在同一 engine trait 后面，等跨机共享成为真实需求
   再启用（与 mem-server 同一个 gate）。
 
@@ -43,12 +59,12 @@ graph-memory 设计（wiki）已给出原子图的 KV 编码模式；剩余的 f
 - **导入**：只走正常写 API——不开第二写入通道（与 OKM parquet restore
   path 同一纪律）。
 - **遗留 flat 记忆保持 flat。** 它们没有三元组结构，强行图谱化等于
-  编造关系。原样载入 Phase 1 的 flat 表；只有新知识走提取管线。
-  旧数据旧形态。
+  编造关系。原样载入 flat 表——那是长期记忆在图谱化之前的载体，随图一起
+  撤掉（ADR-0001；PLAN Phase 3）。撤掉之后那些导入的旧行怎么处置，是一个
+  迁移问题，不是 schema 问题。
 - **质量 gate**：新核心上的检索在固定 query 集上追平或超过 PG 检索
-  （以召回为准；排序允许不同）之前，Phase 1 不算完成。2026-10-14 重述
-  （ADR-0003 Update）：比的是端到端检索质量，不再逐分支对
-  pgvector + pdb.bm25 + RRF 比召回。
+  （以召回为准；排序允许不同）之前，Phase 1 不算完成。按 ADR-0003，比的是
+  端到端检索质量，不再逐分支对 pgvector + pdb.bm25 + RRF 比召回（PLAN 1d）。
 
 ## 后果
 
@@ -59,34 +75,3 @@ graph-memory 设计（wiki）已给出原子图的 KV 编码模式；剩余的 f
   目录。
 - Fjall 单写者模型在单 agent 规模下可接受；多 agent 共享记忆的未来
   由 SlateDB+S3 承接，不与 Fjall 硬掰。
-
-## Update（2026-09-22，ADR-0008）
-
-session 消息键被取代：`(ns, user_id, session_id, seq)` 变为
-`(ns, channel_id, timestamp + 决胜段)`——人的聊天与 LLM 对话的日志
-统一为 channel 容器，排序改为 gravity 打的时间戳。本文当初拒绝
-墙钟定序的理由（「同毫秒乱序」）只考虑了跨发送方乱序——对无因果
-关系的消息无害；漏掉的是共享 seq 计数器会破坏因果序（回复可能排到
-它逻辑上跟随的消息之间），而 gravity 侧时间戳不会。checkpoint
-不可变与稳定全序——本文承诺遵守的约束——保持不变；seq 列本身
-消失（事件本来就要带时间戳）。消息/session 表同时按 ADR-0008 的
-schema 拆为 messages / members / cursors / checkpoints（按成员）。
-
-## Update（2026-10-16，追加优先——限定在图与数据面）
-
-**凡是承载知识或数据的表，追加优先；会话日志则保持只追加，无一例外。**
-两个范围回答的是两个问题：
-
-- **会话日志（ns 33 消息）只追加。** 这是不变量，不是偏好：提取、重放、审
-  计都读它，而一个可以被更正的日志会同时失去这三者。**压缩点不是对日志的
-  修改**——它住在**自己的表**里（ns 34），用 `coverage_ts` 指向日志；那里的
-  一行是 latest-wins，而这种可变性被关在它自己的表内。
-- **图与数据面追加优先。** 节点行与边行、权重、派生索引项、code 行，在「禁
-  止修改比修改本身更贵」的地方可以被更正——活的例子是 code store：它的
-  `put(id)` 重写以该 id 标识的一行。追加成为默认的理由是**更简单**（无读改
-  写竞态、可重放、坏派生只是一次重试），不是因为更纯；禁令只在「换来一条所
-  有读者都得折叠的 delta 链、或一条永不可更正的索引项」的地方被去掉。
-
-不变的部分：一个 WriteBatch = 一个事务；失败的批什么都不留；压缩从不截断
-——坏摘要是一次重试，不是损失；存储永不分裂成两个真相——视图裁剪只在读
-侧，且谁拥有写谁拥有记录。

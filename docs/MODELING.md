@@ -20,29 +20,33 @@ One entity class = one ns (OKM rule). Current state:
 | 34  | Checkpoints (per member) | Implemented (minimal slice, 2026-10-09) | ADR-0008 |
 | 35  | Code (delivered scripts) | Implemented (bring-up slice, 2026-10-15) | gravity ADR-0001/0003 |
 | —   | Session messages | superseded by the channel log | ADR-0008 |
-| —   | Tasks / task_links DAG | Declared (ADR-0001 Update 2026-10-16 — the third interface surface; same graph as the facts) | ADR-0001, ADR-0002 |
+| —   | Tasks / task_links DAG | Declared (ADR-0001 — the third interface surface; same graph as the facts) | ADR-0001, ADR-0002 |
 | —   | Fact graph edges | Declared (ADR-0002) | ADR-0002 |
-| —   | Initialization memory (persona / style) | Declared (ADR-0001 Update 2026-10-16) | ADR-0001 |
+| —   | Initialization memory (persona / style) | Declared (ADR-0001 | ADR-0001 |
 
 Session, tasks, and the fact graph land in later phases; their shapes
 below are the ADR commitments, not working code.
 
 ## Memory kinds (who initiates)
 
-Three kinds, split by who drives them (ADR-0001 Update 2026-10-16); the
+Three kinds, split by who drives them (ADR-0001; the
 naming is 被动 / 主动, with 短期 / 长期 as the content horizon:
 
 - **被动 (short-term)** — the current context: the channel log (ns 33) plus
   its per-member projection (ns 34). The loop fetches and appends; never a
   tool.
-- **主动 (long-term)** — facts outside the context: flat memory (ns 32)
-  today, the fact graph once it lands. Reached as a TOOL, by any agent.
+- **主动 (long-term)** — facts outside the context, reached as a TOOL by
+  any agent. The carrier is the fact graph; flat memory (ns 32) is its
+  pre-graph form — the same knowledge held as text rows, which is why it goes
+  away when the graph lands (a text blob has no per-fact identity: it cannot be
+  updated, weighted or enumerated per fact). Raw content never needed it — the
+  channel log (ns 33) already holds every message.
 - **初始化 (persona / style)** — graph-derived: a traversal from the user
   node, delivered at the head of the projection. No ns assigned yet.
 
 ## Flat memory (ns 32)
 
-The only implemented table. Declared in `crates/mem-core/src/memory.rs`.
+Implemented (Phase 1a) — the pre-graph carrier of extracted long-term memory, withdrawn when the fact graph lands (ADR-0001's "flat memory, then the graph"; PLAN Phase 3). Declared in `crates/mem-core/src/memory.rs`.
 
 ### Key: `MemoryKey` (`KeyEncode`)
 
@@ -82,7 +86,7 @@ pub struct MemoryRow {
   adds the built-in local embedding model (vectors as `Vector<f32>`
   frames, searched from an in-memory table) + name/alias point lookup
   + weight metadata (ADR-0005). The lexical branch (jieba / inverted
-  index / BM25 / RRF / arroy) is withdrawn — ADR-0003 Update
+  index / BM25 / RRF / arroy) is withdrawn — ADR-0003
   2026-10-14.
 
 ### Identity generation

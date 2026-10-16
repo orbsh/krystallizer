@@ -10,12 +10,12 @@ Two isolated paths, and they must not be conflated (they were, in the draft
 this page is built from):
 
 1. **The live path** — the model's ACTIVE memory add: a tool in gravity's fixed
-   tool list, called during a user turn (ADR-0008 Update 2026-10-16: facts come
+   tool list, called during a user turn (ADR-0008: facts come
    from the active add, not from a compression pass).
 2. **The write-side pass** — the capsule generator: it runs after a fact
    lands, inside the same background pass as ADR-0010's write-time resolution
    and binning. It is NOT the compression bypass: the bypass only compresses
-   (ADR-0008 Update 2026-10-16).
+   (ADR-0008.
 
 Names below follow the settled vocabulary. Where the source draft invented a
 name or a field, it is marked **[not in the design]** and left visible rather
@@ -44,26 +44,26 @@ Do NOT add chit-chat, filler, or trial reasoning. Add when the user declares:
 
 ## Shape
 Break the statement into subject–predicate–object triples, serialized as a
-**fixed-length 9-slot tuple** (a JSON list): the three roles in order head /
-rel / tail, each `[value, type, props]`, with the caller routing that tuple to
-`ingest(fact)`.
+**fixed-length 8-slot tuple** (a JSON list): the three roles in order head /
+rel / tail — head and tail as `[value, type, props]`, the relation as
+`[RELATION, props]` (its name IS its kind, so it carries no type label) — with
+the caller routing that tuple to `ingest(fact)`.
 - head / tail — value = the entity (short, snake_case: `galaxy_repo`,
   `fjall_engine`); type = the entity's type label (lowercase single token);
   props = the entity's attributes.
 - rel — value = the relation or constraint (uppercase snake_case: `USES`,
-  `IMPLEMENTED_IN`, `PREVENTS`); type = the relation's type label (lowercase
-  single token); props = the relation's modifiers (time / condition / cause /
-  strength).
+  `IMPLEMENTED_IN`, `PREVENTS`); props = the relation's modifiers (time /
+  condition / cause / strength).
 - Empty props are written `{}` — the tuple is fixed-length, so no slot is
   omitted; the type vocabulary is open.
 
 ## Examples
 User: "We're pivoting the Galaxy repo to an embedded Rust memory core named
 k10r — network graph databases are too heavy for a stateless architecture."
-  ["galaxy_repo", "repository", {}, "PIVOTED_TO", "architecture", {"reason": "network_graph_too_heavy"}, "k10r_core", "system", {}]
+  ["galaxy_repo", "repository", {}, "PIVOTED_TO", {"reason": "network_graph_too_heavy"}, "k10r_core", "system", {}]
 
 User: "I like an iced americano while coding, but no milk in coffee, ever."
-  ["user", "person", {}, "PREFERS", "lifestyle", {"context": "while_coding"}, "iced_americano", "coffee", {}]
+  ["user", "person", {}, "PREFERS", {"context": "while_coding"}, "iced_americano", "coffee", {}]
 ```
 
 Notes that keep this prompt honest:
@@ -72,7 +72,7 @@ Notes that keep this prompt honest:
   **[not in the design]**. The caller's names are `recall_memory` /
   `commit_memory` (gravity's fixed tool list, one (retrieve, act) pair per
   family); inside k10r the write door is `ingest(fact)` (deterministic, the
-  9-slot tuple) and `store` (flat memory). A tool name is never a k10r
+  8-slot tuple) and `store` (flat memory). A tool name is never a k10r
   function name.
 - **The model does not stamp the clock.** `ts_ms`/`sub` are the caller's
   (ADR-0008 §3). If a fact carries a date, the caller supplies it — a model
@@ -89,7 +89,7 @@ Notes that keep this prompt honest:
 
 ## 2. Write-side pass: the capsule generator
 
-Input: ONE community's slice of atomic facts (a list of 9-slot tuples),
+Input: ONE community's slice of atomic facts (a list of 8-slot tuples),
 produced by ADR-0010's incremental LPA. This prompt runs in the write-side
 background pass, after the fact write — never on the conversational critical
 path.
@@ -99,7 +99,7 @@ You are a graph-consolidation step inside an embedded memory core's
 write-side pass.
 
 ## Input
-A raw, isolated sub-graph cluster of atomic facts in 9-slot tuple notation (one
+A raw, isolated sub-graph cluster of atomic facts in 8-slot tuple notation (one
 tuple per line): a tightly bound semantic community selected by local label
 propagation.
 

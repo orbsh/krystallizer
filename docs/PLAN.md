@@ -3,12 +3,12 @@
 Phases reference ADRs; design content lives in the ADRs, never here.
 
 - [x] Phase 0 — Skeleton: mem-core crate + Fjall engine + PyO3 binding channel smoke test (one store / one search). (ADR-0002)
-- [ ] Phase 1 — Flat memory parity: store / search / forget / list / stats semantics on Fjall; retrieval = built-in local embedding model (in-process, no API, model locked with the data) landing into graph traversal, plus an exact name/alias point lookup as the second entrance. PG exit gate: end-to-end recall comparison on a fixed query set. (ADR-0002, ADR-0003 + Update 2026-10-14, ADR-0007)
+- [ ] Phase 1 — Flat memory parity: store / search / forget / list / stats semantics on Fjall; retrieval = built-in local embedding model (in-process, no API, model locked with the data) landing into graph traversal, plus an exact name/alias point lookup as the second entrance. PG exit gate: end-to-end recall comparison on a fixed query set. (ADR-0002, ADR-0003, ADR-0007)
   - [x] 1a. Semantics: store / search (user-prefix scan) / forget / list / stats; config loading (`config/krystallizer.kdl`, knus, env-resolved secrets)
   - [ ] 1b. Built-in embedder: local small model loaded in-process (no endpoint, no key), embeddings written as `Vector<f32>` frames; name/alias → node id point lookup
   - [ ] 1c. In-memory vector search: per-ns float table loaded from okm, brute-force inner-product Top-K (ANN re-opened only when a measured corpus crosses the threshold)
   - [ ] 1d. PG exit gate: end-to-end recall comparison on a fixed query set (landing confidence floor + a legal "nothing landed" outcome)
-  - [ ] 1e. HTTP face for the 主动面: mem-server store/search endpoints over the flat-memory group (attached at boot, unread today) — the tool face gravity and other agents read and write through (ADR-0001 Update 2026-10-16)
+  - [x] 1e. HTTP face for the 主动面 LANDED (2026-10-16): `POST /memory` (`MemoryStore::store` — the store assigns the id, the caller's `created_at` rides the request) and `GET /memory/{user_id}/search?q=` (`MemoryStore::search` — one user's key range; an empty result is legal). `forget` / `list` / `stats` still have no route. This is the tool face gravity and other agents read and write through (ADR-0001; the graph's door (`ingest(fact)`) is Phase 3. Gates: mem-server 12/0 (4 in `tests/memory_surface.rs` — round trip, user-scoped scan, legal empty result, flat memory + code sharing one keyspace without leaking into each other), mem-core 22/0 untouched, clippy 0, fmt clean. Transitional: this door is withdrawn together with the table when the fact graph lands (Phase 3).
 - [ ] Phase 2 — Channel log & agent projection: messages / members /
   cursors / checkpoints (per member) tables with gravity-assigned
   timestamp ordering; session-control primitives (tail / summarize-as-
@@ -32,15 +32,16 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   integration contract (append → read projection → run). Assembly is
   ORDERED, head first: the global layer (persona / style) → the
   compression point → the messages after it, and it stays a k10r internal
-  detail (ADR-0008 Update 2026-10-16). (ADR-0006, ADR-0008)
+  detail (ADR-0008. (ADR-0006, ADR-0008)
 - [ ] Phase 2.6 — Compression policy engine: parameterized triggers
   (cache-clock, budget percentage, max-gap split — all from
   `krystallizer.kdl`, per-user override layer reserved), structured
   decision logs; regression tuning deferred until feedback labels exist.
   (ADR-0008)
 - [ ] Phase 2.7 — Multi-party participation: member display-name/role
-  fields + per-message attribution in serialization; `kind=profile`
-  flat-memory category (model-added, weight-governed); interrupt
+  fields + per-message attribution in serialization; profile knowledge as
+  graph facts (a member node plus its edges — the `kind=profile` flat category
+  is withdrawn, ADR-0009; interrupt
   trigger (seconds-scale passive window) with silent outcomes in the
   decision log. (ADR-0009)
 - [ ] Phase 2.8 — Code store: the delivered script's home, and the one
@@ -74,7 +75,7 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   Owed: this repo's own ADR for the store, and `list()` is the declared
   bring-up posture for a resolver's pool read — the graph's retrieval
   replaces it.
-- [ ] Phase 3 — Atomic-fact graph: fact node/edge tables, ingestion of the 9-slot fact tuple (the facts arrive by the model's ACTIVE add — the caller routes that call to `ingest(fact)`; no compression pass and no trailing extraction worker, ADR-0008 Update 2026-10-16), write-time fusion (in-domain id / out-of-domain embedding convergence + small-candidate LLM decision — the LLM decision is gravity's, per ADR-0007's boundary), weight system (delta counts, read-write quadrants, tool_invoke_count, W: index); initialization memory (人设/风格) — a traversal from the user node, delivered at the context head; the task graph (task vertices + `task_links` dependency edges) shares that same graph — tasks are the third interface surface, their instance state structured rather than approximate. Write-time resolution (upsert on a new fact) and cognitive binning ride this side per ADR-0010 (fact node / community reverse index / capsule; ns allocated at landing, next free after 35). Scope note: append-first covers THIS side (node/edge rows, weights, derived entries) — the log does not (ADR-0002 Update 2026-10-16). (ADR-0001 Update 2026-10-16, ADR-0002, ADR-0004, ADR-0005, ADR-0007, ADR-0010)
+- [ ] Phase 3 — Atomic-fact graph: fact node/edge tables, ingestion of the 8-slot fact tuple (the facts arrive by the model's ACTIVE add — the caller routes that call to `ingest(fact)`; no compression pass and no trailing extraction worker, ADR-0008, write-time fusion (in-domain id / out-of-domain embedding convergence + small-candidate LLM decision — the LLM decision is gravity's, per ADR-0007's boundary), weight system (delta counts, read-write quadrants, tool_invoke_count, W: index); initialization memory (人设/风格) — a traversal from the user node, delivered at the context head; the task graph (task vertices + `task_links` dependency edges) shares that same graph — tasks are the third interface surface, their instance state structured rather than approximate. Write-time resolution (upsert on a new fact) and cognitive binning ride this side per ADR-0010 (fact node / community reverse index / capsule; ns allocated at landing, next free after 35). Scope note: append-first covers THIS side (node/edge rows, weights, derived entries) — the log does not (ADR-0002. Flat memory (ns 32) and its HTTP door are withdrawn in this landing: the graph is its successor (ADR-0001's carrier line, "flat memory, then the graph") — flat was the pre-graph form of the same extracted knowledge, and a text row carries no per-fact identity. What is owed with it: the fate of legacy flat rows (ADR-0002's PG migration imports them as-is) is a migration question, not a schema one. (ADR-0001, ADR-0002, ADR-0004, ADR-0005, ADR-0007, ADR-0010)
 - [ ] Phase 4 — Clustered retrieval: entity-anchored / temporal / causal-chain views; progressive loading (Top-K by weight). Reads the write-time structure ADR-0010 lands (the node's community id + the community reverse index + capsules) instead of running a graph algorithm on the read path. (ADR-0005, ADR-0010)
 - [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), SKILL topological four-part nodes, Aura Actor nodes. (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.) ADR-0010 takes the incremental LOCAL form of community detection onto the write side and leaves OPEN whether that promotes a slice of Phase 5 ahead of Phase 3/4 — an open ruling, not settled.
 

@@ -19,28 +19,30 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
 | 34  | Checkpoint（每成员）| 已实现（最小切片，2026-10-09） | ADR-0008 |
 | 35  | Code（交付的脚本） | 已实现（bring-up 切片，2026-10-15） | gravity ADR-0001/0003 |
 | —   | Session 消息      | 被 channel log 取代      | ADR-0008 |
-| —   | Tasks / task_links DAG | 已声明（ADR-0001 Update 2026-10-16——第三个接口面；与事实同图） | ADR-0001, ADR-0002 |
+| —   | Tasks / task_links DAG | 已声明（ADR-0001——第三个接口面；与事实同图） | ADR-0001, ADR-0002 |
 | —   | Fact graph 边     | 已声明（ADR-0002）       | ADR-0002 |
-| —   | 初始化记忆（人设 / 风格） | 已声明（ADR-0001 Update 2026-10-16） | ADR-0001 |
+| —   | 初始化记忆（人设 / 风格） | 已声明（ADR-0001） | ADR-0001 |
 
 Session、tasks、fact graph 属后续阶段；下文形态是 ADR 承诺，非运行
 代码。
 
 ## 记忆种类（谁发起）
 
-三种，按谁驱动分（ADR-0001 Update 2026-10-16）；命名是 被动 / 主动，
+三种，按谁驱动分（ADR-0001）；命名是 被动 / 主动，
 短期 / 长期 作内容时程的定语：
 
 - **被动（短期）**——当前上下文：channel 日志（ns 33）+ 每成员投影
   （ns 34）。循环自己取、自己追加，从不作为工具。
-- **主动（长期）**——不在上下文里的事实：今天的 flat 记忆（ns 32），
-  图落地后是 fact graph。以**工具**形式到达，任何 agent 都能用。
+- **主动（长期）**——不在上下文里的事实，以**工具**形式到达，任何 agent 都能
+  用。载体是 fact graph；flat 记忆（ns 32）是它在图谱化之前的形态——同一份知识以
+  文本行存放，所以图落地时它一并撤掉（文本块没有逐条身份：按条更新、加权、枚举都
+  做不了）。原始内容从来不需要它——channel 日志（ns 33）已经收了每一条消息。
 - **初始化（人设 / 风格）**——图派生：从用户节点出发遍历组装，投到
   投影头部。尚未分配 ns。
 
 ## Flat memory（ns 32）
 
-唯一已实现的表。声明在 `crates/mem-core/src/memory.rs`。
+已实现（Phase 1a）——抽取出的长期记忆在图谱化之前的载体，图落地时撤掉（ADR-0001 的「flat memory, then the graph」；PLAN Phase 3）。声明在 `crates/mem-core/src/memory.rs`。
 
 ### Key：`MemoryKey`（`KeyEncode`）
 
@@ -77,8 +79,7 @@ pub struct MemoryRow {
   （`scan_keys` + 过滤）。这是声明的 bring-up 姿态（ADR-0003），非终
   态；Phase 1 增加内置本地 embedding 模型（向量存为 `Vector<f32>`
   帧，从内存表检索）+ 名/别名点查 + weight 元数据（ADR-0005）。词法
-  分支（jieba / 倒排索引 / BM25 / RRF / arroy）已撤销——ADR-0003
-  Update 2026-10-14。
+  分支（jieba / 倒排索引 / BM25 / RRF / arroy）已撤销——ADR-0003。
 
 ### 身份生成
 
