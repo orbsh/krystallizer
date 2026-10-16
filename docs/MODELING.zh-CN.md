@@ -21,9 +21,22 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
 | —   | Session 消息      | 被 channel log 取代      | ADR-0008 |
 | —   | Tasks / task_links DAG | 已声明（ADR-0002）  | ADR-0002 |
 | —   | Fact graph 边     | 已声明（ADR-0002）       | ADR-0002 |
+| —   | 初始化记忆（人设 / 风格） | 已声明（ADR-0001 Update 2026-10-16） | ADR-0001 |
 
 Session、tasks、fact graph 属后续阶段；下文形态是 ADR 承诺，非运行
 代码。
+
+## 记忆种类（谁发起）
+
+三种，按谁驱动分（ADR-0001 Update 2026-10-16）；命名是 被动 / 主动，
+短期 / 长期 作内容时程的定语：
+
+- **被动（短期）**——当前上下文：channel 日志（ns 33）+ 每成员投影
+  （ns 34）。循环自己取、自己追加，从不作为工具。
+- **主动（长期）**——不在上下文里的事实：今天的 flat 记忆（ns 32），
+  图落地后是 fact graph。以**工具**形式到达，任何 agent 都能用。
+- **初始化（人设 / 风格）**——图派生：从用户节点出发遍历组装，投到
+  投影头部。尚未分配 ns。
 
 ## Flat memory（ns 32）
 

@@ -13,9 +13,12 @@ and [图谱化记忆](https://github.com/orbsh/wiki/blob/main/graph-memory.md):
   `tail` (one-turn branch: inject a prompt, discard after the turn), and
   `summarize` (inject + truncate + checkpoint). Trigger policy lives with the
   caller; the core only provides primitives.
-- **Memory surface** — two modes: *full-session mode* (the session itself is
-  the memory: checkpoint + increments + pending) and *assist mode*
-  (`store` / `search` / `forget` flat + graph facts).
+- **Memory surface** — a standing capability offered as tools, in three kinds
+  (ADR-0001 Update 2026-10-16): 被动 / short-term (the loop's own context —
+  the channel log and its projection), 主动 / long-term
+  (`store` / `search` / `forget` over flat memory and graph facts), and
+  initialization memory (persona / style — graph-derived, injected at the
+  head of the context).
 - **Atomic-fact graph** — append-only KDL facts
   (`head` / `rel` / `tail`), entity-anchored / temporal / causal-chain
   clustering as views, weight system (read-write quadrants,

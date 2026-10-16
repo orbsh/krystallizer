@@ -8,6 +8,7 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   - [ ] 1b. Built-in embedder: local small model loaded in-process (no endpoint, no key), embeddings written as `Vector<f32>` frames; name/alias → node id point lookup
   - [ ] 1c. In-memory vector search: per-ns float table loaded from okm, brute-force inner-product Top-K (ANN re-opened only when a measured corpus crosses the threshold)
   - [ ] 1d. PG exit gate: end-to-end recall comparison on a fixed query set (landing confidence floor + a legal "nothing landed" outcome)
+  - [ ] 1e. HTTP face for the 主动面: mem-server store/search endpoints over the flat-memory group (attached at boot, unread today) — the tool face gravity and other agents read and write through (ADR-0001 Update 2026-10-16)
 - [ ] Phase 2 — Channel log & agent projection: messages / members /
   cursors / checkpoints (per member) tables with gravity-assigned
   timestamp ordering; session-control primitives (tail / summarize-as-
@@ -67,7 +68,7 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   Owed: this repo's own ADR for the store, and `list()` is the declared
   bring-up posture for a resolver's pool read — the graph's retrieval
   replaces it.
-- [ ] Phase 3 — Atomic-fact graph: fact node/edge tables, KDL ingestion, write-time fusion (in-domain id / out-of-domain embedding convergence + small-candidate LLM decision — the LLM decision is gravity's, per ADR-0007's boundary), weight system (delta counts, read-write quadrants, tool_invoke_count, W: index). (ADR-0004, ADR-0005, ADR-0007)
+- [ ] Phase 3 — Atomic-fact graph: fact node/edge tables, KDL ingestion, write-time fusion (in-domain id / out-of-domain embedding convergence + small-candidate LLM decision — the LLM decision is gravity's, per ADR-0007's boundary), weight system (delta counts, read-write quadrants, tool_invoke_count, W: index); initialization memory (人设/风格) — a traversal from the user node, delivered at the context head. (ADR-0001 Update 2026-10-16, ADR-0004, ADR-0005, ADR-0007)
 - [ ] Phase 4 — Clustered retrieval: entity-anchored / temporal / causal-chain views; progressive loading (Top-K by weight). (ADR-0005)
 - [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), SKILL topological four-part nodes, Aura Actor nodes. (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.)
 

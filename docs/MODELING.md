@@ -22,9 +22,23 @@ One entity class = one ns (OKM rule). Current state:
 | —   | Session messages | superseded by the channel log | ADR-0008 |
 | —   | Tasks / task_links DAG | Declared (ADR-0002) | ADR-0002 |
 | —   | Fact graph edges | Declared (ADR-0002) | ADR-0002 |
+| —   | Initialization memory (persona / style) | Declared (ADR-0001 Update 2026-10-16) | ADR-0001 |
 
 Session, tasks, and the fact graph land in later phases; their shapes
 below are the ADR commitments, not working code.
+
+## Memory kinds (who initiates)
+
+Three kinds, split by who drives them (ADR-0001 Update 2026-10-16); the
+naming is 被动 / 主动, with 短期 / 长期 as the content horizon:
+
+- **被动 (short-term)** — the current context: the channel log (ns 33) plus
+  its per-member projection (ns 34). The loop fetches and appends; never a
+  tool.
+- **主动 (long-term)** — facts outside the context: flat memory (ns 32)
+  today, the fact graph once it lands. Reached as a TOOL, by any agent.
+- **初始化 (persona / style)** — graph-derived: a traversal from the user
+  node, delivered at the head of the projection. No ns assigned yet.
 
 ## Flat memory (ns 32)
 

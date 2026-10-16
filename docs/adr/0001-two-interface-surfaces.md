@@ -125,3 +125,41 @@ sequences (multi-turn LLM work units), those turns are a sequential log
 and can ride the channel log — keyed by task id rather than session
 id. That is mechanism reuse, not chat semantics; purely retrieval-style
 applications never touch Surface 1 at all.
+
+## Update (2026-10-16, memory kinds; the stance naming is retired)
+
+The pair **full control mode / assist mode** (完全控制模式 / 辅助模式) is
+retired as the naming of the two surfaces: it reads as "full mode makes
+assist redundant" — as if a chat-shaped consumer needed no memory
+retrieval. That is false, so the surfaces are named by **who initiates**:
+
+| | 被动面 (passive) | 主动面 (active) |
+|---|---|---|
+| who drives | the loop, once per turn | the model, as a tool call |
+| horizon | 短期 (short): the current context | 长期 (long): facts outside it |
+| carrier | the channel log + its projection | flat memory, then the graph |
+
+短期 / 长期 name the CONTENT horizon and ride along as the qualifier; they
+cannot name the surfaces by themselves, because the third kind below is
+long-horizon content travelling on the passive channel.
+
+**The memory family is a standing capability, not a mode.** Every consumer
+has it — a chat-shaped agent (gravity) exactly as a memory-primary program
+— and it is offered AS TOOLS, so any other agent can use it the same way.
+Nothing about it is gated on the consumption stance; the 2026-10-10 Update
+above already established that the stance is not a third surface.
+
+**A third content kind gets its home here: initialization memory
+(persona / style).** It is graph-derived — k10r assembles it as a traversal
+starting from the user node — and it is injected at the HEAD of the context,
+the position the projection's summary already occupies. It therefore rides
+the passive channel while carrying long-horizon content, which is exactly
+the case that separates "passive" from "short-term". The assembly is a k10r
+internal detail: the caller receives it inside the projection and never
+composes it. It is NOT ADR-0009's `kind=profile` category — that one holds
+member profile knowledge (who a person in a channel is), not the agent's
+own persona/style.
+
+Surface 1's primitives (branch / tail / summarize) and Surface 2's
+(store / search / forget) are unchanged; this note renames and adds a
+content kind, nothing else.
