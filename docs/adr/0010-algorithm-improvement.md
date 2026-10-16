@@ -1,0 +1,407 @@
+# ADR-0010: Algorithm Improvement — Write-Time Resolution and Automatic Cognitive Binning
+
+**Status**: Declared (design; implementation pending)
+**Date**: 2026-10-16
+**Chinese**: [0010-algorithm-improvement.zh-CN.md](0010-algorithm-improvement.zh-CN.md)
+
+## Context
+
+The 主动 (long-term) side (ADR-0001 Update 2026-10-16) has a table but no
+algorithm. Extracted KDL facts arrive one at a time and land as scattered
+nodes; nothing gives them order. Order can be paid for in exactly two
+places: at read time (every search clustering the neighborhood it needs)
+or at write time (a background pass in the typing gap, where the caller's
+bypass extraction already fires, ADR-0007).
+
+This ADR takes the second. The write side absorbs the whole cost —
+conflict resolution, binning, subgraph consolidation — inside the bypass,
+so the read side runs no graph algorithm at all. It merges the two drafts
+written for the track: a loose `docs/LPA.md` (three-table schema,
+lifecycle phases, visualization extension) and a write-time-resolution
+variant (the adjudication rule, the density boundary metric, the capsule
+prompt, the read-side sketch), and corrects one thing in both: they spell
+the storage as string prefixes with JSON values, which okm's modeling
+rules reject (variable text in a key segment, a hand-maintained prefix
+standing in for an access method, a value as serialized text). §1 is the
+same three collections expressed in okm's terms.
+
+What constrains every step below:
+
+- **mem-core holds no LLM, no transport, and is not an actor** (ADR-0007).
+  Everything running inside it is deterministic and local; the extraction
+  that produces the facts is the caller's bypass job, and k10r never calls
+  anyone back.
+- **Retrieval is vector landing + exact name/alias lookup, then traversal
+  ranked by weight** (ADR-0003 Update 2026-10-14). There is no lexical
+  branch to reuse, and no third retrieval mechanism is to be added.
+- **One WriteBatch = one transaction** (ADR-0002): every index change this
+  algorithm makes rides the same commit as the data change.
+- **ADR-0005's weight model supplies the vote's edge weights** — no second
+  weight semantics is introduced.
+- **Append-first, not append-only** (ADR-0002 Update 2026-10-16): a
+  modification is allowed where the ban costs more than the update. This
+  ADR is a case of that rule, not an exception carved out of an
+  immutability dogma.
+
+## Decision
+
+### 0. Pipeline
+
+```
+[ step 1: new KDL fact ] ──► [ step 2: write-time resolution (upsert) ]
+                                          │
+                                    (Fjall write)
+                                          ▼
+[ step 5: read side ] ◄── [ step 4: subgraph export + capsule ] ◄── [ step 3: incremental LPA ]
+```
+
+Steps 1–2 run as the bypass lands a fact; steps 3–4 run in the same
+background pass after the write; step 5 is the read path and runs no
+algorithm at all.
+
+### 1. Write-time normalization and resolution (the layout in okm's terms)
+
+The bypass extracts structured facts (subject / predicate / object triples,
+serialized as KDL) and hands them to the core through the deterministic
+`ingest(fact)` door; the core does not parse prose and does not call a
+model. Three collections carry the track's state; the okm-conformant layout
+is below (ns numbers are proposals — the dictionary is code, okm ADR-0002,
+so they are allocated when the tables land, next free after 35).
+
+```text
+Entities — node collection (ns 36 proposed), one per graph
+  0x0 primary        [scope u64][node_id u64]
+                     → body: kind_id (hot), community_id (hot),
+                       name (cold TLV), props (dynamic segment)
+  0x1 node-kind face [kind_id u16][scope u64][node_id u64]        declared index
+  0x1 by_name face   [name][scope u64][node_id u64]               exact name/alias entrance
+  0x1 by_community   [community_id u64][scope u64][node_id u64]   ← the drafts' index:community:
+
+Facts — edge collection (ns 37 proposed), one ns per graph (okm ADR-0017)
+  0x0 primary        [scope u64][edge_id u64]
+                     → body: [src NodeRef][dst NodeRef][kind_id][since][confidence][weight]
+  0x1 declared-field face per declared field (since / confidence / weight)
+                     [field value][scope u64][edge_id u64]
+  0x4 kind index     [kind_id][scope u64][edge_id u64]
+  0x5 out-edges      [src NodeRef][scope u64][edge_id u64]
+  0x6 in-edges       [dst NodeRef][scope u64][edge_id u64]
+  0x7 kind+out       [kind_id][src NodeRef][scope u64][edge_id u64]
+  0x8 kind+in        [kind_id][dst NodeRef][scope u64][edge_id u64]
+
+Communities — capsule collection (ns 38 proposed)
+  0x0 primary        [scope u64][community_id u64]
+                     → body: title (cold TLV), summary (cold TLV),
+                       updated_at (hot), state (hot: pending / done)
+```
+
+`scope` leads every pkey because the corpus is per-user (ADR-0003) — the
+ownership boundary, the same shape flat memory uses (`[user_id][id]`,
+ns 32), not an optimization. `NodeRef` is `[ns 2B][len varint][pkey]`,
+self-describing (okm ADR-0017 §2), so any node collection participates with
+zero declaration.
+
+Five points where this differs from the drafts, and why:
+
+- **Names never enter a key, and nothing is hashed into one.** `KeyEncode`
+  rejects `String` at compile time, and a hash into a fixed-width segment
+  collides silently (it addresses another entity's rows) and cannot be
+  rendered back — okm's own reasoning for proxy ids (MODELING, "Open
+  vocabularies"). An entity name lives in the `by_name` face and in the
+  row's cold segment, reached as `name → node_id`. The drafts'
+  `community_id = hash(entity_name)` seed and `c_milkyway_2026`-style ids
+  are gone: a community is a row in the capsule collection, its id is a u64
+  issued by a `HighWater` reduce (single writer, never reused), and the
+  human label is the capsule's `title`.
+- **Every query dimension is a declared access method, not a prefix buried
+  in a key.** The community reverse index is the `by_community` face
+  (`[community_id][scope][node_id]`), whose tail IS the primary-key
+  encoding — decodable, per okm's rule that index tails are decodable and
+  primary-key custom tails are not. Hand-written prefix schemes are what
+  that rule exists to prevent.
+- **No `[order]` segment anywhere here.** The primary reads are point and
+  traversal reads, never plural ordered ranges, and a sort key earns its
+  bytes only when the result is plural (okm MODELING, "Key naming").
+  `since` / `updated_at` are payload fields, following ADR-0005's own
+  precedent that mutable metadata never enters the key.
+- **The kinds are runtime data; the three algorithm-queried edge fields are
+  declared.** Predicate kinds allocate through the edge collection's own
+  dictionary (0x2/0x3, name → kind_id), while `since` / `confidence` /
+  `weight` are declared fields of k10r's own schema, each earning one 0x1
+  face (okm ADR-0017 §3) — the two are orthogonal in okm's design. The
+  extracted, open-ended attributes ride the dynamic segment and are
+  reachable through path indexes (okm ADR-0012 / ADR-0029) when a query
+  needs one.
+- **Values are native segments, never a JSON blob** (okm ADR-0018): hot
+  fixed-width fields contiguous, variable text as a cold TLV segment.
+
+A newly landed fact is a scattered node carrying an independent seed
+label — the seed is a fresh community id, not a hash.
+
+**Resolution: look up the incumbent before the fact is written.**
+
+```
+                       new fact arrives
+                             │
+                             ▼
+   one scan on the 0x7 face: which edges of this kind leave this source?
+                             │
+          ┌──────────────────┴──────────────────┐
+          ▼ (none)                              ▼ (incumbent body)
+      link a new edge                  adjudicate:
+      (parallel edges are              new.since > old.since
+       separate facts)                 OR new.confidence >= old.confidence ?
+                                            │
+                          ┌─────────────────┴─────────────────┐
+                          ▼ (yes)                             ▼ (no)
+                    rewrite the body in place           drop the new fact
+                    (same edge_id)                      (or lower its weight)
+```
+
+Two pieces of the drafts' bookkeeping disappear with okm's mechanism:
+
+- **No manual index deletion, no tombstone.** The drafts deleted the old
+  index entry by hand in the same batch; okm's declared faces are derived
+  from the row, so rewriting the row regenerates its face entries (weight /
+  since / confidence) and a stale face cannot survive.
+- **Parallel edges are separate facts** (okm ADR-0017): the same
+  (src, kind) with a different object is a different edge with its own
+  `edge_id`, so the overwrite applies to functional relation kinds only —
+  see the Owed list for how a kind declares its cardinality.
+
+```rust
+// draft sketch — mem-core, on a newly extracted triple (okm forms)
+let kind = kinds.id_of(predicate);   // 0x2/0x3 dictionary: name → kind_id
+let src = NodeRef::new(&ENTITY_NS.to_be_bytes(), &subject_id.to_be_bytes());
+let dst = NodeRef::new(&ENTITY_NS.to_be_bytes(), &object_id.to_be_bytes());
+
+// 1. the edges of this kind out of this source: one scan on the 0x7 face
+let incumbent = edges.typed_out(predicate, &src).next();
+
+let mut batch = edges.batch();
+match incumbent {
+    // 2. adjudicate against the incumbent body
+    Some(edge_id) => {
+        let old = edges.get(edge_id);
+        if new_fact.since > old.since || new_fact.confidence >= old.confidence {
+            // in place: same edge_id, the row's faces follow from the row
+            batch.put(edge_id, new_fact.into_body(src, dst, kind));
+        }
+        // else: dropped, no write
+    }
+    // 3. no incumbent: link a new edge (0x4/0x5/0x6/0x7/0x8 in the batch)
+    None => batch.link(EdgeFact { src, dst, kind, ..new_fact }),
+}
+batch.commit();   // one WriteBatch = one transaction (ADR-0002)
+```
+
+### 2. Incremental label propagation (LPA)
+
+Append-first ingestion produces a pile, not order; the pile is given a
+border in memory, per write, instead of by a global pass.
+
+**Why local incremental LPA.** Its cost is near O(E) over the touched
+neighborhood, it needs no full graph in memory, and it is exactly the
+class of algorithm ADR-0003 says earns a dependency (community detection
+is named there as the exception to "implement simple algorithms
+directly"). `petgraph` is the carrier for the in-memory local graph.
+
+Mechanics:
+
+1. **Construct the local subgraph** — load the newly written node plus its
+   directly connected 2-hop neighbors through the traversal faces (0x5/0x6,
+   0x7/0x8), assembled into a temporary in-memory graph. No global graph is
+   loaded.
+2. **Neighbor voting** — a node inspects its neighbors' `community_id` and
+   votes by edge `confidence` weighted by accumulated edge weight:
+   `Target_Community = arg max over C of Σ_{e ∈ Edges(C)} Weight(e) × Confidence(e)`
+3. **Convergence and commit** — 3 rounds converge in the common case (the
+   drafts allow 3–5). The winning `community_id` is written as a field on
+   the member node rows; the `by_community` face follows from the row, so
+   re-binning a node needs no tombstone and no second index write. The
+   capsule row's `state` is set to `pending`. All of it rides one
+   WriteBatch (ADR-0002).
+
+### 3. Subgraph boundary judgment
+
+LPA has drawn the boxes; the next question is when a box is worth
+summarizing, so that a single new fact does not trigger an API call.
+
+**Metric — density water line:**
+
+`Density = 2 × |E| / (|V| × (|V| − 1))`
+
+where `|E|` is the number of edges inside one community and `|V|` the
+number of entity nodes in it.
+
+**Trigger.** A community is exported for consolidation when either (a) its
+density crosses the configured threshold as a new fact joins, or (b) the
+count of its uncompressed new facts crosses the watermark (15 facts in the
+draft).
+
+**Export.** One scan on the `by_community` face pulls the community's
+members; their edges arrive through the traversal faces with an in-memory
+membership filter — the community's subgraph, sliced into a plain-text KDL
+packet, which is the input the next step consumes.
+
+### 4. Capsule consolidation (layer 3)
+
+This is the bridge from layer 4 (fine-grained graph facts) to layer 3
+(macro semantic understanding).
+
+**The call is the caller's, not the core's.** k10r holds no LLM and no
+transport and never calls out (ADR-0007), so its own part is the packet
+plus the `pending` mark on the community; the inference itself is drawn by
+whichever consumer owns the bypass that produced these facts (gravity for
+chat consumers; a memory-primary consumer's single-pass worker otherwise).
+The drafts phrase it as "handed outward through the non-blocking channel
+gravity provides" — that names the carrier the caller uses, and it must not
+be read as an outbound call from mem-core.
+
+**Prompt (carried verbatim from the draft; the packet is KDL):**
+
+```
+你是一个图谱语义提炼器。以下输入是某个特定知识社区内的全部 KDL 原子事实片段：
+------------------------
+${KDL_SUBGRAPH_PAYLOAD}
+------------------------
+请不要发散，直接执行两项任务：
+1. Title: 为这个知识社区拟定一个 10 字以内的精准概念主题。
+2. Summary: 将上述零碎的三元组关系融会贯通，高度压缩提炼成 2 句话的"语义胶囊摘要"，捕获核心架构、因果决策或用户偏好。
+```
+
+**Write-back is a point overwrite of the capsule row** (one row per
+community, keyed by its own id):
+
+```text
+0x0 primary  [scope u64][community_id u64]
+             → { title, summary, updated_at, state = done }
+```
+
+The overwrite is the point: a capsule is a cache — the latest summary is
+the only one worth reading, and the history is what the facts themselves
+already are. One row per community also keeps the key count bounded by the
+number of communities instead of growing once per re-summarization.
+
+### 5. Read side (what the write-side cost buys)
+
+By the time a question arrives, conflicts were resolved at write time, the
+`by_community` face was maintained, and the macro summary is already
+materialized. So the read path is: land, read the capsule, scan the bucket,
+assemble — and every step is a named access method.
+
+```rust
+// draft sketch — the read path runs no graph algorithm
+pub fn assist_search(query: &str, top_k: usize) -> AssistantContext {
+    // 1. in-process local embedding lands the query (top-k seeds; the by_name
+    //    face is the exact entrance for identifiers — ADR-0003 Update)
+    let landed = local_embedding_engine.seeds(query, top_k);
+    let cid = landed.community_id;                 // a declared field on the node row
+
+    // 2. the pre-computed layer-3 capsule: one point read (zero LLM cost)
+    let capsule = communities.get(CommunityKey { scope, community_id: cid });
+
+    // 3. the community bucket: one by_community scan for the members,
+    //    their edges through the traversal faces (0x5/0x7)
+    let members = entities.scan(by_community(cid));
+    let facts = edges.within(&members);
+
+    // 4. assemble as the auxiliary context injected at the caller's prompt head
+    AssistantContext::new(capsule, members, facts)
+}
+```
+
+The path is a landing plus named reads (one point get, one face scan); the
+graph topology work that would otherwise sit in front of every question is
+gone. The injected packet is stable between consolidations — same facts,
+same capsule — which is what the drafts count on for provider-side
+context-cache reuse: the community's facts and capsule are unchanged until
+the next rewrite.
+
+### 6. Front-end extension (no new mechanism)
+
+The persisted `community_id` can be handed to visualization at zero cost: a
+deterministic KDL → JSON conversion (no LLM involved) feeds
+**3d-force-graph** — the WebGL/three.js force-graph library with orbit-style
+camera control, the carrier this repo already exercises in
+`docs/kg-demo-3d.html`. That demo streams node/edge packets into the running
+layout and reheats the simulation per batch instead of redrawing the tree,
+which is exactly the producer shape here. Node color binds to
+`community_id` (one color cluster per community) and node size to weight, so
+the growth of order in long-term memory — the binning itself — is
+inspectable from a dashboard reading `get_stats`.
+
+## Consequences
+
+- **This is the live case for append-first, not append-only.** The edge body
+  and the capsule row are overwritten because keeping a superseded fact as a
+  second row costs more: it would poison both retrieval and the binning that
+  reads it. The log-shaped tables (ns 33/34) are untouched by this ADR's
+  resolution step.
+- **Every read in this design is a declared access method** (okm: "access
+  methods are mandatory"): the bucket is the `by_community` face, the
+  resolution lookup is the 0x7 face, the exact entrance is `by_name`. No raw
+  prefix scan and no general full-scan surface is introduced.
+- **Keys carry no text and no hashed values.** Entity names and community
+  labels live in payload fields and index segments, so they can be rendered
+  back and listed in human terms; identities are surrogates issued by a
+  watermark, never a hash into a key segment.
+- **No new retrieval mechanism.** The community index is a projection over
+  the fact graph and the capsule is a cached summary read, never a scored
+  branch; search still enters by landing or by exact name/alias lookup
+  (ADR-0003 Update 2026-10-14).
+- **The vote consumes ADR-0005's weights** (`Weight(e)`, `confidence`, the
+  read-write quadrants). ADR-0005's weight index, spelled there as
+  `W:{weight}:{edge_id}`, is that same rule one layer down: a declared-field
+  face of the edge collection (`[weight][scope][edge_id]`).
+- **Every number here is a policy parameter** and belongs in
+  `config/krystallizer.kdl` (ADR-0008's rule): the density threshold, the
+  uncompressed-fact watermark, the iteration cap, the 2-hop radius. The
+  extraction watermark (the draft's 100 messages) is NOT k10r's — it fires in
+  the caller's bypass (ADR-0007); k10r takes the facts it is given.
+- **Re-partitioning is cheap by construction.** A node changing community
+  rewrites one row field and its face entry follows; repeated binning never
+  becomes a read-modify-write across a scan or a wait on a file lock.
+
+### Owed / open (not settled by this document)
+
+- **The fact graph's tables are Phase 3's Declared item; this ADR fixes their
+  key design, not their landing.** ns 36/37/38 are proposals allocated
+  through the dictionary when the tables land.
+- **Functional vs multi-valued kinds.** The overwrite rule holds only for a
+  kind that is functional at one source (`priority`: one value per entity); a
+  multi-valued kind legitimately holds parallel edges. How a kind declares
+  its cardinality (a flag in the kind dictionary, a declared field, or a
+  caller-supplied flag on `ingest`) is undecided.
+- **The community's carrier.** The drafts disagree — `community_id` on the
+  fact row (their resolution/index code) vs on the entity node (their LPA and
+  the density metric). This ADR puts it on the NODE (LPA votes over nodes and
+  `|V|` counts them) and pulls the community's edges through the traversal
+  faces; an edge-side `by_community` face is the alternative if the injected
+  packet must be edges directly.
+- **Literal objects.** An extracted object that is a date, a number or a
+  short string has no node identity, and okm's graph edge carries NodeRef
+  endpoints only. Whether it becomes a literal node (kind `Literal`, value in
+  the payload, reachable through `by_name`) or a declared attribute field on
+  the edge is Phase 3's decision.
+- **The capsule call's carrier.** Since k10r cannot call out, the
+  consolidation request has to be pulled by the caller or marked for it.
+  Which door carries it (a pending-consolidation read on the memory surface
+  vs a push the caller owns) is undecided.
+- **Community id issuance** rides okm's issuer discipline (`HighWater`
+  reduce, single writer); the mechanism lands with the tables.
+- **The drafts' prefix layouts are retired, not preserved**: the
+  hand-maintained `node:` / `index:community:` prefixes are replaced above by
+  okm's faces, so the drafts' "two key shapes for one field" contradiction is
+  closed rather than carried.
+- **ADR-0002 and MODELING still spell the fact graph as
+  `edge:{src}:{label}:{dst}` + `EdgeTable`** — stale on two counts against okm
+  ADR-0017. Re-expressing those lines is owed when Phase 3 lands and is not
+  done by this ADR.
+- **Relationship to PLAN.** Community detection sits in Phase 5+ ("dreaming
+  consolidation — petgraph community detection + human-reviewed op set, do
+  not start early"). This ADR describes the incremental LOCAL form of it,
+  moved into the write bypass. Whether that promotes a slice of Phase 5 ahead
+  of Phase 3/4 is a ruling, not a consequence of this document.
+- **Claims carried from the drafts, not measured here:** millisecond read
+  latency, ≥90% provider context-cache hit rate, "the Rust core shrinks by
+  half". They are the shape's rationale and targets, not results.

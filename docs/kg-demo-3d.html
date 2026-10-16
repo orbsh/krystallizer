@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>3D 知识图谱 (GraphRAG) 流式追加演示</title>
+    <!-- 使用国内及全球最稳定的 jsDelivr 加速源，彻底告别 unpkg 加载失败问题 -->
+    <script src="https://jsdelivr.net"></script>
+    <!-- 引入免编译的 UnoCSS 运行时，实现现代化的暗黑科技风 UI -->
+    <script src="https://jsdelivr.net"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: radial-gradient(circle at center, #0b0f19 0%, #020408 100%); }
+        /* 隐藏 3D 库自带的加载遮罩 */
+        .graph-info { display: none; }
+    </style>
+</head>
+<body class="w-screen h-screen font-sans relative select-none">
+
+    <!-- 1. 左侧悬浮高科技控制台 (模拟 Python 驱动端) -->
+    <div class="absolute top-6 left-6 z-50 w-85 bg-slate-950/85 backdrop-blur-xl p-6 rounded-2xl border border-slate-800/80 shadow-2xl text-slate-200">
+        <div class="flex items-center gap-2 mb-2">
+            <div class="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-pulse"></div>
+            <h1 class="text-base font-bold tracking-wide text-indigo-400">GraphRAG 3D 知识图谱内核</h1>
+        </div>
+        <p class="text-xs text-slate-400 mb-4 leading-relaxed">
+            当前处于<strong>哑终端（Dumb Terminal）</strong>模式。前端外壳一成不变，所有实体、关系及 Schema 拓扑全部由后端流式注入。
+        </p>
+        
+        <!-- 实时指令流水监视器 -->
+        <div class="bg-black/60 p-3 rounded-xl border border-slate-900 font-mono text-[11px] mb-4 space-y-1.5">
+            <div class="flex justify-between border-b border-slate-900 pb-1.5 mb-1.5">
+                <span class="text-slate-500">PROPERTIES</span>
+                <span class="text-slate-500">METRICS</span>
+            </div>
+            <div class="flex justify-between">
+                <span>实体节点 (Entities):</span>
+                <span id="node-count" class="text-emerald-400 font-bold">0</span>
+            </div>
+            <div class="flex justify-between">
+                <span>语义关系 (Relations):</span>
+                <span id="link-count" class="text-sky-400 font-bold">0</span>
+            </div>
+            <div class="pt-1.5 border-t border-slate-900 text-slate-500 text-[10px] truncate">
+                <span class="text-amber-500 animate-pulse">●</span> <span id="stream-log">正在等待后端握手...</span>
+            </div>
+        </div>
+
+        <!-- 交互指南 -->
+        <div class="text-[10px] text-slate-500 space-y-0.5 bg-slate-900/40 p-2.5 rounded-lg border border-slate-900">
+            <div class="font-semibold text-slate-400 mb-1">🎮 空间交互：</div>
+            <div>• 鼠标左键：拖拽旋转三维宇宙</div>
+            <div>• 鼠标滚轮：放大/缩小实体群</div>
+            <div>• 鼠标右键：平移知识图谱空间</div>
+            <div>• 点击节点：触发后端实体下钻事件</div>
+        </div>
+    </div>
+
+    <!-- 2. 用于挂载 WebGL 3D Canvas 的全屏容器 -->
+    <div id="3d-graph" class="w-full h-full"></div>
+
+    <script>
+        // 初始化 3D 拓扑图谱的数据容器
+        const graphData = { nodes: [], links: [] };
+        
+        // 实体类型色彩矩阵 (Color Schema) —— 完全模拟真实知识图谱分类
+        const colorSchema = {
+            "User": "#f43f5e",        // 核心用户 (玫瑰红)
+            "Concept": "#3b82f6",     // 抽象概念 (科技蓝)
+            "Skill": "#8b5cf6",       // 核心技能 (神秘紫)
+            "Tool": "#10b981",        // 外部工具 (翡翠绿)
+            "Memory": "#f59e0b"       // 长效记忆 (琥珀金)
+        };
+
+        // 1. 实例化 3D 图谱渲染引擎
+        const Graph = ForceGraph3D()(document.getElementById('3d-graph'))
+            .graphData(graphData)
+            .backgroundColor('rgba(0,0,0,0)') # 保持背景半透明衬托渐变底色
+            .showNavInfo(false)
+            // 细粒度节点样式配置
+            .nodeColor(node => colorSchema[node.type] || '#cbd5e1')
+            .nodeVal(node => node.val || 1) // 根据权重动态决定节点球体大小
+            // 工业级 3D 浮动 HTML 标签提示框 (精准显示实体标签及属性)
+            .nodeLabel(node => `
+                <div class="bg-slate-950/95 border border-slate-800 p-3 rounded-xl shadow-2xl text-left font-sans text-xs space-y-1">
+                    <div class="flex items-center gap-2">
+                        <div class="w-2 h-2 rounded-full" style="background-color: ${colorSchema[node.type]}"></div>
+                        <span class="font-bold text-white">${node.name}</span>
+                    </div>
+                    <div class="text-[10px] text-slate-400 border-t border-slate-900 pt-1 mt-1">
+                        类型: <span class="text-slate-300 font-mono">${node.type}</span><br/>
+                        权重: <span class="text-slate-300 font-mono">${node.val}</span>
+                    </div>
+                </div>
+            `)
+            // 连线特效配置：让线缆自带发光荧光粒子
+            .linkWidth(1.5)
+            .linkColor(() => 'rgba(255,255,255,0.06)')
+            .linkDirectionalParticles(3) // 粒子数量
+            .linkDirectionalParticleSpeed(0.004) // 粒子沿线移动速度
+            .linkDirectionalParticleWidth(2.5)   // 粒子粗细
+            .linkDirectionalParticleColor(() => '#60a5fa')
+            // 连线文本提示（展示语义关系，如: invoke, recall）
+            .linkLabel(link => `<span class="bg-black/90 text-slate-300 text-[10px] p-1 px-1.5 rounded border border-slate-800">${link.rel}</span>`);
+
+        // 刷新监视面板数据
+        const refreshMetrics = (logText) => {
+            document.getElementById('node-count').textContent = graphData.nodes.length;
+            document.getElementById('link-count').textContent = graphData.links.length;
+            if (logText) document.getElementById('stream-log').textContent = logText;
+        };
+
+        // 点击节点时触发事件 (原样上报事件给 Python，实现解耦)
+        Graph.onNodeClick(node => {
+            alert(`[万能壳事件上报] 捕获点击。目标 ID: ${node.id}，类型: ${node.type}。即将向后端发送 invoke_skill 回调。`);
+        });
+
+        // ========================================================
+        // 2. 模拟真实 Knowledge Graph (GraphRAG) 的分批流式注入过程
+        // ========================================================
+        
+        // 预设的一套完整的 AI Agent 认知树知识切片
+        const kgStreamPackets = [
+            // 第一批：构建核心主干
+            { op: "add_node", node: { id: "u_1", name: "用户意图", type: "User", val: 5 } },
+            { op: "add_node", node: { id: "sys", name: "Python控制端", type: "Concept", val: 4 } },
+            { op: "add_link", link: { source: "u_1", target: "sys", rel: "1.捕获请求" } },
+            
+            // 第二批：解析意图 (resolve_skills)
+            { op: "add_node", node: { id: "sk_res", name: "resolve_skills", type: "Skill", val: 3.5 } },
+            { op: "add_link", link: { source: "sys", target: "sk_res", rel: "2.依赖路由" } },
+            
+            // 第三批：回忆长效记忆 (recall_memory)
+            { op: "add_node", node: { id: "mem_v", name: "长效向量记忆库", type: "Memory", val: 3 } },
+            { op: "add_link", link: { source: "sk_res", target: "mem_v", rel: "3.recall_memory" } },
+            { op: "add_node", node: { id: "entity_prev", name: "实体上下文: 2026最新技术栈", type: "Memory", val: 2 } },
+            { op: "add_link", link: { source: "mem_v", target: "entity_prev", rel: "命中关联" } },
+
+            // 第四批：定向执行技能 (invoke_skill)
+            { op: "add_node", node: { id: "sk_inv", name: "invoke_skill", type: "Skill", val: 3.5 } },
+            { op: "add_link", link: { source: "sk_res", target: "sk_inv", rel: "4.下发执行" } },
+            
+            // 第五批：唤醒外部工具 (web_search)
+            { op: "add_node", node: { id: "tool_search", name: "web_search (网络检索)", type: "Tool", val: 4 } },
+            { op: "add_link", link: { source: "sk_inv", target: "tool_search", rel: "5.拉起进程" } },
+            { op: "add_node", node: { id: "res_1", name: "搜索结果: 3D Force-Graph 1.76", type: "Concept", val: 2 } },
+            { op: "add_link", link: { source: "tool_search", target: "res_1", rel: "返回数据" } },
+            
+            // 第六批：沉淀并提交新记忆 (commit_memory)
+            { op: "add_node", node: { id: "sk_commit", name: "commit_memory", type: "Skill", val: 3 } },
+            { op: "add_link", link: { source: "sys", target: "sk_commit", rel: "6.沉淀认知" } },
+            { op: "add_link", link: { source: "sk_commit", target: "mem_v", rel: "永久落盘" } }
+        ];
+
+        let currentPacketIndex = 0;
+
+        const executeStreamStep = () => {
+            if (currentPacketIndex >= kgStreamPackets.length) {
+                refreshMetrics(">>> 后端流式图谱构建完成。");
+                return;
+            }
+
+            const packet = kgStreamPackets[currentPacketIndex];
+
+            if (packet.op === "add_node") {
+                graphData.nodes.push(packet.node);
+                refreshMetrics(`创建实体: [${packet.node.name}]`);
+            } else if (packet.op === "add_link") {
+                graphData.links.push(packet.link);
+                refreshMetrics(`建立关系: ${packet.link.rel}`);
+            }
+
+            // 增量推流给 3D 引擎，绝非重写整树
+            Graph.graphData(graphData);
+            // 局部加热物理引擎，让新进的点平滑扩散，绝不全屏闪烁
+            Graph.d3ReheatSimulation();
+
+            currentPacketIndex++;
+            // 模拟大模型思考的流式步进时间间隔 (800毫秒一发)
+            setTimeout(executeStreamStep, 800);
+        };
+
+        // 延迟 1 秒后，启动流式图谱对接口
+        setTimeout(executeStreamStep, 1000);
+    </script>
+</body>
+</html>
