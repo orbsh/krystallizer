@@ -2,184 +2,727 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>3D 知识图谱 (GraphRAG) 流式追加演示</title>
-    <!-- 使用国内及全球最稳定的 jsDelivr 加速源，彻底告别 unpkg 加载失败问题 -->
-    <script src="https://jsdelivr.net"></script>
-    <!-- 引入免编译的 UnoCSS 运行时，实现现代化的暗黑科技风 UI -->
-    <script src="https://jsdelivr.net"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>GraphRAG 3D 知识图谱 · 流式追加演示</title>
+    <!--
+        依赖两个文件：
+          1) 3d-force-graph（vasturiano/3d-force-graph v1.80.1，WebGL/three.js，
+             UMD 包自带 three.js 并暴露全局 ForceGraph3D）
+             加载顺序：CDN（unpkg，钉版本）→ 失败则回落 docs/vendor/3d-force-graph.js。
+             仓库不背这个包（docs/vendor 在 .gitignore 里），clone 出来靠 CDN，本机离线靠副本。
+          2) viz-style.js —— 类型 → 颜色的视觉惯例表（节点按 kind、边按谓词 kind）。
+             单独存一份是为了让"看图的惯例"只有一个来源：页面从它取色、由它生成图例。
+             file:// 下 fetch 本地 JSON 会被 CORS 拦掉，所以约定表是 JS 模块。
+
+        文字标签的做法：库本身只给悬停 tooltip（nodeLabel / linkLabel），没有常显文字。
+        这里用一层 pointer-events:none 的 HTML 覆盖层自己画：每帧把节点坐标（边取中点）
+        用相机矩阵自己投影成屏幕像素（P·V，见下面的 project()），再摆一个 div。
+        不用库自带的 graph2ScreenCoords()：实测它给的值与相机不符（视野内的点被投到 x=-3564，
+        相机 fit 之后也照旧），所以那套投影被弃用。
+        定位跑在自己的 requestAnimationFrame 循环里，**不挂 onEngineTick** ——
+        库的物理收敛后会自停，挂在 tick 上的定位会冻住，后半段节点就没有标签了（踩过）。
+        好处是文字清晰、颜色跟着类型走；代价是逐帧 DOM 写入，适合小图。
+        大图（万级）应改成 three.js 精灵文字，或只保留悬停显示。
+        已知近似：相机背后的节点也可能被投影进画布，所以这里只做"超出视口就隐藏"。
+
+        物理不许自动停：.d3AlphaMin(0)。默认 alpha 衰减到 alphaMin(0.001) 后引擎自停，
+        而 d3ReheatSimulation() 只把 alpha 设回 1、不重启引擎 —— 于是流式后半段进来的节点
+        永不参与布局（实测：20 个数据包只布局/标注了前 6 个）。alphaMin=0 让模拟一直跑，
+        拖拽时的力反馈也是实时的。
+
+        边端点自己先解析、按批投递：
+          graphData.links 是引擎**按引用**持有的数组，push 一条端点还是字符串的边，
+          就是赶在引擎下一次更新之前把它塞进了物理引擎；而库的一个更新帧里物理 tick
+          先跑、端点解析后跑，那一帧的 tick 于是读到字符串端点抛 TypeError，异常又落在
+          _animationCycle 里 —— 它最后一句才是 requestAnimationFrame 续帧，抛了就不再续：
+          画布从此冻住，节点铺满、边一条也不画（踩过）。所以每批投递前自己把端点换成
+          节点对象，并且一批一次 graphData()，不是一包一次。细节见文件末尾 applyBatch 上面。
+
+        数值属性的表达（都是**屏幕像素**，用 PX_PER_UNIT 折成世界单位的）：
+          节点直径 ← weight 归并 4 档：默认 2px、每级 +2px → 2 / 4 / 6 / 8px
+          边宽     ← strength 两档：默认 1px、每级 +1px → 1 / 2px
+        两条阶梯都是**线性**的（加常数），不是乘方的：每级翻倍那条路末档是默认档的 8 倍，
+        在这份数据上读起来是"一个大球带一堆点"，线性阶梯只差 4 倍。
+        基准是"默认相机距离下的像素"（打开时算一次），滚轮放大时尺寸与世界一起变大。
+        想换成别的字段，只改 nodeDiaPx / edgeWidth 这两处映射。
+    -->
     <style>
-        body { margin: 0; overflow: hidden; background: radial-gradient(circle at center, #0b0f19 0%, #020408 100%); }
+        :root {
+            --panel-bg: rgba(2, 6, 23, 0.85);
+            --panel-border: rgba(30, 41, 59, 0.8);
+            --label: #64748b;
+            --label-strong: #94a3b8;
+            --text: #e2e8f0;
+            --accent: #818cf8;
+            --node-count: #34d399;
+            --link-count: #38bdf8;
+            --warn: #f59e0b;
+        }
+        * { box-sizing: border-box; }
+        html, body { height: 100%; }
+        body {
+            margin: 0;
+            overflow: hidden;
+            color: var(--text);
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans SC", sans-serif;
+            background: radial-gradient(circle at center, #0b0f19 0%, #020408 100%);
+            user-select: none;
+        }
+
+        /* 3D 画布容器：铺满视口 */
+        #3d-graph { position: absolute; inset: 0; }
         /* 隐藏 3D 库自带的加载遮罩 */
         .graph-info { display: none; }
+
+        /* 常显文字标签层（自己画的，见文件头说明） */
+        #labels {
+            position: absolute;
+            inset: 0;
+            z-index: 10;
+            overflow: hidden;
+            pointer-events: none;
+        }
+        .lbl {
+            position: absolute;
+            top: 0;
+            left: 0;
+            white-space: nowrap;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95), 0 0 2px rgba(0, 0, 0, 0.9);
+        }
+        .lbl-node { font-size: 11px; font-weight: 600; }
+        .lbl-edge { font-size: 9px; opacity: 0.85; }
+
+        /* 左侧悬浮控制台（模拟后端驱动端：外壳固定，拓扑全部流式注入） */
+        aside.panel {
+            position: absolute;
+            top: 1.5rem;
+            left: 1.5rem;
+            z-index: 50;
+            width: 22.5rem;
+            padding: 1.5rem;
+            border-radius: 1rem;
+            border: 1px solid var(--panel-border);
+            background: var(--panel-bg);
+            backdrop-filter: blur(20px);
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+        }
+        .panel-title {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        .pulse {
+            width: 0.625rem;
+            height: 0.625rem;
+            border-radius: 9999px;
+            background: #6366f1;
+            animation: pulse 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.35; }
+        }
+        .panel-title h1 {
+            margin: 0;
+            font-size: 1rem;
+            font-weight: 700;
+            letter-spacing: 0.025em;
+            color: var(--accent);
+        }
+        .panel-desc {
+            margin: 0 0 1rem;
+            font-size: 0.75rem;
+            line-height: 1.625;
+            color: var(--label-strong);
+        }
+        .panel-desc strong { color: var(--text); }
+
+        .metrics {
+            margin-bottom: 1rem;
+            padding: 0.75rem;
+            border: 1px solid #0f172a;
+            border-radius: 0.75rem;
+            background: rgba(0, 0, 0, 0.6);
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 0.6875rem;
+        }
+        .metrics .row {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.1875rem 0;
+        }
+        .metrics .head {
+            display: flex;
+            justify-content: space-between;
+            padding-bottom: 0.375rem;
+            margin-bottom: 0.375rem;
+            border-bottom: 1px solid #0f172a;
+        }
+        .metrics .head span { color: var(--label); }
+        .metrics .label { color: var(--text); }
+        #node-count { color: var(--node-count); font-weight: 700; }
+        #link-count { color: var(--link-count); font-weight: 700; }
+        .metrics .stream {
+            padding-top: 0.375rem;
+            margin-top: 0.375rem;
+            border-top: 1px solid #0f172a;
+            color: var(--label);
+            font-size: 0.625rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .metrics .stream .dot { color: var(--warn); animation: pulse 1.8s infinite; }
+        .metrics .stream.error { color: #fca5a5; }
+
+        /* 图例：内容由 viz-style.js 生成，不在这里硬编码 */
+        .legend {
+            margin-bottom: 1rem;
+            padding: 0.625rem;
+            border: 1px solid #0f172a;
+            border-radius: 0.5rem;
+            background: rgba(15, 23, 42, 0.4);
+            font-size: 0.625rem;
+            line-height: 1.6;
+            color: var(--label);
+        }
+        .legend h2 {
+            margin: 0 0 0.25rem;
+            font-size: 0.625rem;
+            font-weight: 600;
+            color: var(--label-strong);
+        }
+        .legend .group + .group { margin-top: 0.5rem; }
+        .legend .item { display: flex; align-items: center; gap: 0.375rem; }
+        .legend .swatch { width: 0.5rem; height: 0.5rem; border-radius: 9999px; flex: none; }
+        .legend .bar { width: 0.75rem; height: 2px; border-radius: 2px; flex: none; }
+
+        .guide {
+            padding: 0.625rem;
+            border: 1px solid #0f172a;
+            border-radius: 0.5rem;
+            background: rgba(15, 23, 42, 0.4);
+            font-size: 0.625rem;
+            line-height: 1.5;
+            color: var(--label);
+        }
+        .guide .guide-head {
+            margin-bottom: 0.25rem;
+            font-weight: 600;
+            color: var(--label-strong);
+        }
     </style>
 </head>
-<body class="w-screen h-screen font-sans relative select-none">
+<body>
 
-    <!-- 1. 左侧悬浮高科技控制台 (模拟 Python 驱动端) -->
-    <div class="absolute top-6 left-6 z-50 w-85 bg-slate-950/85 backdrop-blur-xl p-6 rounded-2xl border border-slate-800/80 shadow-2xl text-slate-200">
-        <div class="flex items-center gap-2 mb-2">
-            <div class="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-pulse"></div>
-            <h1 class="text-base font-bold tracking-wide text-indigo-400">GraphRAG 3D 知识图谱内核</h1>
+    <aside class="panel">
+        <div class="panel-title">
+            <div class="pulse"></div>
+            <h1>GraphRAG 3D 知识图谱内核</h1>
         </div>
-        <p class="text-xs text-slate-400 mb-4 leading-relaxed">
+        <p class="panel-desc">
             当前处于<strong>哑终端（Dumb Terminal）</strong>模式。前端外壳一成不变，所有实体、关系及 Schema 拓扑全部由后端流式注入。
         </p>
-        
+
         <!-- 实时指令流水监视器 -->
-        <div class="bg-black/60 p-3 rounded-xl border border-slate-900 font-mono text-[11px] mb-4 space-y-1.5">
-            <div class="flex justify-between border-b border-slate-900 pb-1.5 mb-1.5">
-                <span class="text-slate-500">PROPERTIES</span>
-                <span class="text-slate-500">METRICS</span>
+        <div class="metrics">
+            <div class="head">
+                <span>PROPERTIES</span>
+                <span>METRICS</span>
             </div>
-            <div class="flex justify-between">
-                <span>实体节点 (Entities):</span>
-                <span id="node-count" class="text-emerald-400 font-bold">0</span>
+            <div class="row">
+                <span class="label">实体节点 (Entities):</span>
+                <span id="node-count">0</span>
             </div>
-            <div class="flex justify-between">
-                <span>语义关系 (Relations):</span>
-                <span id="link-count" class="text-sky-400 font-bold">0</span>
+            <div class="row">
+                <span class="label">语义关系 (Relations):</span>
+                <span id="link-count">0</span>
             </div>
-            <div class="pt-1.5 border-t border-slate-900 text-slate-500 text-[10px] truncate">
-                <span class="text-amber-500 animate-pulse">●</span> <span id="stream-log">正在等待后端握手...</span>
+            <div class="stream">
+                <span class="dot">●</span> <span id="stream-log">正在等待后端握手...</span>
             </div>
         </div>
+
+        <!-- 图例（由 viz-style.js 生成：颜色与类型的对应表是那一个文件） -->
+        <div class="legend" id="legend"></div>
 
         <!-- 交互指南 -->
-        <div class="text-[10px] text-slate-500 space-y-0.5 bg-slate-900/40 p-2.5 rounded-lg border border-slate-900">
-            <div class="font-semibold text-slate-400 mb-1">🎮 空间交互：</div>
-            <div>• 鼠标左键：拖拽旋转三维宇宙</div>
-            <div>• 鼠标滚轮：放大/缩小实体群</div>
-            <div>• 鼠标右键：平移知识图谱空间</div>
+        <div class="guide">
+            <div class="guide-head">🎮 空间交互：</div>
+            <div>• 鼠标左键拖拽：旋转三维宇宙</div>
+            <div>• 鼠标滚轮：放大 / 缩小</div>
+            <div>• 鼠标右键拖拽：平移</div>
+            <div>• 悬停节点 / 边：显示属性</div>
             <div>• 点击节点：触发后端实体下钻事件</div>
         </div>
-    </div>
+    </aside>
 
-    <!-- 2. 用于挂载 WebGL 3D Canvas 的全屏容器 -->
-    <div id="3d-graph" class="w-full h-full"></div>
+    <!-- 用于挂载 WebGL 3D Canvas 的全屏容器 -->
+    <div id="3d-graph"></div>
+    <!-- 常显文字标签层（每帧投影定位，见文件头） -->
+    <div id="labels"></div>
 
+    <!-- 依赖 1：3d-force-graph。CDN 优先，本机离线时回落到 vendor/ -->
+    <script src="https://unpkg.com/3d-force-graph@1.80.1/dist/3d-force-graph.min.js"></script>
     <script>
-        // 初始化 3D 拓扑图谱的数据容器
-        const graphData = { nodes: [], links: [] };
-        
-        // 实体类型色彩矩阵 (Color Schema) —— 完全模拟真实知识图谱分类
-        const colorSchema = {
-            "User": "#f43f5e",        // 核心用户 (玫瑰红)
-            "Concept": "#3b82f6",     // 抽象概念 (科技蓝)
-            "Skill": "#8b5cf6",       // 核心技能 (神秘紫)
-            "Tool": "#10b981",        // 外部工具 (翡翠绿)
-            "Memory": "#f59e0b"       // 长效记忆 (琥珀金)
+        // 回落分支：仓库不背这个包（docs/vendor 在 .gitignore 里），
+        // clone 出来走 CDN；本机离线时用 docs/vendor/3d-force-graph.js 那份副本。
+        if (typeof ForceGraph3D !== 'function') {
+            document.write('<script src="vendor/3d-force-graph.js"><\/script>');
+        }
+    </script>
+    <!-- 依赖 2：视觉惯例表（类型 → 颜色；节点与边各一张） -->
+    <script src="viz-style.js"></script>
+    <script>
+        // ---- 面板输出：既是日志行，也是这个演示的自诊断面 ----------------
+        const logEl = document.getElementById('stream-log');
+        const setLog = (text, isError) => {
+            logEl.textContent = text;
+            logEl.parentElement.classList.toggle('error', Boolean(isError));
         };
+        // 页面内的错误直接落到面板上，而不是只进控制台（打不开时一眼能看出原因）
+        window.addEventListener('error', (e) => setLog(`渲染错误: ${e.message}`, true));
+        window.addEventListener('unhandledrejection', (e) => setLog(`渲染错误: ${e.reason}`, true));
+
+        if (typeof ForceGraph3D !== 'function') {
+            setLog('缺 3d-force-graph —— 无法渲染（CDN 不可达，且本目录下没有 vendor/3d-force-graph.js）', true);
+        } else {
+            boot();
+        }
+
+        function boot() {
+        // ---- 视觉惯例：取色与图例都从 viz-style.js 来 ----------------------
+        const STYLE = window.K10R_VIZ_STYLE || {};
+        const NODE_KINDS = STYLE.nodeKinds || {};
+        const EDGE_KINDS = STYLE.edgeKinds || {};
+        const FALLBACK = STYLE.fallback || { node: '#cbd5e1', edge: '#64748b' };
+        const nodeColor = (kind) => (NODE_KINDS[kind] && NODE_KINDS[kind].color) || FALLBACK.node;
+        const edgeColor = (kind) => (EDGE_KINDS[kind] && EDGE_KINDS[kind].color) || FALLBACK.edge;
+        const nodeKindText = (kind) => (NODE_KINDS[kind] && NODE_KINDS[kind].label) || `未登记 (${kind})`;
+        const edgeKindText = (kind) => (EDGE_KINDS[kind] && EDGE_KINDS[kind].label) || `未登记 (${kind})`;
+
+        // 图例由约定表生成：加一类只改 viz-style.js，这里不用动
+        const legend = document.getElementById('legend');
+        const legendGroup = (title, entries, isEdge) => {
+            const box = document.createElement('div');
+            box.className = 'group';
+            const h = document.createElement('h2');
+            h.textContent = title;
+            box.appendChild(h);
+            entries.forEach(([kind, def]) => {
+                const row = document.createElement('div');
+                row.className = 'item';
+                const sw = document.createElement('span');
+                sw.className = isEdge ? 'bar' : 'swatch';
+                sw.style.background = def.color;
+                const tx = document.createElement('span');
+                tx.textContent = def.label;
+                row.append(sw, tx);
+                box.appendChild(row);
+            });
+            legend.appendChild(box);
+        };
+        legendGroup('节点类型', Object.entries(NODE_KINDS), false);
+        legendGroup('关系类型', Object.entries(EDGE_KINDS), true);
+
+        // ---- 数据容器 -------------------------------------------------------
+        const graphData = { nodes: [], links: [] };
 
         // 1. 实例化 3D 图谱渲染引擎
         const Graph = ForceGraph3D()(document.getElementById('3d-graph'))
             .graphData(graphData)
-            .backgroundColor('rgba(0,0,0,0)') # 保持背景半透明衬托渐变底色
-            .showNavInfo(false)
-            // 细粒度节点样式配置
-            .nodeColor(node => colorSchema[node.type] || '#cbd5e1')
-            .nodeVal(node => node.val || 1) // 根据权重动态决定节点球体大小
-            // 工业级 3D 浮动 HTML 标签提示框 (精准显示实体标签及属性)
-            .nodeLabel(node => `
-                <div class="bg-slate-950/95 border border-slate-800 p-3 rounded-xl shadow-2xl text-left font-sans text-xs space-y-1">
-                    <div class="flex items-center gap-2">
-                        <div class="w-2 h-2 rounded-full" style="background-color: ${colorSchema[node.type]}"></div>
-                        <span class="font-bold text-white">${node.name}</span>
-                    </div>
-                    <div class="text-[10px] text-slate-400 border-t border-slate-900 pt-1 mt-1">
-                        类型: <span class="text-slate-300 font-mono">${node.type}</span><br/>
-                        权重: <span class="text-slate-300 font-mono">${node.val}</span>
-                    </div>
+            .backgroundColor('rgba(0,0,0,0)')   // 透明画布，衬托 CSS 渐变底色
+            .showNavInfo(false)                 // 相机是库默认的 trackball：左键旋转 / 右键平移 / 滚轮缩放
+            .d3AlphaMin(0)                      // 物理不许自动停：默认 alpha 衰减到 alphaMin 后引擎自停，
+                                                // 而 d3ReheatSimulation() 只把 alpha 设回 1、并不重启引擎 ——
+                                                // 后果是流式后半段进来的节点永不参与布局（本版实测踩过）
+            .nodeColor(n => nodeColor(n.kind))  // 类型 → 颜色（惯例表）
+            .nodeVal(n => Math.pow(nodeRadiusWorld(n), 3))   // 尺寸见下面「屏幕像素 → 世界单位」：
+                                                // 库的球半径 = ∛nodeVal × nodeRelSize，nodeRelSize 取 1，
+                                                // 所以这里直接给「半径（世界单位）的立方」
+            .nodeRelSize(1)                     // 固定 1：半径 = ∛nodeVal（世界单位）
+            .nodeLabel(n => tooltipNode(n))     // 悬停显示属性
+            .linkColor(l => edgeColor(l.kind))  // 关系类型 → 线色
+            .linkWidth(l => edgeWidth(l))       // 关系强度 → 线粗（两档 1px / 2px，见下面 PX_PER_UNIT）
+            .linkOpacity(0.9)                   // 库默认 0.2：细圆柱在深底上几乎看不见（实测被批"看不见边"）
+            .linkLabel(l => tooltipEdge(l))     // 悬停显示属性
+            .linkDirectionalParticles(l => Math.max(1, Math.round((l.strength || 1) / 2)))  // 强度 → 粒子数
+            .linkDirectionalParticleSpeed(0.004)
+            .linkDirectionalParticleColor(l => edgeColor(l.kind));
+
+        // 力参数与相机是一对：图摊得越大，屏幕上的节点/边越小（它们的世界尺寸由下面的
+        // PX_PER_UNIT 从屏幕像素折来，与力参数无关；力参数只决定图摊多大）。
+        // 实测这套数据（38 点 / 48 边）收敛后：link 120 / charge -200 下世界半径约 ±750、
+        // 边均长约 152 单位；相机距离取 CAM_DIST = 1660，图高占视口约 80%（三次全新加载实测
+        // 80 / 81 / 80%，顶不出去），边均长约 90px —— 整张图进视野，边看得清清楚楚。
+        // （早先那组 link 25 / charge -40 / 相机 2516 是照"没收敛就冻住"的状态量的：边均长
+        //   只剩 44 单位、整张图缩成 120×170px 一小团，看着是个毛球。）
+        const CAM_DIST = 1660;                        // 相机距离（世界单位），见上
+        Graph.d3Force('charge').strength(-200);
+        Graph.d3Force('link').distance(120);
+        // 斜 45° 视角：默认视角沿 z 轴正对原点，深度会被压平，看着像 2D。
+        // (0.636, 0.437, 0.636) 是原来那个 (1600,1100,1600) 的方向（长度归一），乘 CAM_DIST 得相机位。
+        Graph.cameraPosition({ x: CAM_DIST * 0.636, y: CAM_DIST * 0.437, z: CAM_DIST * 0.636 });
+
+        // ---- 屏幕像素 → 世界单位 ------------------------------------------------
+        // 尺寸按屏幕像素定（节点默认 2px、边默认 1px），而库的尺寸全是世界单位，所以先算
+        // "1 世界单位 = 多少像素"再折回去。基准取打开时的视口高度 + 相机距离 CAM_DIST：
+        // 于是这是"默认相机距离下的 2px"，滚轮放大时尺寸和世界一起变大。
+        // （改成跟随实时相机距离就变成屏幕像素恒定了 —— 那是另一种取向，别混。）
+        const PX_PER_UNIT = window.innerHeight /
+            (2 * CAM_DIST * Math.tan(Graph.camera().fov * Math.PI / 360));
+
+        // 节点直径的阶梯：默认 2px，每级 +2px —— 线性增长，不是乘方（原来每级翻倍到 16px，
+        // 末档是默认档的 8 倍）。weight（中心度）3..10 归并成 4 档：
+        //   3–4 → 2px   5–6 → 4px   7–8 → 6px   9–10 → 8px
+        const nodeTier = (weight) => Math.max(0, Math.min(3, Math.floor(((weight || 3) - 3) / 2)));
+        const nodeDiaPx = (weight) => 2 + 2 * nodeTier(weight);
+        const nodeRadiusWorld = (n) => nodeDiaPx(n.weight) / 2 / PX_PER_UNIT;
+
+        // 线宽两档：默认 1px，每级 +1px（强度 ≥4 的 2px）。库把 linkWidth 当圆柱**直径**
+        // （内部 radius = width/2），所以这里填的数就是屏幕上的线宽。
+        function edgeWidth(link) {
+            return ((link.strength || 2) >= 4 ? 2 : 1) / PX_PER_UNIT;
+        }
+
+        // 沿边的粒子点点（个数编码强度）也跟着折成 1px —— 线宽降到 1px 之后，粒子若还是
+        // 世界单位 2.5，点点会比线还粗，喧宾夺主。这里同样按屏幕像素给（1px）。
+        Graph.linkDirectionalParticleWidth(1 / PX_PER_UNIT);
+
+        // 悬停属性框
+        const kv = (k, v) => `<div style="display:flex;justify-content:space-between;gap:1rem"><span style="color:#64748b">${k}</span><span style="color:#cbd5e1;font-family:ui-monospace,monospace">${v}</span></div>`;
+        const tooltipNode = (n) => `
+            <div style="background:rgba(2,6,23,.95);border:1px solid #1e293b;padding:.7rem;border-radius:.75rem;box-shadow:0 25px 50px -12px rgba(0,0,0,.8);font-family:system-ui,sans-serif;font-size:.7rem;line-height:1.6;min-width:12rem">
+                <div style="display:flex;align-items:center;gap:.4rem;margin-bottom:.35rem">
+                    <span style="width:.5rem;height:.5rem;border-radius:9999px;background:${nodeColor(n.kind)}"></span>
+                    <span style="font-weight:700;color:#fff">${n.name}</span>
                 </div>
-            `)
-            // 连线特效配置：让线缆自带发光荧光粒子
-            .linkWidth(1.5)
-            .linkColor(() => 'rgba(255,255,255,0.06)')
-            .linkDirectionalParticles(3) // 粒子数量
-            .linkDirectionalParticleSpeed(0.004) // 粒子沿线移动速度
-            .linkDirectionalParticleWidth(2.5)   // 粒子粗细
-            .linkDirectionalParticleColor(() => '#60a5fa')
-            // 连线文本提示（展示语义关系，如: invoke, recall）
-            .linkLabel(link => `<span class="bg-black/90 text-slate-300 text-[10px] p-1 px-1.5 rounded border border-slate-800">${link.rel}</span>`);
+                ${kv('类型', nodeKindText(n.kind))}
+                ${kv('中心度', n.weight)}
+                ${n.refs != null ? kv('被引用', n.refs) : ''}
+                ${n.community ? kv('社区', n.community) : ''}
+            </div>`;
+        const tooltipEdge = (l) => `
+            <div style="background:rgba(2,6,23,.95);border:1px solid #1e293b;padding:.7rem;border-radius:.75rem;box-shadow:0 25px 50px -12px rgba(0,0,0,.8);font-family:system-ui,sans-serif;font-size:.7rem;line-height:1.6;min-width:12rem">
+                <div style="display:flex;align-items:center;gap:.4rem;margin-bottom:.35rem">
+                    <span style="width:.75rem;height:2px;border-radius:2px;background:${edgeColor(l.kind)}"></span>
+                    <span style="font-weight:700;color:#fff">${l.rel}</span>
+                </div>
+                ${kv('关系', edgeKindText(l.kind))}
+                ${kv('强度', l.strength)}
+            </div>`;
+
+        // ---- 常显文字标签：自己画一层 HTML，逐帧投影定位 ---------------------
+        // （库只有悬停 tooltip，没有常显文字；这里按 graph2ScreenCoords 投影摆 div）
+        const layer = document.getElementById('labels');
+        const labelCache = new Map();
+        const labelEl = (key, text, cls) => {
+            let el = labelCache.get(key);
+            if (!el) {
+                el = document.createElement('div');
+                el.className = `lbl ${cls}`;
+                layer.appendChild(el);
+                labelCache.set(key, el);
+            }
+            if (el.textContent !== text) el.textContent = text;
+            return el;
+        };
+        // 自己算投影：库的 graph2ScreenCoords() 在这版里给的值与相机不一致（实测：一个明明
+        // 在视野内的节点被投影到 x=-3564，camera 已 fit 也照旧），所以不信它。
+        // 直接用相机矩阵做 P·V·[x,y,z,1]（three 的 elements 是列主序），不需要全局 THREE。
+        const v3 = [0, 0, 0, 0];
+        const project = (x, y, z) => {
+            const cam = Graph.camera();
+            const m = cam.matrixWorldInverse.elements;
+            v3[0] = m[0] * x + m[4] * y + m[8] * z + m[12];
+            v3[1] = m[1] * x + m[5] * y + m[9] * z + m[13];
+            v3[2] = m[2] * x + m[6] * y + m[10] * z + m[14];
+            v3[3] = m[3] * x + m[7] * y + m[11] * z + m[15];
+            const p = cam.projectionMatrix.elements;
+            const cx = p[0] * v3[0] + p[4] * v3[1] + p[8] * v3[2] + p[12] * v3[3];
+            const cy = p[1] * v3[0] + p[5] * v3[1] + p[9] * v3[2] + p[13] * v3[3];
+            const cw = p[3] * v3[0] + p[7] * v3[1] + p[11] * v3[2] + p[15] * v3[3];
+            if (!cw) return null;                       // 相机正后方/退化
+            return {
+                x: (cx / cw * 0.5 + 0.5) * layer.clientWidth,
+                y: (-cy / cw * 0.5 + 0.5) * layer.clientHeight,
+                behind: cw <= 0,                        // 透视除法对背后的点是镜像的
+            };
+        };
+        const placeLabel = (el, p, dy) => {
+            // 视口外、以及相机背后的点，都藏起来
+            if (!p || p.behind || !isFinite(p.x) || !isFinite(p.y) ||
+                p.x < -40 || p.y < -40 || p.x > layer.clientWidth + 40 || p.y > layer.clientHeight + 40) {
+                el.style.display = 'none';
+                return;
+            }
+            el.style.display = '';
+            el.style.transform = `translate(-50%,-50%) translate(${p.x}px, ${p.y + dy}px)`;
+        };
+
+        // 自驱 requestAnimationFrame 循环，而不是挂 onEngineTick：引擎在物理收敛后停止 tick，
+        // 挂在 tick 上的定位会冻住（流式后半段的节点根本不会出现标签）。
+        // 这个循环与物理状态无关，永远跟着节点位置走。
+        const placeAllLabels = () => {
+            graphData.nodes.forEach(n => {
+                const el = labelEl(`n:${n.id}`, n.name, 'lbl-node');
+                el.style.color = nodeColor(n.kind);
+                placeLabel(el, project(n.x, n.y, n.z), 16);
+            });
+            graphData.links.forEach((l, i) => {
+                const s = l.source, t = l.target;
+                if (!s || typeof s !== 'object' || !t || typeof t !== 'object') return;
+                const el = labelEl(`e:${i}`, l.rel, 'lbl-edge');
+                el.style.color = edgeColor(l.kind);
+                const ps = project(s.x, s.y, s.z), pt = project(t.x, t.y, t.z);
+                // 屏幕上太短的边不放文字：86 条标签挤在一个视野里会糊成一团，
+                // 边长 ≥120px 的边才有位置放标签（留白比塞满好读）
+                if (!ps || !pt || ps.behind || pt.behind ||
+                    Math.hypot(ps.x - pt.x, ps.y - pt.y) < 120) {
+                    el.style.display = 'none';
+                    return;
+                }
+                placeLabel(el, project((s.x + t.x) / 2, (s.y + t.y) / 2, (s.z + t.z) / 2), 0);
+            });
+        };
+        const labelLoop = () => {
+            placeAllLabels();
+            requestAnimationFrame(labelLoop);
+        };
+        requestAnimationFrame(labelLoop);
+
+        // 方便在 devtools / 自动化里直接看这一份图（演示件，不隐藏句柄）
+        window.Graph = Graph;
+        window.graphData = graphData;
 
         // 刷新监视面板数据
         const refreshMetrics = (logText) => {
             document.getElementById('node-count').textContent = graphData.nodes.length;
             document.getElementById('link-count').textContent = graphData.links.length;
-            if (logText) document.getElementById('stream-log').textContent = logText;
+            if (logText) setLog(logText);
         };
 
-        // 点击节点时触发事件 (原样上报事件给 Python，实现解耦)
+        // 2. 点击节点时触发事件 (原样上报事件给后端，实现解耦)
         Graph.onNodeClick(node => {
-            alert(`[万能壳事件上报] 捕获点击。目标 ID: ${node.id}，类型: ${node.type}。即将向后端发送 invoke_skill 回调。`);
+            setLog(`事件上报：捕获点击 → id=${node.id}，type=${nodeKindText(node.kind)}，权重=${node.weight}（调用方接收后自行 invoke_skill）`);
+            // 点击给一点反馈：该节点闪一下，下一拍落回惯例表的类型色
+            Graph.nodeColor(n => (n.id === node.id ? '#ffffff' : nodeColor(n.kind)));
+            setTimeout(() => Graph.nodeColor(n => nodeColor(n.kind)), 180);
         });
 
         // ========================================================
-        // 2. 模拟真实 Knowledge Graph (GraphRAG) 的分批流式注入过程
+        // 3. 模拟真实 Knowledge Graph (GraphRAG) 的分批流式注入过程
+        //    节点与边都带 kind（机器名，决定颜色）+ 人类可读文字；数值属性按上表映射
         // ========================================================
-        
-        // 预设的一套完整的 AI Agent 认知树知识切片
-        const kgStreamPackets = [
-            // 第一批：构建核心主干
-            { op: "add_node", node: { id: "u_1", name: "用户意图", type: "User", val: 5 } },
-            { op: "add_node", node: { id: "sys", name: "Python控制端", type: "Concept", val: 4 } },
-            { op: "add_link", link: { source: "u_1", target: "sys", rel: "1.捕获请求" } },
-            
-            // 第二批：解析意图 (resolve_skills)
-            { op: "add_node", node: { id: "sk_res", name: "resolve_skills", type: "Skill", val: 3.5 } },
-            { op: "add_link", link: { source: "sys", target: "sk_res", rel: "2.依赖路由" } },
-            
-            // 第三批：回忆长效记忆 (recall_memory)
-            { op: "add_node", node: { id: "mem_v", name: "长效向量记忆库", type: "Memory", val: 3 } },
-            { op: "add_link", link: { source: "sk_res", target: "mem_v", rel: "3.recall_memory" } },
-            { op: "add_node", node: { id: "entity_prev", name: "实体上下文: 2026最新技术栈", type: "Memory", val: 2 } },
-            { op: "add_link", link: { source: "mem_v", target: "entity_prev", rel: "命中关联" } },
 
-            // 第四批：定向执行技能 (invoke_skill)
-            { op: "add_node", node: { id: "sk_inv", name: "invoke_skill", type: "Skill", val: 3.5 } },
-            { op: "add_link", link: { source: "sk_res", target: "sk_inv", rel: "4.下发执行" } },
-            
-            // 第五批：唤醒外部工具 (web_search)
-            { op: "add_node", node: { id: "tool_search", name: "web_search (网络检索)", type: "Tool", val: 4 } },
-            { op: "add_link", link: { source: "sk_inv", target: "tool_search", rel: "5.拉起进程" } },
-            { op: "add_node", node: { id: "res_1", name: "搜索结果: 3D Force-Graph 1.76", type: "Concept", val: 2 } },
-            { op: "add_link", link: { source: "tool_search", target: "res_1", rel: "返回数据" } },
-            
-            // 第六批：沉淀并提交新记忆 (commit_memory)
-            { op: "add_node", node: { id: "sk_commit", name: "commit_memory", type: "Skill", val: 3 } },
-            { op: "add_link", link: { source: "sys", target: "sk_commit", rel: "6.沉淀认知" } },
-            { op: "add_link", link: { source: "sk_commit", target: "mem_v", rel: "永久落盘" } }
+        // 图的内容 = krystallizer 自己的文档 / 架构（不是业务示例）：
+        //   ADR（决策）、文档、crate（代码单元）、表 / ns、接口面、消费方、领域概念、欠账
+        //   每一条边都是仓库里真实存在的关系：declares / updates / supersedes / implements /
+        //   consumes / cites / depends / deferred（词表见 viz-style.js）。
+        //   节点数值：weight = 中心度（按 4 档决定球直径 2/4/6/8px），refs = 被引用次数；
+        //   边数值：strength = 关系强度（两档决定线宽 1/2px）。两处换算见下面的 PX_PER_UNIT。
+        //   community = ADR-0010 意义上的"认知分箱"，这里按层分箱（决策 / 文档 / 代码 / 数据 / 面 / 算法 / 欠账）。
+        const kgStreamPackets = [
+
+            { op: "batch", label: "决策层：十篇 ADR（Phase 0–4 的设计）" },
+            { op: "add_node", node: { id: "adr-0001", kind: "adr", name: "ADR-0001 接口面", weight: 8, refs: 6, community: "c_decisions" } },
+            { op: "add_node", node: { id: "adr-0002", kind: "adr", name: "ADR-0002 存储 Fjall+OKM", weight: 10, refs: 9, community: "c_decisions" } },
+            { op: "add_node", node: { id: "adr-0003", kind: "adr", name: "ADR-0003 检索自建", weight: 7, refs: 4, community: "c_decisions" } },
+            { op: "add_node", node: { id: "adr-0004", kind: "adr", name: "ADR-0004 提取边界", weight: 4, refs: 3, community: "c_decisions" } },
+            { op: "add_node", node: { id: "adr-0005", kind: "adr", name: "ADR-0005 权重系统", weight: 6, refs: 3, community: "c_decisions" } },
+            { op: "add_node", node: { id: "adr-0006", kind: "adr", name: "ADR-0006 无状态 Agent", weight: 5, refs: 2, community: "c_decisions" } },
+            { op: "add_node", node: { id: "adr-0007", kind: "adr", name: "ADR-0007 消费边界", weight: 9, refs: 7, community: "c_decisions" } },
+            { op: "add_node", node: { id: "adr-0008", kind: "adr", name: "ADR-0008 统一 channel log", weight: 9, refs: 5, community: "c_decisions" } },
+            { op: "add_node", node: { id: "adr-0009", kind: "adr", name: "ADR-0009 多方参与", weight: 5, refs: 2, community: "c_decisions" } },
+            { op: "add_node", node: { id: "adr-0010", kind: "adr", name: "ADR-0010 写时消解 + 认知分箱", weight: 8, refs: 4, community: "c_decisions" } },
+
+            { op: "batch", label: "文档层" },
+            { op: "add_node", node: { id: "plan", kind: "doc", name: "PLAN.md 阶段清单", weight: 8, refs: 6, community: "c_docs" } },
+            { op: "add_node", node: { id: "wiki", kind: "doc", name: "wiki krystallizer 中英对", weight: 6, refs: 4, community: "c_docs" } },
+            { op: "add_node", node: { id: "readme", kind: "doc", name: "README 入口", weight: 4, refs: 2, community: "c_docs" } },
+
+            { op: "batch", label: "代码单元（crate）" },
+            { op: "add_node", node: { id: "mem-core", kind: "crate", name: "mem-core", weight: 9, refs: 6, community: "c_code" } },
+            { op: "add_node", node: { id: "mem-server", kind: "crate", name: "mem-server", weight: 7, refs: 4, community: "c_code" } },
+            { op: "add_node", node: { id: "mem-ffi", kind: "crate", name: "mem-ffi (PyO3)", weight: 4, refs: 2, community: "c_code" } },
+
+            { op: "batch", label: "数据层：表 / ns" },
+            { op: "add_node", node: { id: "modeling", kind: "doc", name: "MODELING.md 表结构", weight: 8, refs: 5, community: "c_data" } },
+            { op: "add_node", node: { id: "ns32", kind: "table", name: "ns 32 扁平记忆", weight: 6, refs: 3, community: "c_data" } },
+            { op: "add_node", node: { id: "ns33", kind: "table", name: "ns 33 channel messages", weight: 7, refs: 4, community: "c_data" } },
+            { op: "add_node", node: { id: "ns34", kind: "table", name: "ns 34 checkpoints", weight: 6, refs: 3, community: "c_data" } },
+            { op: "add_node", node: { id: "ns35", kind: "table", name: "ns 35 code", weight: 5, refs: 3, community: "c_data" } },
+            { op: "add_node", node: { id: "graph-tables", kind: "table", name: "事实图 表（声明，未落地）", weight: 7, refs: 4, community: "c_data" } },
+            { op: "add_node", node: { id: "task-tables", kind: "table", name: "tasks / task_links（声明）", weight: 5, refs: 3, community: "c_data" } },
+
+            { op: "batch", label: "接口面与消费方" },
+            { op: "add_node", node: { id: "surface-session", kind: "surface", name: "session 面（被动）", weight: 6, refs: 4, community: "c_surfaces" } },
+            { op: "add_node", node: { id: "surface-memory", kind: "surface", name: "memory 面（主动）", weight: 8, refs: 6, community: "c_surfaces" } },
+            { op: "add_node", node: { id: "surface-tasks", kind: "surface", name: "tasks 面（第三面）", weight: 5, refs: 3, community: "c_surfaces" } },
+            { op: "add_node", node: { id: "gravity", kind: "consumer", name: "gravity（轮执行器）", weight: 7, refs: 4, community: "c_surfaces" } },
+            { op: "add_node", node: { id: "mem-primary", kind: "consumer", name: "memory-primary 应用", weight: 5, refs: 2, community: "c_surfaces" } },
+            { op: "add_node", node: { id: "seam", kind: "doc", name: "SEAM.md 消费方操作清单", weight: 6, refs: 3, community: "c_surfaces" } },
+
+            { op: "batch", label: "领域概念（ADR 定下的那些判断）" },
+            { op: "add_node", node: { id: "append-first", kind: "concept", name: "追加优先 append-first", weight: 7, refs: 4, community: "c_algorithm" } },
+            { op: "add_node", node: { id: "active-add", kind: "concept", name: "模型主动添加记忆", weight: 6, refs: 3, community: "c_algorithm" } },
+            { op: "add_node", node: { id: "session-projection", kind: "concept", name: "会话即投影", weight: 6, refs: 3, community: "c_algorithm" } },
+            { op: "add_node", node: { id: "vector-landing", kind: "concept", name: "向量着陆检索", weight: 7, refs: 4, community: "c_algorithm" } },
+            { op: "add_node", node: { id: "write-resolve", kind: "concept", name: "写时消解", weight: 5, refs: 2, community: "c_algorithm" } },
+            { op: "add_node", node: { id: "lpa-binning", kind: "concept", name: "增量 LPA 认知分箱", weight: 6, refs: 3, community: "c_algorithm" } },
+            { op: "add_node", node: { id: "capsule", kind: "concept", name: "语义胶囊", weight: 5, refs: 2, community: "c_algorithm" } },
+
+            { op: "batch", label: "欠账 / 未决（PLAN 的 Deferred gates）" },
+            { op: "add_node", node: { id: "owed-backup", kind: "owed", name: "欠：备份导出端点", weight: 3, refs: 1, community: "c_owed" } },
+            { op: "add_node", node: { id: "owed-viz", kind: "owed", name: "欠：图可视化端点", weight: 4, refs: 2, community: "c_owed" } },
+
+            // ==== 关系 ====
+            { op: "batch", label: "关系·声明" },
+            { op: "add_link", link: { source: "adr-0001", target: "surface-session", kind: "declares", rel: "声明会话面", strength: 5 } },
+            { op: "add_link", link: { source: "adr-0001", target: "surface-memory", kind: "declares", rel: "声明记忆面（三种）", strength: 5 } },
+            { op: "add_link", link: { source: "adr-0001", target: "surface-tasks", kind: "declares", rel: "声明任务面", strength: 4 } },
+            { op: "add_link", link: { source: "adr-0002", target: "ns32", kind: "declares", rel: "声明扁平记忆表", strength: 4 } },
+            { op: "add_link", link: { source: "adr-0002", target: "graph-tables", kind: "declares", rel: "声明事实图", strength: 4 } },
+            { op: "add_link", link: { source: "adr-0002", target: "append-first", kind: "declares", rel: "追加优先（ADR-0002）", strength: 5 } },
+            { op: "add_link", link: { source: "adr-0003", target: "vector-landing", kind: "declares", rel: "向量着陆；词法分支撤销", strength: 4 } },
+            { op: "add_link", link: { source: "adr-0004", target: "active-add", kind: "declares", rel: "事实由模型主动添加（Update）", strength: 4 } },
+            { op: "add_link", link: { source: "adr-0006", target: "session-projection", kind: "declares", rel: "会话即数据", strength: 4 } },
+            { op: "add_link", link: { source: "adr-0008", target: "ns33", kind: "declares", rel: "统一 channel log", strength: 5 } },
+            { op: "add_link", link: { source: "adr-0008", target: "ns34", kind: "declares", rel: "压缩点独立成表", strength: 4 } },
+            { op: "add_link", link: { source: "adr-0008", target: "session-projection", kind: "declares", rel: "投影式会话", strength: 4 } },
+            { op: "add_link", link: { source: "adr-0010", target: "write-resolve", kind: "declares", rel: "写时消解", strength: 4 } },
+            { op: "add_link", link: { source: "adr-0010", target: "lpa-binning", kind: "declares", rel: "增量 LPA 分箱", strength: 4 } },
+            { op: "add_link", link: { source: "adr-0010", target: "capsule", kind: "declares", rel: "语义胶囊", strength: 3 } },
+            { op: "add_link", link: { source: "modeling", target: "ns33", kind: "declares", rel: "表结构之家", strength: 3 } },
+            { op: "add_link", link: { source: "modeling", target: "ns35", kind: "declares", rel: "表结构之家", strength: 3 } },
+            { op: "add_link", link: { source: "modeling", target: "graph-tables", kind: "declares", rel: "声明未落地", strength: 3 } },
+
+            { op: "batch", label: "关系·修订 / 取代" },
+            { op: "add_link", link: { source: "adr-0008", target: "adr-0001", kind: "updates", rel: "修订（记忆种类/面）", strength: 4 } },
+            { op: "add_link", link: { source: "adr-0008", target: "adr-0002", kind: "updates", rel: "修订（追加优先的适用范围）", strength: 3 } },
+            { op: "add_link", link: { source: "adr-0007", target: "adr-0004", kind: "supersedes", rel: "取代：无 Python 层", strength: 4 } },
+            { op: "add_link", link: { source: "adr-0008", target: "adr-0006", kind: "supersedes", rel: "会话不再是容器", strength: 3 } },
+
+            { op: "batch", label: "关系·落地" },
+            { op: "add_link", link: { source: "mem-core", target: "adr-0002", kind: "implements", rel: "Fjall + OKM schema", strength: 5 } },
+            { op: "add_link", link: { source: "mem-core", target: "adr-0003", kind: "implements", rel: "自建检索", strength: 3 } },
+            { op: "add_link", link: { source: "mem-server", target: "adr-0007", kind: "implements", rel: "HTTP 唯一跨进程形态", strength: 4 } },
+            { op: "add_link", link: { source: "mem-ffi", target: "adr-0004", kind: "implements", rel: "PyO3 绑定通道", strength: 3 } },
+
+            { op: "batch", label: "关系·消费" },
+            { op: "add_link", link: { source: "gravity", target: "surface-session", kind: "consumes", rel: "追覆盖指针", strength: 5 } },
+            { op: "add_link", link: { source: "gravity", target: "surface-memory", kind: "consumes", rel: "recall / commit 工具", strength: 5 } },
+            { op: "add_link", link: { source: "gravity", target: "surface-tasks", kind: "consumes", rel: "任务图", strength: 3 } },
+            { op: "add_link", link: { source: "mem-primary", target: "surface-memory", kind: "consumes", rel: "无会话投影", strength: 4 } },
+
+            { op: "batch", label: "关系·引用" },
+            { op: "add_link", link: { source: "seam", target: "surface-memory", kind: "cites", rel: "按三个面清点 door", strength: 4 } },
+            { op: "add_link", link: { source: "seam", target: "ns33", kind: "cites", rel: "door → 表", strength: 3 } },
+            { op: "add_link", link: { source: "seam", target: "gravity", kind: "cites", rel: "今天的唯一消费方", strength: 3 } },
+            { op: "add_link", link: { source: "plan", target: "adr-0008", kind: "cites", rel: "Phase 2.5 / 2.6", strength: 3 } },
+            { op: "add_link", link: { source: "plan", target: "adr-0010", kind: "cites", rel: "Phase 3 / 4", strength: 4 } },
+            { op: "add_link", link: { source: "plan", target: "adr-0002", kind: "cites", rel: "Phase 0 / 1", strength: 2 } },
+            { op: "add_link", link: { source: "wiki", target: "adr-0002", kind: "cites", rel: "KV 编码模式来源", strength: 3 } },
+            { op: "add_link", link: { source: "wiki", target: "adr-0003", kind: "cites", rel: "图谱化记忆来源", strength: 3 } },
+            { op: "add_link", link: { source: "readme", target: "adr-0001", kind: "cites", rel: "三个面 + 记忆三类", strength: 2 } },
+            { op: "add_link", link: { source: "adr-0010", target: "adr-0005", kind: "cites", rel: "投票取权重", strength: 3 } },
+            { op: "add_link", link: { source: "adr-0010", target: "adr-0007", kind: "cites", rel: "LLM 归调用方", strength: 4 } },
+            { op: "add_link", link: { source: "adr-0009", target: "adr-0008", kind: "cites", rel: "扩展 0008", strength: 3 } },
+
+            { op: "batch", label: "关系·依赖 / 延后" },
+            { op: "add_link", link: { source: "graph-tables", target: "plan", kind: "depends", rel: "Phase 3 才落地", strength: 4 } },
+            { op: "add_link", link: { source: "task-tables", target: "plan", kind: "depends", rel: "与事实图同图", strength: 3 } },
+            { op: "add_link", link: { source: "owed-viz", target: "graph-tables", kind: "depends", rel: "要等图真实存在", strength: 4 } },
+            { op: "add_link", link: { source: "owed-backup", target: "ns32", kind: "depends", rel: "等扁平记忆表变真", strength: 3 } },
+            { op: "add_link", link: { source: "owed-backup", target: "plan", kind: "deferred", rel: "Deferred gates", strength: 3 } },
+            { op: "add_link", link: { source: "owed-viz", target: "plan", kind: "deferred", rel: "Deferred gates", strength: 4 } }
         ];
 
-        let currentPacketIndex = 0;
+        // ---- 投递粒度：按批，不是按包 ----------------------------------------
+        // 包清单里的 { op: "batch" } 是批次分界：一批 = 后端会一次吐出的一组
+        // （一层实体，或一族关系）。每批做三件事：把这一批的包收进 graphData →
+        // 把这一批新边的端点解析成节点对象 → 一次 graphData() + 一次 reheat。
+        //
+        // 端点为什么必须自己先解析（实测踩出来的）：graphData.links 是引擎按引用持有
+        // 的数组，push 一条 source 还是字符串的边，等于赶在引擎下一次更新之前就把它
+        // 塞进了物理引擎；而库的一个更新帧里是"物理 tick 先跑、端点解析后跑"，那一帧
+        // 的 tick 于是读到字符串端点（.x 是 undefined → NaN），写 .vx 抛
+        // TypeError: Cannot create property 'vx' on string。异常落在 _animationCycle
+        // 内部，而该函数的最后一句才是 requestAnimationFrame 续帧，抛了就不再续帧 ——
+        // 画布从此冻住（实测：38 个节点已铺好、48 条边一条没画出来）。所以端点在这里
+        // 就换成节点对象，引擎任何一帧都读不到字符串。端点找不到节点的边不投递，
+        // 改成在面板上报错（d3 遇到这种边自己会抛 node not found，同样会冻住画布）。
+        const nodeById = new Map();
+
+        const resolveLinks = (links) => {
+            let ok = 0, dropped = 0;
+            links.forEach(l => {
+                const source = nodeById.get(l.source), target = nodeById.get(l.target);
+                if (!source || !target) { dropped++; return; }
+                l.source = source;
+                l.target = target;
+                graphData.links.push(l);
+                ok++;
+            });
+            return { ok, dropped };
+        };
+
+        const applyBatch = (batch) => {
+            const pendingLinks = [];
+            let addedNodes = 0;
+            batch.packets.forEach(p => {
+                if (p.op === 'add_node') {
+                    graphData.nodes.push(p.node);
+                    nodeById.set(p.node.id, p.node);
+                    addedNodes++;
+                } else {
+                    pendingLinks.push(p.link);
+                }
+            });
+            const { ok, dropped } = resolveLinks(pendingLinks);
+
+            // 整批一次推进引擎，而不是一包一次
+            Graph.graphData(graphData);
+            // 局部加热物理引擎：新进的点平滑扩散，旧节点继续受力（拖拽也走同一套力反馈）
+            Graph.d3ReheatSimulation();
+
+            refreshMetrics(`${batch.label}：+${addedNodes} 实体 / +${ok} 关系`);
+            if (dropped) setLog(`${batch.label}：${dropped} 条边的端点不在图上 —— 包清单有笔误`, true);
+        };
+
+        // 包清单 → 批次（分界标记带 label）
+        const kgStreamBatches = [];
+        kgStreamPackets.forEach(p => {
+            if (p.op === 'batch') {
+                kgStreamBatches.push({ label: p.label, packets: [] });
+            } else {
+                if (!kgStreamBatches.length) throw new Error('包清单的第一项必须是 batch 标记');
+                kgStreamBatches[kgStreamBatches.length - 1].packets.push(p);
+            }
+        });
+
+        let currentBatchIndex = 0;
 
         const executeStreamStep = () => {
-            if (currentPacketIndex >= kgStreamPackets.length) {
-                refreshMetrics(">>> 后端流式图谱构建完成。");
+            if (currentBatchIndex >= kgStreamBatches.length) {
+                // 计数直接从数据里取，不手写数字（手写的会漂）
+                refreshMetrics(`>>> 文档图谱注入完成：${graphData.nodes.length} 个节点 / ${graphData.links.length} 条关系（ADR / 文档 / crate / 表 / 面 / 消费方 / 概念 / 欠账）。`);
                 return;
             }
 
-            const packet = kgStreamPackets[currentPacketIndex];
-
-            if (packet.op === "add_node") {
-                graphData.nodes.push(packet.node);
-                refreshMetrics(`创建实体: [${packet.node.name}]`);
-            } else if (packet.op === "add_link") {
-                graphData.links.push(packet.link);
-                refreshMetrics(`建立关系: ${packet.link.rel}`);
-            }
-
-            // 增量推流给 3D 引擎，绝非重写整树
-            Graph.graphData(graphData);
-            // 局部加热物理引擎，让新进的点平滑扩散，绝不全屏闪烁
-            Graph.d3ReheatSimulation();
-
-            currentPacketIndex++;
-            // 模拟大模型思考的流式步进时间间隔 (800毫秒一发)
+            applyBatch(kgStreamBatches[currentBatchIndex]);
+            currentBatchIndex++;
+            // 分批步进：每批 800ms。批数由包清单的 batch 标记决定，总数不写死在这里（会漂）
             setTimeout(executeStreamStep, 800);
         };
 
         // 延迟 1 秒后，启动流式图谱对接口
-        setTimeout(executeStreamStep, 1000);
+        setTimeout(() => {
+            setLog("后端已握手，开始流式注入拓扑...");
+            executeStreamStep();
+        }, 1000);
+        }
     </script>
 </body>
 </html>
