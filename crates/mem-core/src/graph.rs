@@ -299,6 +299,29 @@ pub struct FactBody {
     pub edge: FactEdge,
 }
 
+/// One node as a fact read returns it: its identity, its name, its kind
+/// token and (for a literal) its numeric projection — the refs carry the
+/// scope, so a caller never passes one in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedNode {
+    pub scope: u64,
+    pub node_id: u64,
+    pub kind: String,
+    pub literal_num: i64,
+    pub name: String,
+}
+
+/// One fact with BOTH endpoints resolved — what a wire face or a
+/// renderer needs (an edge id alone is not renderable).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FactView {
+    pub edge_id: u64,
+    pub kind: String,
+    pub src: ResolvedNode,
+    pub dst: ResolvedNode,
+    pub edge: FactEdge,
+}
+
 /// The graph's tables, attached to one already-open store handle (the
 /// `memory` keyspace: different entity class, different ns, one tree —
 /// the same rule flat memory and the code store follow).
@@ -444,6 +467,56 @@ impl GraphStore {
             kind,
             edge: FactEdge::from_attrs(&body.attrs).unwrap_or_default(),
         })
+    }
+
+    /// One fact, read back by id, with both endpoints resolved to their
+    /// node rows (an absent endpoint renders as a node id and an empty
+    /// name — never an error: the edge is truth even if its node row was
+    /// removed).
+    pub fn fact_view(&mut self, edge_id: u64) -> Option<FactView> {
+        let body = self.facts().get_edge(edge_id)?;
+        let kind = self.facts_primed().kind_name(body.kind_id)?;
+        Some(FactView {
+            edge_id,
+            kind,
+            src: self.resolve_ref(&body.src),
+            dst: self.resolve_ref(&body.dst),
+            edge: FactEdge::from_attrs(&body.attrs).unwrap_or_default(),
+        })
+    }
+
+    /// One node's outgoing facts, endpoints resolved — the one-hop
+    /// traversal the read face serves. `out_edges` is the traversal
+    /// currency (untyped, no dictionary involved); each id is then read
+    /// back as a whole fact.
+    pub fn out_facts(&mut self, scope: u64, node_id: u64) -> Vec<FactView> {
+        self.out_edges(scope, node_id)
+            .into_iter()
+            .filter_map(|edge_id| self.fact_view(edge_id))
+            .collect()
+    }
+
+    /// A `NodeRef` back to its node: the ref is `[ns 2B][len varint]
+    /// [entity key]`, so the entity key decodes straight out of it and
+    /// the scope rides along (nothing external is consulted).
+    pub fn resolve_ref(&mut self, node: &NodeRef) -> ResolvedNode {
+        let key = EntityKey::decode(&node.pkey);
+        let row = self.entity(key.scope, key.node_id);
+        let (kind, literal_num, name) = match row {
+            Some(row) => (
+                self.entity_kind(row.kind_id).unwrap_or_default(),
+                row.literal_num,
+                row.name,
+            ),
+            None => (String::new(), 0, String::new()),
+        };
+        ResolvedNode {
+            scope: key.scope,
+            node_id: key.node_id,
+            kind,
+            literal_num,
+            name,
+        }
     }
 
     /// Outgoing edge ids of one node (the traversal currency).

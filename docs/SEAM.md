@@ -29,7 +29,9 @@ primitives in `crates/mem-core/src/`.
 | `GET /memory/{user_id}/search?q=` | `MemoryStore::search` (one user's key range; an empty result is legal) | flat memory (32) | landed (PLAN 1e) |
 | — no route | `MemoryStore::forget` / `list` / `stats` | flat memory (32) | core landed, no endpoints |
 | `POST /facts/{scope}` | `GraphStore::ingest` (the body IS the 8-slot tuple; `scope` is the path) | fact graph — entities (36) + facts (37) | landed (2026-10-17) |
-| — no route | graph reads: `entity_by_name` (the exact entrance), `typed_out` / `out_edges` (traversal), `fact`, `entity_props` / `fact_props` | fact graph (36/37) | core landed (2026-10-17) |
+| `GET /facts/{scope}/entities/{name}` | `GraphStore::entity_by_name` (the exact name/alias entrance; 404 on an unknown name) | entities (36) | landed (2026-10-17) |
+| `GET /facts/{scope}/entities/{node_id}/edges` | `GraphStore::out_facts` (one hop, both endpoints resolved) | facts (37) + entities (36) | landed (2026-10-17) |
+| — no route | `entity` / `entity_props` / `fact` / `fact_props` / `typed_out` (the rest of the core's reads), and the retrieval (landing + weight Top-K) | fact graph (36/37) | core landed; the retrieval is owed (Phase 4) |
 | — no route | initialization-memory assembly (traversal from the user node) | initialization memory | Declared (ADR-0001, no ns yet |
 | — no route | task vertices + `task_links` edges (the third interface surface — a graph, sharing the facts' graph) | task graph | Declared (ADR-0001, no ns yet |
 | rides the session projection (read); no write route | task instance state (open / done — a structured field for exact enumeration) | task state | Declared (gravity ADR-0003 §3/§4) |

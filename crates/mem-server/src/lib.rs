@@ -75,6 +75,11 @@ pub fn open(path: PathBuf) -> Result<Router, fjall::Error> {
         .route("/memory", post(store_memory))
         .route("/memory/{user_id}/search", get(search_memory))
         .route("/facts/{scope}", post(ingest_fact))
+        .route("/facts/{scope}/entities/{name}", get(fetch_entity))
+        .route(
+            "/facts/{scope}/entities/{node_id}/edges",
+            get(list_entity_edges),
+        )
         .with_state(state))
 }
 
@@ -451,6 +456,86 @@ async fn ingest_fact(
         .ingest(scope, &fact)
         .map(|outcome| Json(outcome.into()))
         .map_err(FactError::from)
+}
+
+/// One node as the read face returns it.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct EntityDto {
+    pub node_id: u64,
+    pub kind: String,
+    pub literal_num: i64,
+    pub name: String,
+}
+
+/// One fact with both endpoints resolved (what a renderer or a recall
+/// needs — an edge id alone is not renderable).
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct FactViewDto {
+    pub edge_id: u64,
+    pub kind: String,
+    pub src: EntityDto,
+    pub dst: EntityDto,
+    pub since: u64,
+    pub confidence: u8,
+    pub weight: u32,
+}
+
+impl From<mem_core::graph::FactView> for FactViewDto {
+    fn from(v: mem_core::graph::FactView) -> Self {
+        let node = |n: mem_core::graph::ResolvedNode| EntityDto {
+            node_id: n.node_id,
+            kind: n.kind,
+            literal_num: n.literal_num,
+            name: n.name,
+        };
+        Self {
+            edge_id: v.edge_id,
+            kind: v.kind,
+            src: node(v.src),
+            dst: node(v.dst),
+            since: v.edge.since,
+            confidence: v.edge.confidence,
+            weight: v.edge.weight,
+        }
+    }
+}
+
+/// `GET /facts/{scope}/entities/{name}` — the exact name/alias entrance
+/// (ADR-0003: the name is an attribute, and this face is how the human
+/// identity reaches the store). An unknown name is a 404 — the caller
+/// turns it into an error value; an empty RESULT would be a different
+/// statement (nothing matched a search), which this door does not make.
+async fn fetch_entity(
+    State(state): State<Arc<MemState>>,
+    Path((scope, name)): Path<(u64, String)>,
+) -> Result<Json<EntityDto>, StatusCode> {
+    let mut graph = state.graph.lock().await;
+    let (node_id, row) = graph
+        .entity_by_name(scope, &name)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(EntityDto {
+        node_id,
+        kind: graph.entity_kind(row.kind_id).unwrap_or_default(),
+        literal_num: row.literal_num,
+        name: row.name,
+    }))
+}
+
+/// `GET /facts/{scope}/entities/{node_id}/edges` — the node's outgoing
+/// facts, endpoints resolved: one hop of the traversal, in edge-id order.
+/// An empty list is a legal answer (a node with no facts yet).
+async fn list_entity_edges(
+    State(state): State<Arc<MemState>>,
+    Path((scope, node_id)): Path<(u64, u64)>,
+) -> Json<Vec<FactViewDto>> {
+    let mut graph = state.graph.lock().await;
+    Json(
+        graph
+            .out_facts(scope, node_id)
+            .into_iter()
+            .map(FactViewDto::from)
+            .collect(),
+    )
 }
 
 /// Errors the shell itself can produce (the stores' primitives

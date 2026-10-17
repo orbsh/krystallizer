@@ -28,7 +28,9 @@
 | `GET /memory/{user_id}/search?q=` | `MemoryStore::search`（只扫该用户的键区间；空结果合法） | flat memory (32) | 已落（PLAN 1e） |
 | — 无路由 | `MemoryStore::forget` / `list` / `stats` | flat memory (32) | core 已落，无端点 |
 | `POST /facts/{scope}` | `GraphStore::ingest`（请求体就是 8 元组；`scope` 走路径） | 事实图——实体（36）+ 事实（37） | 已落（2026-10-17） |
-| — 无路由 | 图读：`entity_by_name`（精确入口）、`typed_out` / `out_edges`（遍历）、`fact`、`entity_props` / `fact_props` | 事实图（36/37） | core 已落（2026-10-17） |
+| `GET /facts/{scope}/entities/{name}` | `GraphStore::entity_by_name`（名/别名精确入口；未知名字 404） | 实体（36） | 已落（2026-10-17） |
+| `GET /facts/{scope}/entities/{node_id}/edges` | `GraphStore::out_facts`（一跳，两端都已解析） | 事实（37）+ 实体（36） | 已落（2026-10-17） |
+| — 无路由 | `entity` / `entity_props` / `fact` / `fact_props` / `typed_out`（核心其余读），以及检索（落点 + 权重 Top-K） | 事实图（36/37） | core 已落；检索尚欠（Phase 4） |
 | — 无路由 | 初始化记忆装配（从用户节点出发遍历） | initialization memory | 已声明（ADR-0001），无 ns |
 | — 无路由 | 任务顶点 + `task_links` 边（第三个接口面——一个图，与事实同图） | task graph | 已声明（ADR-0001），无 ns |
 | 读侧随会话投影；写侧无路由 | 任务实例态（开 / 完——用于精确枚举的结构化字段） | task state | 已声明（gravity ADR-0003 §3/§4） |

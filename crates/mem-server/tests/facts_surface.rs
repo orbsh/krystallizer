@@ -10,7 +10,7 @@
 //! the graph shares the `memory` keyspace with flat memory without either
 //! seeing the other.
 
-use mem_server::{IngestOutcomeDto, StoreMemory};
+use mem_server::{EntityDto, FactViewDto, IngestOutcomeDto, StoreMemory};
 use std::net::SocketAddr;
 use tempfile::TempDir;
 
@@ -246,4 +246,110 @@ async fn the_graph_and_flat_memory_share_a_keyspace_without_leaking() {
         .await
         .unwrap();
     assert_eq!(still_there.len(), 1, "the memory row survives the ingest");
+}
+
+/// The exact name entrance: the human identity reaches the graph here
+/// (ADR-0003). An unknown name is a 404 — not an empty result, which
+/// would be a different statement.
+#[tokio::test]
+async fn the_exact_entrance_finds_a_node_and_404s_when_absent() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    ingest(
+        &client,
+        &base,
+        1,
+        tuple(r#"["galaxy_repo","repository",{},"PIVOTED_TO",{},"k10r","system",{}]"#),
+    )
+    .await;
+
+    let found: EntityDto = client
+        .get(format!("{base}/facts/1/entities/galaxy_repo"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        found,
+        EntityDto {
+            node_id: 1,
+            kind: "repository".into(),
+            literal_num: 0,
+            name: "galaxy_repo".into(),
+        }
+    );
+
+    let absent = client
+        .get(format!("{base}/facts/1/entities/nothing-here"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(absent.status(), 404);
+
+    let other_scope = client
+        .get(format!("{base}/facts/2/entities/galaxy_repo"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(other_scope.status(), 404, "the name lives inside its scope");
+}
+
+/// One hop of the traversal: the node's outgoing facts come back with
+/// BOTH endpoints resolved, so a caller (or a renderer) never has to walk
+/// the refs itself — and a literal object arrives as the node it is.
+#[tokio::test]
+async fn one_hop_traversal_resolves_both_ends() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    ingest(
+        &client,
+        &base,
+        1,
+        tuple(r#"["user","person",{},"PREFERS",{},"iced_americano","coffee",{}]"#),
+    )
+    .await;
+    ingest(
+        &client,
+        &base,
+        1,
+        tuple(r#"["user","person",{},"BORN_IN",{},"1990","literal",{}]"#),
+    )
+    .await;
+
+    let edges: Vec<FactViewDto> = client
+        .get(format!("{base}/facts/1/entities/1/edges"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(edges.len(), 2, "both facts leave the same source");
+    assert_eq!(edges[0].kind, "PREFERS");
+    assert_eq!(edges[0].src.name, "user");
+    assert_eq!(edges[0].dst.name, "iced_americano");
+    assert_eq!(edges[0].dst.kind, "coffee");
+    assert_eq!(edges[1].kind, "BORN_IN");
+    assert_eq!(edges[1].dst.kind, "literal");
+    assert_eq!(edges[1].dst.literal_num, 1990, "the literal's projection");
+    assert_eq!(
+        (edges[0].src.node_id, edges[0].src.name.as_str()),
+        (1, "user"),
+        "the endpoints arrive resolved — nothing was passed in"
+    );
+
+    let none: Vec<FactViewDto> = client
+        .get(format!("{base}/facts/1/entities/999/edges"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        none.is_empty(),
+        "a node with no facts is a legal empty list"
+    );
 }
