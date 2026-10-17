@@ -20,6 +20,7 @@ use axum::{
 };
 use mem_core::channel::{ChannelStore, MessageKey, MessageRow, SessionView};
 use mem_core::code::{CodeRow, CodeStore};
+use mem_core::graph::{FactTuple, GraphStore, IngestError, IngestOutcome};
 use mem_core::memory::MemoryStore;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -39,6 +40,11 @@ pub struct MemState {
     /// code group (different ns). This is the memory family's tool face:
     /// `commit_memory` stores here, `recall_memory` searches here.
     memory: tokio::sync::Mutex<MemoryStore>,
+    /// The fact graph (ns 36 entities / 37 facts) — the `memory`
+    /// keyspace. The active memory add lands here (ADR-0008: the facts
+    /// come from the model's own add, the caller routes the tuple to
+    /// `ingest(fact)`).
+    graph: tokio::sync::Mutex<GraphStore>,
 }
 
 /// Open the database at `path` and build the router.
@@ -52,6 +58,7 @@ pub fn open(path: PathBuf) -> Result<Router, fjall::Error> {
         store: tokio::sync::Mutex::new(stores.channels),
         code: tokio::sync::Mutex::new(stores.code),
         memory: tokio::sync::Mutex::new(stores.memory),
+        graph: tokio::sync::Mutex::new(stores.graph),
     });
     Ok(Router::new()
         .route("/channels/{channel_id}/messages", post(append_message))
@@ -67,6 +74,7 @@ pub fn open(path: PathBuf) -> Result<Router, fjall::Error> {
         .route("/code/{code_id}", get(fetch_code))
         .route("/memory", post(store_memory))
         .route("/memory/{user_id}/search", get(search_memory))
+        .route("/facts/{scope}", post(ingest_fact))
         .with_state(state))
 }
 
@@ -303,7 +311,7 @@ async fn list_code(State(state): State<Arc<MemState>>) -> Json<Vec<CodeCandidate
 
 // ---- flat memory (ns 32) --------------------------------------------
 //
-// The memory family's tool face (ADR-0001 Update 2026-10-16: the standing
+// The memory family's tool face (ADR-0001: the standing
 // capability, offered as tools — `commit_memory` / `recall_memory`). One
 // endpoint per core primitive, nothing added: the store assigns the id,
 // and the CALLER owns the clock — `created_at` rides the request, the
@@ -366,6 +374,83 @@ async fn search_memory(
             .map(|(memory_id, text)| MemoryHitDto { memory_id, text })
             .collect(),
     )
+}
+
+// ---- the fact graph (ns 36 entities / 37 facts) ----------------------
+//
+// The active memory add's door: the model emits a fact in-turn and the
+// caller routes that tuple to `ingest(fact)` (ADR-0008). The tuple
+// travels VERBATIM — the canonical 8-slot JSON list is the request body,
+// so the caller pastes the form the wiki/PROMPTS state and nothing
+// restates it. `scope` (the per-user corpus boundary) rides the path.
+// Ids and resolution are the store's (ADR-0010 §1); the caller owns the
+// clock inside the tuple's own props.
+
+/// What one ingest did: the three-way outcome of ADR-0010 §1, so the
+/// caller can tell a landed fact from an adjudicated loss.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct IngestOutcomeDto {
+    /// `linked` (a new edge) | `rewritten` (the incumbent's row, same
+    /// `edge_id`) | `dropped` (the incumbent won).
+    pub outcome: String,
+    pub edge_id: u64,
+}
+
+impl From<IngestOutcome> for IngestOutcomeDto {
+    fn from(o: IngestOutcome) -> Self {
+        let (outcome, edge_id) = match o {
+            IngestOutcome::Linked { edge_id } => ("linked", edge_id),
+            IngestOutcome::Rewritten { edge_id } => ("rewritten", edge_id),
+            IngestOutcome::Dropped { edge_id } => ("dropped", edge_id),
+        };
+        Self {
+            outcome: outcome.to_string(),
+            edge_id,
+        }
+    }
+}
+
+/// A refused fact: the caller's structural bug (400 — the tuple's arity
+/// or a slot's shape) or an engine failure (500). The core's error text
+/// travels verbatim, never a reworded summary.
+#[derive(Serialize)]
+pub struct FactError {
+    pub error: String,
+    #[serde(skip)]
+    status: StatusCode,
+}
+
+impl From<IngestError> for FactError {
+    fn from(e: IngestError) -> Self {
+        let status = match e {
+            IngestError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            _ => StatusCode::BAD_REQUEST,
+        };
+        Self {
+            error: e.to_string(),
+            status,
+        }
+    }
+}
+
+impl IntoResponse for FactError {
+    fn into_response(self) -> axum::response::Response {
+        (self.status, Json(self)).into_response()
+    }
+}
+
+/// `POST /facts/{scope}` — land one fact; the body IS the 8-slot tuple.
+async fn ingest_fact(
+    State(state): State<Arc<MemState>>,
+    Path(scope): Path<u64>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<IngestOutcomeDto>, FactError> {
+    let fact = FactTuple::from_value(&body).map_err(FactError::from)?;
+    let mut graph = state.graph.lock().await;
+    graph
+        .ingest(scope, &fact)
+        .map(|outcome| Json(outcome.into()))
+        .map_err(FactError::from)
 }
 
 /// Errors the shell itself can produce (the stores' primitives

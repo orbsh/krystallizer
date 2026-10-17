@@ -86,11 +86,16 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     relation props on the edge's dynamic segment (same batch as the
     link). Gates: mem-core 34/0 (graph 12 — layout locks, scope
     isolation, the polygons of the resolution, the literal node, props
-    merge, id recovery), clippy 0, fmt clean. Owed: an HTTP route for
-    `ingest(fact)`; the graph's retrieval (embedding + name/alias into
-    traversal); and the okm-side items in ADR-0010's owed list (a
-    dictionary handle / an engine fallback for the typed reads,
-    `unlink_into`, a generated attribute decode).
+    merge, id recovery), clippy 0, fmt clean. The write door
+    `POST /facts/{scope}` landed with it (the request body IS the 8-slot
+    tuple; the outcome comes back as linked / rewritten / dropped; a
+    structural bug is a 400 carrying the core's own reason): mem-server
+    17/0 (facts 5 — round trip, the incumbent rewrite, scope isolation,
+    the refusal, the keyspace leak test). Owed: the graph's READ doors
+    (the traversal / recall face) and its retrieval (embedding +
+    name/alias into traversal); and the okm-side items in ADR-0010's
+    owed list (a dictionary handle / an engine fallback for the typed
+    reads, `unlink_into`, a generated attribute decode).
 - [ ] Phase 4 — Clustered retrieval: entity-anchored / temporal / causal-chain views; progressive loading (Top-K by weight). Reads the write-time structure ADR-0010 lands (the node's community id + the community reverse index + capsules) instead of running a graph algorithm on the read path. (ADR-0005, ADR-0010)
 - [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), SKILL topological four-part nodes, Aura Actor nodes. (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.) ADR-0010 takes the incremental LOCAL form of community detection onto the write side and leaves OPEN whether that promotes a slice of Phase 5 ahead of Phase 3/4 — an open ruling, not settled.
 

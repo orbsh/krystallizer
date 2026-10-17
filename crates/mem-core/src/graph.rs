@@ -186,6 +186,12 @@ impl FactTuple {
     pub fn from_json(text: &str) -> Result<Self, IngestError> {
         let value: serde_json::Value =
             serde_json::from_str(text).map_err(|e| IngestError::Json(e.to_string()))?;
+        Self::from_value(&value)
+    }
+
+    /// The same decode for an already-parsed JSON value (the HTTP door
+    /// hands its body straight in — the tuple travels as JSON either way).
+    pub fn from_value(value: &serde_json::Value) -> Result<Self, IngestError> {
         let slots = value.as_array().ok_or(IngestError::Slot {
             slot: 0,
             why: "the tuple must be a JSON list",

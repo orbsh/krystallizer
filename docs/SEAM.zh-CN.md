@@ -27,7 +27,7 @@
 | `POST /memory` | `MemoryStore::store`（id 由 store 发放；`created_at` 归调用方） | flat memory (32) | 已落（PLAN 1e） |
 | `GET /memory/{user_id}/search?q=` | `MemoryStore::search`（只扫该用户的键区间；空结果合法） | flat memory (32) | 已落（PLAN 1e） |
 | — 无路由 | `MemoryStore::forget` / `list` / `stats` | flat memory (32) | core 已落，无端点 |
-| — 无路由 | `ingest(fact)`（`GraphStore::ingest`） | 事实图——实体（36）+ 事实（37） | core 已落（2026-10-17）；尚无路由 |
+| `POST /facts/{scope}` | `GraphStore::ingest`（请求体就是 8 元组；`scope` 走路径） | 事实图——实体（36）+ 事实（37） | 已落（2026-10-17） |
 | — 无路由 | 图读：`entity_by_name`（精确入口）、`typed_out` / `out_edges`（遍历）、`fact`、`entity_props` / `fact_props` | 事实图（36/37） | core 已落（2026-10-17） |
 | — 无路由 | 初始化记忆装配（从用户节点出发遍历） | initialization memory | 已声明（ADR-0001），无 ns |
 | — 无路由 | 任务顶点 + `task_links` 边（第三个接口面——一个图，与事实同图） | task graph | 已声明（ADR-0001），无 ns |
@@ -45,7 +45,7 @@ in-process 不是第二道门：`InProcessSurface` 在调用方进程内链接�
 | 压缩落地（summarize） | 未接 | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint` | 门已落，gravity 侧欠（Phase 2/2.6） |
 | 任务进度（一步一 task 行；读随轮首投影，完成在执行点写） | ADR-0003 §3/§4 | 读侧随 `GET /channels/{c}/members/{m}/session`；写侧尚无路由 | 任务顶点 + `task_links` 边，与事实同图 | 已声明——第三个接口面（ADR-0001）；gravity Phase 2.6 |
 | `recall_memory`——长期事实 | 工具面（未进代码） | `GET /memory/{user_id}/search?q=`（flat） | `MemoryStore::search`；图的检索（落点 + traversal + 权重 Top-K）尚欠 | flat 门已落（PLAN 1e）；图的读已在 core 落地（2026-10-17），尚无路由；工具欠 |
-| `commit_memory`——写事实 | 工具面 | `POST /memory`（flat） | `MemoryStore::store`（flat）/ `GraphStore::ingest(fact)`（图） | flat 门已落（PLAN 1e）；图的 core 已落（2026-10-17），路由尚欠；工具欠 |
+| `commit_memory`——写事实 | 工具面 | `POST /memory`（flat）/ `POST /facts/{scope}`（图） | `MemoryStore::store`（flat）/ `GraphStore::ingest(fact)`（图） | 两道门都已落（2026-10-17）；工具本身欠（gravity 侧） |
 | `resolve_skills`——可选 skills 列表 | 工具面 | `GET /code`（bring-up：池读） | `CodeStore::list` | bring-up 形态已落；skill 节点（前置 / 步骤 / 经验 / 后验）是 Phase 5+ deferred |
 | `invoke_skill`——计划里取码那一步 | 工具面 | `GET /code/{id}` | `CodeStore::get` | 已落 |
 | `invoke_skill`——调用本身 | 计划里的一步 | **不走 k10r**（见 §3） | — | gravity Phase 4.6 |

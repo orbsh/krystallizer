@@ -28,7 +28,7 @@ primitives in `crates/mem-core/src/`.
 | `POST /memory` | `MemoryStore::store` (the store assigns the id; `created_at` is the caller's) | flat memory (32) | landed (PLAN 1e) |
 | `GET /memory/{user_id}/search?q=` | `MemoryStore::search` (one user's key range; an empty result is legal) | flat memory (32) | landed (PLAN 1e) |
 | — no route | `MemoryStore::forget` / `list` / `stats` | flat memory (32) | core landed, no endpoints |
-| — no route | `ingest(fact)` (`GraphStore::ingest`) | fact graph — entities (36) + facts (37) | core landed (2026-10-17); no route yet |
+| `POST /facts/{scope}` | `GraphStore::ingest` (the body IS the 8-slot tuple; `scope` is the path) | fact graph — entities (36) + facts (37) | landed (2026-10-17) |
 | — no route | graph reads: `entity_by_name` (the exact entrance), `typed_out` / `out_edges` (traversal), `fact`, `entity_props` / `fact_props` | fact graph (36/37) | core landed (2026-10-17) |
 | — no route | initialization-memory assembly (traversal from the user node) | initialization memory | Declared (ADR-0001, no ns yet |
 | — no route | task vertices + `task_links` edges (the third interface surface — a graph, sharing the facts' graph) | task graph | Declared (ADR-0001, no ns yet |
@@ -47,7 +47,7 @@ the single cross-process form (ADR-0007 as revised).
 | Compression landing (summarize) | not wired | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint` | door landed, gravity side owed (Phase 2/2.6) |
 | Task progress (one task row per step; read with the turn-start projection, completion written at the call site) | ADR-0003 §3/§4 | read side rides `GET /channels/{c}/members/{m}/session`; the write face has no route yet | task vertices + `task_links` edges in the same graph as the facts | Declared — the third interface surface (ADR-0001; gravity Phase 2.6 |
 | `recall_memory` — long-term facts | tool face (not in code yet) | `GET /memory/{user_id}/search?q=` (flat) | `MemoryStore::search`; the graph's retrieval (landing + traversal + weight Top-K) is owed | flat door landed (PLAN 1e); graph door owed (Phase 3); tool owed |
-| `commit_memory` — write facts | tool face | `POST /memory` (flat) | `MemoryStore::store` (flat) / `ingest(fact)` (graph) | flat door landed (PLAN 1e); graph door owed (Phase 3); tool owed |
+| `commit_memory` — write facts | tool face | `POST /memory` (flat) / `POST /facts/{scope}` (graph) | `MemoryStore::store` (flat) / `GraphStore::ingest(fact)` (graph) | both doors landed (2026-10-17); the tool itself is owed (gravity side) |
 | `resolve_skills` — the selectable skill list | tool face | `GET /code` (bring-up: the pool read) | `CodeStore::list` | bring-up form landed; the skill NODE (preconditions / steps / experience / verification) is Phase 5+ deferred |
 | `invoke_skill` — plan step: fetch the code row | tool face | `GET /code/{id}` | `CodeStore::get` | landed |
 | `invoke_skill` — the call itself | plan step | **not k10r** (see §3) | — | gravity Phase 4.6 |
@@ -97,7 +97,7 @@ an actor (ADR-0007).
 
 - A new door is registered here **in the same pass** that lands it (route +
   primitive + ns + status), normally alongside its PLAN phase sub-step and its
-  ADR Update.
+  ADR.
 - A door's status moves only with evidence: the integration test that
   exercises it through a real server, or the core test that locks the
   primitive.
