@@ -118,8 +118,16 @@ not a monotonic counter.
   needs to be sane, and skew cannot break causality (a reply is always
   written after what it answers was written).
 - **Same-millisecond bursts** (gravity serving many users/channels):
-  the key appends a tiebreaker — `(ts_ms u48, sender_hash u8, sub u8)`
-  — stable width, no impact on max-gap computation.
+  the key appends a tiebreaker — `sub` (`u16`, the writer's sequential
+  counter within one millisecond). The writer's own counter is the
+  tiebreaker because the channel has ONE writer at a time: a channel's
+  gravity instance owns its clock (below), so two appends into one channel
+  are sequential, and `u16` overflow at 65 536 messages in one
+  millisecond is a pathological signal, not a re-keying need. The landed
+  key is `[channel_id 8B][ts_ms 8B][sub 2B]` (MODELING, locked by the hex
+  test); a sender segment was considered for the many-writers-per-channel
+  case and is not in the key, because no such case exists in the shape
+  this ADR defines.
 - **max-gap becomes a time difference**: with time as order, the
   largest gap is the max delta between adjacent entries in one range
   scan — no second index, no seq→time lookup.
