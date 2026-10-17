@@ -91,14 +91,26 @@ id），从其之后继续。后果：id 唯一但不按 user 连续，计数器
 
 ## 访问方法清单
 
-OKM 强制纪律：每个实体的查询必须是声明的访问方法，不是扫描。现状：
+okm 的纪律：查询只走声明过的路径——没有通用全表扫描的查询面。本仓的清单按形态分
+三类，每条都写明它是哪一类：
 
-- Flat memory（ns 32）：只有 user 前缀扫描（key 前缀）。这张表是长期记忆的
-  **图前**载体，随图一起撤销（ADR-0001，PLAN Phase 3），所以 ADR-0003 描述的
-  向量落址与名/别名点查声明在图的两个 collection 上，不在这张表上。
-- Channel 消息（ns 33）：`[channel_id][ts_ms][sub]` 前缀扫描——回放、
-  increment、max-gap 读都是一次前缀扫描（ADR-0008 §3）。checkpoint（ns 34）：
-  按 `[channel_id][member_id]` 点读。
+- **点读**：`get`（主键）。
+- **具名面**：声明的访问方法（前缀扫 / 区间扫 / 覆盖扫；等值匹配用 `scan_exact`）。
+- **声明的退化路径**：全表扫描或表内过滤。它合法，但必须在清单里登记形态、前提与
+  上限；前提失效（规模过界或成为热路径）时提升为具名面——声明即注册，加一条索引，
+  而不是改调用点。
+
+现状：
+
+- Flat memory（ns 32）：**声明的退化路径**——`[user_id]` 前缀扫描加表内 substring
+  过滤（ADR-0003 的 bring-up 姿态）。这张表是长期记忆的**图前**载体，随图一起
+  撤销（ADR-0001，PLAN Phase 3），所以 ADR-0003 描述的向量落址与名/别名点查
+  声明在图的两个 collection 上，不在这张表上。
+- Channel 消息（ns 33）：**具名面**——`[channel_id][ts_ms][sub]` 前缀扫描：回放、
+  increment、max-gap 读都是一次前缀扫描，且区间就落在主表自己的排序段上（顺序扫、
+  无回表），见 ADR-0008 §3。checkpoint（ns 34）：按 `[channel_id][member_id]` 点读。
+- Code（ns 35）：`get(code_id)` 是**点读**；`list()` 是**声明的退化路径**（全表按
+  id 序，供解析与关联挑选，由图谱检索取代——ADR-0003/0018）。
 - Fact graph：OKM 节点 collection（entities）+ 边 collection（facts）带声明面，
   见 ADR-0010 §1——不是 `edge:{src}:{label}:{dst}` 那种键布局（`EdgeTable` 是
   旧名：上面那层是 `Graph<S, E: KvGraph>` + `NodeRef` + kind 字典，okm

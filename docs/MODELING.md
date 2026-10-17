@@ -102,17 +102,33 @@ assume per-user id density.
 
 ## Access-method inventory
 
-Mandatory-per-OKM discipline: every entity's queries must be declared
-access methods, not scans. Current standing:
+okm's discipline: queries go through declared paths only — there is no general
+full-table scan query face. This inventory states which KIND each path is:
 
-- Flat memory (ns 32): the user-prefix scan (key prefix). The table is the
-  PRE-GRAPH carrier of long-term memory and is withdrawn with the graph
+- **Point read**: `get` (primary key).
+- **Named face**: a declared access method (prefix / range / covered scan;
+  equality matching is `scan_exact`).
+- **Declared degenerate path**: a full scan or an in-table filter. Legal, but it
+  must be registered here with its shape, its precondition and its ceiling; when
+  the precondition breaks (size or heat) it is promoted to a named face —
+  declaring registers itself, so the fix is one index, not the call site.
+
+Current standing:
+
+- Flat memory (ns 32): a **declared degenerate path** — the `[user_id]` prefix
+  scan plus an in-table substring filter (ADR-0003's bring-up posture). The table
+  is the PRE-GRAPH carrier of long-term memory and is withdrawn with the graph
   (ADR-0001, PLAN Phase 3), so the vector landing and the name/alias point
   lookup ADR-0003 specifies are declared on the graph's collections, not
   here.
-- Channel messages (ns 33): prefix scan by `[channel_id][ts_ms][sub]` —
-  replay, increment and max-gap reads are one prefix scan (ADR-0008 §3).
-  Checkpoints (ns 34): point reads by `[channel_id][member_id]`.
+- Channel messages (ns 33): a **named face** — prefix scan by
+  `[channel_id][ts_ms][sub]`: replay, increment and max-gap reads are one prefix
+  scan, and the interval rides the main table's own sort segment (sequential, no
+  fetch-back), per ADR-0008 §3. Checkpoints (ns 34): point reads by
+  `[channel_id][member_id]`.
+- Code (ns 35): `get(code_id)` is a **point read**; `list()` is a **declared
+  degenerate path** (the whole table in id order, for resolving or linking,
+  replaced by graph retrieval — ADR-0003/0018).
 - Fact graph: an OKM node collection (entities) plus an edge collection
   (facts) with declared faces, per ADR-0010 §1 — NOT an
   `edge:{src}:{label}:{dst}` key layout (`EdgeTable` is a former name; the
