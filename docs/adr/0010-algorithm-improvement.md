@@ -84,23 +84,27 @@ Entities — node collection (ns 36), one per graph
   0x1 node-kind face [kind_id u16][scope u64][node_id u64]        declared index
   0x1 by_name face   [name][scope u64][node_id u64]               exact name/alias entrance
   0x1 by_community   [community_id u64][scope u64][node_id u64]   ← the drafts' index:community: (steps 3–4)
+  0x4/0x5 kind vocabulary [kind_id u16] → kind name ／ [kind name] → kind_id
+                     node kinds, separate from the props' field names (0x02/0x03)
 
 Facts — edge collection (ns 37), one ns per graph (okm ADR-0017)
   0x0 primary        [edge_id u64]
-                     → body: [src NodeRef][dst NodeRef][kind_id][since][confidence][weight]
-  0x1 declared-field face per declared field (since / confidence / weight)
+                     → body: [src NodeRef][dst NodeRef][predicate_id][since][confidence][weight]
+  0x1 dynamic segment [edge_id u64] → the relation's open props + the `functional` flag
+  0x1 declared-field face per DECLARED #[ok_index] (since / confidence / weight)
                      [field value][edge_id u64]
-  0x4 kind index     [kind_id][edge_id u64]
-  0x5 out-edges      [src NodeRef][edge_id u64]
-  0x6 in-edges       [dst NodeRef][edge_id u64]
-  0x7 kind+out       [kind_id][src NodeRef][edge_id u64]
-  0x8 kind+in        [kind_id][dst NodeRef][edge_id u64]
+  0x4/0x5 predicate dict  [predicate name] → predicate_id  /  [predicate_id] → name
+  0x6 predicate index [predicate_id][edge_id u64]
+  0x7 out-edges      [src NodeRef][edge_id u64]
+  0x8 in-edges       [dst NodeRef][edge_id u64]
+  0x9 predicate+out  [predicate_id][src NodeRef][edge_id u64]
+  0xA predicate+in   [predicate_id][dst NodeRef][edge_id u64]
 
   No SCOPE segment on this side: the edge collection is a `Graph<S, E>` and
   builds its own keys (okm's edge shape), so the ownership boundary rides the
   ENDPOINTS — every `NodeRef` carries its entity key, scope included. A
   traversal starts at a scoped node and stays in scope; only a whole-ns scan
-  (0x4, "every edge of kind K") crosses scopes, and it is the caller's to
+  (0x6, "every edge of a predicate") crosses scopes, and it is the caller's to
   filter by the endpoints. A per-scope edge prefix would mean hand-rolling
   the collection against okm's Graph.
 
@@ -147,15 +151,19 @@ Five points where this differs from the drafts, and why:
   `since` / `updated_at` are payload fields, following ADR-0005's own
   precedent that mutable metadata never enters the key.
 - **The kinds are runtime data; the three algorithm-queried edge fields are
-  declared.** Predicate kinds allocate through the edge collection's own
-  dictionary (0x2/0x3, name → kind_id), while `since` / `confidence` /
+  declared.** Predicates allocate through the GRAPH's own predicate
+  dictionary (fixed faces 0x04/0x05, name → `predicate_id`, okm ADR-0017
+  §3); they are no longer the payload's field-name dictionary (0x02/0x03).
+  Node kinds ride the same rule in the entity collection — its own vocabulary
+  pair at 0x04/0x05, with the props' names staying in 0x02/0x03.
+  `since` / `confidence` /
   `weight` are declared fields of k10r's own schema, each earning one 0x1
   face (okm ADR-0017 §3) — the two are orthogonal in okm's design. The
   extracted, open-ended attributes ride the dynamic segment and are
   reachable through path indexes (okm ADR-0012 / ADR-0029) when a query
   needs one.
 - **The fact tuple's relation is its name plus props, with no label of its
-  own.** The name IS this `kind_id`: a second, coarser kind would be a
+  own.** The name IS this `predicate_id`: a second, coarser kind would be a
   class-of-kinds with no face and no reader, and a classification the model
   wants kept visible rides the props (queryable through a path index). The
   tuple's three roles are therefore NOT symmetric — head and tail carry a name
@@ -173,7 +181,7 @@ label — the seed is a fresh community id, not a hash.
                        new fact arrives
                              │
                              ▼
-   one scan on the 0x7 face: which edges of this kind leave this source?
+   one scan on the 0x9 face: which edges of this predicate leave this source?
                              │
           ┌──────────────────┴──────────────────┐
           ▼ (none)                              ▼ (incumbent body)
@@ -200,11 +208,11 @@ Two pieces of the drafts' bookkeeping disappear with okm's mechanism:
 
 ```rust
 // draft sketch — mem-core, on a newly extracted triple (okm forms)
-let kind = kinds.id_of(predicate);   // 0x2/0x3 dictionary: name → kind_id
+let predicate_id = kinds.id_of(predicate);   // the graph's predicate dict (0x04/0x05)
 let src = NodeRef::new(&ENTITY_NS.to_be_bytes(), &subject_id.to_be_bytes());
 let dst = NodeRef::new(&ENTITY_NS.to_be_bytes(), &object_id.to_be_bytes());
 
-// 1. the edges of this kind out of this source: one scan on the 0x7 face
+// 1. the edges of this predicate out of this source: one scan on the 0x9 face
 let incumbent = edges.typed_out(predicate, &src).next();
 
 let mut batch = edges.batch();
@@ -218,7 +226,8 @@ match incumbent {
         }
         // else: dropped, no write
     }
-    // 3. no incumbent: link a new edge (0x4/0x5/0x6/0x7/0x8 in the batch)
+    // 3. no incumbent: link a new edge (0x6/0x7/0x8/0x9/0xA in the batch,
+    //    plus 0x4/0x5 when the predicate is first seen)
     None => batch.link(EdgeFact { src, dst, kind, ..new_fact }),
 }
 batch.commit();   // one WriteBatch = one transaction (ADR-0002)
@@ -238,8 +247,8 @@ directly"). `petgraph` is the carrier for the in-memory local graph.
 Mechanics:
 
 1. **Construct the local subgraph** — load the newly written node plus its
-   directly connected 2-hop neighbors through the traversal faces (0x5/0x6,
-   0x7/0x8), assembled into a temporary in-memory graph. No global graph is
+   directly connected 2-hop neighbors through the traversal faces (0x7/0x8,
+   0x9/0x0A), assembled into a temporary in-memory graph. No global graph is
    loaded.
 2. **Neighbor voting** — a node inspects its neighbors' `community_id` and
    votes by edge `confidence` weighted by accumulated edge weight:
@@ -331,7 +340,7 @@ pub fn assist_search(query: &str, top_k: usize) -> AssistantContext {
     let capsule = communities.get(CommunityKey { scope, community_id: cid });
 
     // 3. the community bucket: one by_community scan for the members,
-    //    their edges through the traversal faces (0x5/0x7)
+    //    their edges through the traversal faces (0x7/0x9)
     let members = entities.scan(by_community(cid));
     let facts = edges.within(&members);
 
@@ -369,7 +378,7 @@ inspectable from a dashboard reading `get_stats`.
   resolution step.
 - **Every read in this design is a declared access method** (okm: "access
   methods are mandatory"): the bucket is the `by_community` face, the
-  resolution lookup is the 0x7 face, the exact entrance is `by_name`. No raw
+  resolution lookup is the 0x9 face, the exact entrance is `by_name`. No raw
   prefix scan and no general full-scan surface is introduced.
 - **Keys carry no text and no hashed values.** Entity names and community
   labels live in payload fields and index segments, so they can be rendered
@@ -429,19 +438,21 @@ inspectable from a dashboard reading `get_stats`.
   vs a push the caller owns) is undecided.
 - **Community id issuance** rides okm's issuer discipline (`HighWater`
   reduce, single writer); the mechanism lands with steps 3–4.
-- **Two vocabularies in one ns, against okm's per-handle dictionary cache**
-  (found the hard way, 2026-10-17): the edge ns holds BOTH relation kinds
-  (allocated by okm's `Graph` through its own long-lived `DictCache`) and the
-  relation props' names (allocated by k10r). Two caches allocating in one
-  dictionary hand out the same id for different names — the frame then reads
-  back under the WRONG name, silently (the entity ns has the same split:
-  node kinds by k10r, prop names inside okm's `put_fields`). k10r holds the
-  discipline by allocating through a FRESH cache and by building the edge
-  handle PER CALL. Owed to okm: a dictionary handle the collection exposes
-  (or a rule that one ns holds one allocator), and an engine fallback in
-  `Graph::typed_*` / `edges_of_kind` — they answer from the non-allocating
-  `by_name_get` only, so a fresh handle reports "unknown kind" until
-  something loads the dictionary.
+- **Two vocabularies in one ns vs. okm's per-handle dictionary cache** (found
+  the hard way 2026-10-17; RETIRED the same day by an okm ruling): the edge ns
+  used to hold BOTH relation kinds (allocated by okm's `Graph` through its
+  long-lived `DictCache`) and the relation props' names (k10r's). Two caches
+  allocating in one dictionary hand out the same id for different names — the
+  frame then reads back under the WRONG name, silently. okm ADR-0017 §3 gave
+  the predicate its OWN dictionary (0x04/0x05; the payload's field names keep
+  0x02/0x03), so the collision is structurally gone and k10r's two
+  disciplines — "allocate through a FRESH cache", "build the edge handle PER
+  CALL" — RETIRE with it. Still owed to okm (read side only): `Graph::typed_*`
+  / `edges_of_predicate` answer from the non-allocating `by_name_get`, so a
+  fresh handle still reports "unknown predicate" until something loads the
+  dictionary — either an engine fallback, or keep priming before a typed read.
+  The ENTITY side is symmetric now (its kinds at 0x04/0x05, prop names at
+  0x02/0x03), so the one-cache-per-call discipline retires there too.
 - **`unlink` has no into-batch form** (owed to okm): a functional rewrite is
   `unlink` + `link`, i.e. TWO engine commits, where ADR-0002's rule wants
   one. The window is recovered by re-ingesting, and the edge id is
@@ -450,7 +461,8 @@ inspectable from a dashboard reading `get_stats`.
   derive emits `attrs()` (and the per-field faces) but no `from_attrs`, so
   k10r's reader carries the widths and is locked against `attrs()` by a test.
   The fix is RULED (2026-10-17), and it is not a second half on `EdgeEncode`:
-  the edge's payload becomes an obj (okm ADR-0017 §3), so one document
+  the edge's payload becomes an obj (okm ADR-0017 §3) and the declaration
+  becomes `GraphEncode` (an explicit `#[ok_index]` per face), so one
   declaration generates both codec directions and the face entries. k10r
   adopts that form when okm lands it and then deletes `from_attrs` with its
   locking test.

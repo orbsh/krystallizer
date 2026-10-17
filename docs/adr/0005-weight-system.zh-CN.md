@@ -25,7 +25,7 @@ put edge:{src}:{label}:{dst}/count/read → N         # 归并结果，整值 pu
 
 左边那个键是早先一轮的写法：`edge:{src}:{label}:{dst}` 是**作废的层**，不是要
 恢复的布局——图的边是一个 okm 边集合，身份是 `[edge_id]`，端点与种类以 ref 和
-字典分配的 `kind_id` 承载（ADR-0010 §1），所以这两个计数键在该系统落地
+字典分配的 `predicate_id` 承载（ADR-0010 §1），所以这两个计数键在该系统落地
 （Phase 5）时建在那个身份上。这条裁决本身没变：以追加 delta 计数、后台 fold 成
 整值计数键，并且键布局从第一天起就是 delta 兼容的，多写者切换不动 schema。
 

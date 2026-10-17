@@ -262,9 +262,9 @@ pub struct EntityRow {
 - **文本优先（text-first）形态**：`name` 变长且排在索引字段末位，所以按
   `alpha` 前缀扫描也会扫到 `alphabet`。精确查找因此要同时核验行里的 name
   与解出的 key 的 scope——这是把名字留在键之外要付的价。
-- `name` 是**属性**（永不进键）；`kind_id` 走本集合自己的 0x2/0x3 字典分配
-  ——与动态字段名共用同一本词汇表（无害：一个 id 只会从它被写进的那个字段里
-  读回来）。
+- `name` 是**属性**（永不进键）；`kind_id` 走本集合自己的 **kind 词汇表**（固定
+  面 0x04/0x05，okm ADR-0017 §3）——与它的 props 名所用的 0x02/0x03 字典分开，
+  于是没有两个分配者共享同一个 id 空间。
 - `literal_num` 是字面量节点的整数投影（其余为 0）：声明的、定宽的、有序的字
   段，于是将来的数值读仍然是对某个面做 range scan，而不是向量距离的猜测。
 - **实体属性是合并的。** 一个词项的属性（元组的 head/tail 属性）落在节点行的
@@ -278,23 +278,27 @@ pub struct EntityRow {
 ### 事实（ns 37）——边集合
 
 一个 okm 边集合（`Graph<FjallStore, FactEdge>`），每图一个 ns（okm ADR-0017）。
-派生提供 `NS_PREFIX`、`ATTR_SLOTS`、`attrs()` 与每个声明字段一个 0x1 面；主表与
-四个遍历面由 okm 自己造。
+声明**就是**这张图——`GraphEncode`：`#[ok_ns(37)]`、`type Nodes = FactNodes`
+（成员集合——今天是 `Entities`；再加一个集合就是多一个枚举变体，改代码）、载荷的
+编解码、以及每条**声明**的 `#[ok_index]` 一个 0x1 面；主表、载荷的动态段条目、
+谓词字典与四个遍历面由句柄造。
 
 | 面 | 键 |
 |---|---|
-| 0x0 主表 | `[edge_id 8B BE]` → `[src NodeRef][dst NodeRef][kind_id][attrs]` |
-| 0x1 声明字段（`since` / `confidence` / `weight`） | `[字段值][edge_id]` |
-| 0x4 种类索引 | `[kind_id][edge_id]` |
-| 0x5 出边 | `[src NodeRef][edge_id]` |
-| 0x6 入边 | `[dst NodeRef][edge_id]` |
-| 0x7 种类+出 | `[kind_id][src NodeRef][edge_id]` |
-| 0x8 种类+入 | `[kind_id][dst NodeRef][edge_id]` |
+| 0x0 主表 | `[edge_id 8B BE]` → `[src NodeRef][dst NodeRef][predicate_id][attrs]` |
+| 0x1 动态段 | `[edge_id 8B BE]` → 关系的开放 props（`functional` 标志住这里） |
+| 0x1nnn 声明索引（`since` / `confidence` / `weight`） | `[字段值][edge_id]` |
+| 0x4/0x5 谓词字典 | `[谓词名]` → `predicate_id` / `[predicate_id]` → 谓词名 |
+| 0x6 谓词索引 | `[predicate_id][edge_id]` |
+| 0x7 出边 | `[src NodeRef][edge_id]` |
+| 0x8 入边 | `[dst NodeRef][edge_id]` |
+| 0x9 谓词+出 | `[predicate_id][src NodeRef][edge_id]` |
+| 0xA 谓词+入 | `[predicate_id][dst NodeRef][edge_id]` |
 
 - **这一侧没有 scope 段。** 边集合自己造键（okm 的边形态），所以归属边界走
   **端点**：`NodeRef` 是 `[ns 2B][len varint][实体键]`，实体键里带着 scope。
-  遍历从带 scope 的节点出发，也就一直在 scope 内；只有整 ns 的扫描（0x4，
-  「某种类的全部边」）跨 scope，按端点过滤是调用方的事。要在边键上带
+  遍历从带 scope 的节点出发，也就一直在 scope 内；只有整 ns 的扫描（0x6，
+  「某个谓词的全部边」）跨 scope，按端点过滤是调用方的事。要在边键上带
   per-scope 前缀，就得绕开 okm 的 `Graph` 手写这个集合。
 - 三个声明字段是关系 props 的**投影**：`since`（调用方的时钟——裁决输入）、
   `confidence`（写侧的；255 = 缺省，即不惩罚）与 `weight`（权重系统的，
@@ -305,17 +309,19 @@ pub struct EntityRow {
   = 一个事务）。按断言给的 `functional` 标志留在那里——这是该断言自己关于
   「它如何声明那个种类的基数」的记录。
 - **`from_attrs` 是 k10r 自己的**——`[since u64][confidence u8][weight u32]`，
-  13 字节，按派生声明的顺序。`EdgeEncode` 派生只发写的那一半，所以读侧自带宽
-  度，并由测试对着 `attrs()` 锁死。已裁决 2026-10-17：欠 okm 的修法不是给派生
-  补第二半——边的载荷改成 obj（okm ADR-0017 §3），之后这个解码器与那把锁测试
-  一起消失。
-- **字典纪律（一个 ns 两套词汇）。** 边 ns 里住着关系种类（由 okm 的 `Graph`
-  用它自己长驻的 `DictCache` 分配）**和** k10r 分配的 prop 名。两个 cache 在
-  同一本字典里分配，会把同一个 id 发给两个不同的名字，帧随后以错误的名字读回
-  来，而且无声。所以 k10r 分配一律走一次性 cache，边 handle 每次调用现建，并
-  在类型化读之前把它预热（`kind_name`）——因为 `Graph::typed_*` /
-  `edges_of_kind` 只从非分配的 `by_name_get` 取答案，从不回落到引擎。欠 okm 的
-  条目在 ADR-0010 的欠账清单里。
+  13 字节，按声明顺序。旧的 `EdgeEncode` 派生只发写的那一半，所以读侧自带宽
+  度，并由测试对着 `attrs()` 锁死。已裁决 2026-10-17：欠 okm 的修法不是给那个
+  派生补第二半——边的载荷改成 obj（okm ADR-0017 §3）、声明换成 `GraphEncode`，
+  之后这个解码器与那把锁测试一起消失。
+- **字典纪律（一个 ns 两套词汇）——已退役。** 边 ns 里曾住着关系种类（由 okm 的
+  `Graph` 用长驻 `DictCache` 分配）**和** k10r 分配的 prop 名；两个 cache 在同一
+  本字典里分配会把同一个 id 发给两个不同的名字，帧随后以错误的名字读回来，而且
+  无声。okm ADR-0017 §3 把两套词汇分开（谓词占 0x04/0x05、载荷字段名保留
+  0x02/0x03）之后，这个撞名结构性消失，k10r 那两条纪律（一次性 cache、handle
+  每次现建）随之退役。剩下的只有读侧：类型化读之前仍要预热（`predicate_name`）
+  ——因为 `Graph::typed_*` / `edges_of_predicate` 只从非分配的 `by_name_get` 取
+  答案，从不回落到引擎。实体集合走同一条规则——kinds 占 0x04/0x05、props 名留
+  0x02/0x03——那边的纪律同样退役。欠 okm 的条目在 ADR-0010 的欠账清单里。
 
 ### 访问面（mem-core `GraphStore`）
 

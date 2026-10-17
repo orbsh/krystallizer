@@ -33,7 +33,7 @@ channel 日志、任务表都是 CRUD 形状，直接映射。
   顶点 + `task_links` 依赖边）。旧 PG schema 的 `(task_id, seq)` 复合主键
   留档为迁移映射。
 - 原子事实图：一个 OKM 边集合 + 声明式面，按 ADR-0010 §1——实体是节点
-  集合（提议 ns 36），事实是边集合（ns 37），边体带 `kind_id` 与声明字段
+  集合（提议 ns 36），事实是边集合（ns 37），边体带 `predicate_id` 与声明字段
   `since` / `confidence` / `weight`，另有种类面与遍历面。**不是**
   `edge:{src}:{label}:{dst}` 那种键布局，而 `EdgeTable` 是个旧名：上面那层
   是 `Graph<S, E: KvGraph>` + `NodeRef` + 种类字典（okm ADR-0017）。

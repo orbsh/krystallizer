@@ -32,7 +32,7 @@ convergence) similarly involves one LLM decision over a small candidate set.
   rel props, tail value / tail type / tail props (positions 0-7). Head and tail
   carry a name AND a type label; the relation carries only its name and props —
   its name IS its kind (the edge collection's own dictionary allocates it as
-  `kind_id`, ADR-0010 §1), so a second, coarser label would have a face nobody
+  `predicate_id` — the GRAPH's own predicate dictionary (0x04/0x05, okm ADR-0017 §3)), so a second, coarser label would have a face nobody
   reads. The type vocabulary is the caller's and open, with one reserved token:
   `literal` marks a value with no node identity of its own (a date, a number, a
   short string), and it lands as a literal node whose exact text is its name

@@ -69,22 +69,26 @@ okm 规范的布局如下（ns 在落地时分配：实体 36 与事实 37 已�
   0x1 节点种类面     [kind_id u16][scope u64][node_id u64]        声明式索引
   0x1 by_name 面     [name][scope u64][node_id u64]               实体名/别名精确入口
   0x1 by_community   [community_id u64][scope u64][node_id u64]   ← 草案的 index:community:（步骤 3–4）
+  0x4/0x5 kind 词汇表  [kind_id u16] → 种类名 ／ [种类名] → kind_id
+                     节点种类，与 props 的字段名（0x02/0x03）分开
 
 事实 —— 边集合（ns 37），每图一个 ns（okm ADR-0017）
   0x0 主表           [edge_id u64]
-                     → 行体：[src NodeRef][dst NodeRef][kind_id][since][confidence][weight]
-  0x1 声明字段面（since / confidence / weight 各一面）
+                     → 行体：[src NodeRef][dst NodeRef][predicate_id][since][confidence][weight]
+  0x1 动态段         [edge_id u64] → 关系的开放 props + `functional` 标志
+  0x1 声明字段面（每条**声明**的 #[ok_index] 一面：since / confidence / weight）
                      [字段值][edge_id u64]
-  0x4 种类索引       [kind_id][edge_id u64]
-  0x5 出边           [src NodeRef][edge_id u64]
-  0x6 入边           [dst NodeRef][edge_id u64]
-  0x7 种类+出        [kind_id][src NodeRef][edge_id u64]
-  0x8 种类+入        [kind_id][dst NodeRef][edge_id u64]
+  0x4/0x5 谓词字典   [谓词名] → predicate_id ／ [predicate_id] → 谓词名
+  0x6 谓词索引       [predicate_id][edge_id u64]
+  0x7 出边           [src NodeRef][edge_id u64]
+  0x8 入边           [dst NodeRef][edge_id u64]
+  0x9 谓词+出        [predicate_id][src NodeRef][edge_id u64]
+  0xA 谓词+入        [predicate_id][dst NodeRef][edge_id u64]
 
   这一侧没有 SCOPE 段：边集合是 `Graph<S, E>`，自己造键（okm 的边形态），
   所以归属边界走**端点**——每个 `NodeRef` 携带它自己的实体键，scope 在其中。
   一次遍历从带 scope 的节点出发，也就一直在 scope 内；只有整 ns 的扫描
-  （0x4，「某种类的全部边」）会跨 scope，那是调用方按端点过滤的事。要在边键上
+  （0x6，「某个谓词的全部边」）会跨 scope，那是调用方按端点过滤的事。要在边键上
   带 per-scope 前缀，就得绕开 okm 的 Graph 手写这个集合。
 
 社区 —— 胶囊集合（提议 ns 38）
@@ -120,13 +124,15 @@ okm 规范的布局如下（ns 在落地时分配：实体 36 与事实 37 已�
   序范围读，而排序键只有在结果是复数时才配得上它占的字节（okm MODELING
   「Key naming」）。`since` / `updated_at` 是 payload 字段，遵 ADR-0005 自己
   的先例：可变元数据永不进键。
-- **种类是运行时数据，算法要查的三个边字段是声明字段。** 谓词种类通过边集
-  合自带的字典分配（0x2/0x3，name → kind_id）；而 `since` / `confidence` /
+- **种类是运行时数据，算法要查的三个边字段是声明字段。** 谓词通过**图自己的
+  谓词字典**分配（固定面 0x04/0x05，name → `predicate_id`，okm ADR-0017 §3）
+  ——它不再等于载荷的字段名字典（0x02/0x03）；节点种类在实体集合里走同一条规则
+  （自己那一对 0x04/0x05，props 名留在 0x02/0x03）；而 `since` / `confidence` /
   `weight` 是 k10r 自己 schema 的声明字段，各得一个 0x1 面（okm ADR-0017
   §3）——在 okm 的设计里这两者正交。提取出来的、开放式的属性走动态段，需要
   查询时通过 path 索引（okm ADR-0012 / ADR-0029）到达。
 - **事实元组里的关系是「名字 + 属性」，没有自己的标签。** 那个名字就是这个
-  `kind_id`：再加一层更粗的种类，既没有面、也没有读者（模型想让某个分类可见，
+  `predicate_id`：再加一层更粗的种类，既没有面、也没有读者（模型想让某个分类可见，
   就放进属性，查询时经 path 索引到达）。所以元组的三个角色并不对称——head /
   tail 带名字**和**种类（实体行的 `kind_id` 加 `node-kind` 面），关系只带名字。
 - **值用原生段，不用 JSON 大块**（okm ADR-0018）：定宽字段连续（热），变长
@@ -141,7 +147,7 @@ okm 规范的布局如下（ns 在落地时分配：实体 36 与事实 37 已�
                         新事实传入
                              │
                              ▼
-   扫一次 0x7 面：这个源出去的、这个种类的边有哪几条？
+   扫一次 0x9 面：这个源出去的、这个谓词的边有哪几条？
                              │
           ┌──────────────────┴──────────────────┐
           ▼ (没有)                              ▼ (有在场行体)
@@ -166,11 +172,11 @@ okm 规范的布局如下（ns 在落地时分配：实体 36 与事实 37 已�
 
 ```rust
 // 草案草图 —— mem-core，在一条新提取的三元组上（按 okm 形态）
-let kind = kinds.id_of(predicate);   // 0x2/0x3 字典：name → kind_id
+let predicate_id = kinds.id_of(predicate);   // 图谓词字典（0x04/0x05）：name → predicate_id
 let src = NodeRef::new(&ENTITY_NS.to_be_bytes(), &subject_id.to_be_bytes());
 let dst = NodeRef::new(&ENTITY_NS.to_be_bytes(), &object_id.to_be_bytes());
 
-// 1. 这个源出去的、这个种类的边：扫一次 0x7 面
+// 1. 这个源出去的、这个谓词的边：扫一次 0x9 面
 let incumbent = edges.typed_out(predicate, &src).next();
 
 let mut batch = edges.batch();
@@ -184,7 +190,7 @@ match incumbent {
         }
         // 否则：丢弃，不写
     }
-    // 3. 无在场者：link 一条新边（0x4/0x5/0x6/0x7/0x8 同批）
+    // 3. 无在场者：link 一条新边（0x6/0x7/0x8/0x9/0xA 同批，谓词首见时另加 0x4/0x5）
     None => batch.link(EdgeFact { src, dst, kind, ..new_fact }),
 }
 batch.commit();   // 一个 WriteBatch = 一个事务（ADR-0002）
@@ -201,7 +207,7 @@ Append-first 的写入产出的是堆，不是秩序；秩序按每次写入在�
 
 机制：
 
-1. **构建局部子图**——通过遍历面（0x5/0x6、0x7/0x8）载入新写入的节点及其
+1. **构建局部子图**——通过遍历面（0x7/0x8、0x9/0xA）载入新写入的节点及其
    直接相连的 2-hop 邻居，在内存里组装成一张临时图。不载入全量图。
 2. **邻居投票**——节点审视邻居的 `community_id`，以边 `confidence` 乘累积
    边权投票：
@@ -278,7 +284,7 @@ pub fn assist_search(query: &str, top_k: usize) -> AssistantContext {
     // 2. 预先算好的第三层胶囊：一次点读（零 LLM 成本）
     let capsule = communities.get(CommunityKey { scope, community_id: cid });
 
-    // 3. 社区桶：扫一次 by_community 面取成员，边走遍历面（0x5/0x7）
+    // 3. 社区桶：扫一次 by_community 面取成员，边走遍历面（0x7/0x9）
     let members = entities.scan(by_community(cid));
     let facts = edges.within(&members);
 
@@ -308,7 +314,7 @@ pub fn assist_search(query: &str, top_k: usize) -> AssistantContext {
   写，因为把一条已被取代的事实留成第二行更贵：它会同时毒害检索和读它的分箱。
   日志形状的表（ns 33/34）不受本文档消解步骤的影响。
 - **本设计里每一次读都是声明式访问方法**（okm：「访问方法是强制的」）：桶是
-  `by_community` 面，消解查找是 0x7 面，精确入口是 `by_name`。不引入裸前缀
+  `by_community` 面，消解查找是 0x9 面，精确入口是 `by_name`。不引入裸前缀
   扫描，也不引入通用全表扫描面。
 - **键里不带文本、不带哈希值。** 实体名与社区标签住在 payload 字段与索引段
   里，因此能渲染回来、能按人类可读的方式枚举；身份是由水位发放的代理键，永
@@ -352,22 +358,25 @@ pub fn assist_search(query: &str, top_k: usize) -> AssistantContext {
   送）未定。
 - **社区 id 的发放**走 okm 的发放者纪律（`HighWater` reduce，单写者）；该机
   制随步骤 3–4 落地。
-- **一个 ns 两套词汇，对上 okm 按 handle 缓存的字典**（2026-10-17 踩出来的）：
-  边 ns 里同时住着关系种类（okm 的 `Graph` 用它自己长驻的 `DictCache` 分配）
-  与关系 props 的名字（k10r 分配）。两个 cache 在同一本字典里分配，会把同一个
-  id 发给两个不同的名字——帧随后以**错误的名字**读回来，而且无声（实体 ns 有
-  同样的分叉：节点种类由 k10r 分配，props 名字在 okm 的 `put_fields` 里）。
-  k10r 用两条纪律守住：分配一律走一次性 cache，边 handle 每次调用现建。欠
-  okm 的：collection 暴露一个字典 handle（或立下「一个 ns 一个分配者」的规
-  则），以及给 `Graph::typed_*` / `edges_of_kind` 加引擎兜底——它们只从非分配
-  的 `by_name_get` 取答案，所以新建的 handle 在字典被加载之前会答「未知种类」。
+- **一个 ns 两套词汇，对上 okm 按 handle 缓存的字典**（2026-10-17 踩出来的，
+  当天因 okm 的裁决而**退役**）：边 ns 里曾同时住着关系种类（okm 的 `Graph`
+  用长驻 `DictCache` 分配）与关系 props 的名字（k10r 分配）；两个 cache 在同一
+  本字典里分配会把同一个 id 发给两个不同的名字——帧随后以**错误的名字**读回来，
+  而且无声。okm ADR-0017 §3 把谓词字典与载荷字段名字典分开（谓词 0x04/0x05、
+  字段名 0x02/0x03）之后，这个撞名结构性消失，k10r 的两条纪律——「分配一律走
+  一次性 cache」「边 handle 每次调用现建」——随之退役。仍欠 okm 的只剩读侧：
+  `Graph::typed_*` / `edges_of_predicate` 只从非分配的 `by_name_get` 取答案，
+  所以新建的 handle 在字典被加载之前仍会答「未知谓词」——要么补引擎兜底，要么
+  保留"读前预热"。**实体侧现在也对称**（kinds 走 0x04/0x05，props 名走 0x02/0x03），
+  那边的"一次性 cache"纪律一并退役。
 - **`unlink` 没有 into-batch 形态**（欠 okm）：函数式改写是 `unlink` + `link`，
   即**两次**引擎提交，而 ADR-0002 的规则要一次。这个窗口靠重放 ingest 恢复，
   且边 id 保持不变。
 - **边声明属性载荷暂时没有生成式解码器**：派生只发 `attrs()`（与逐字段的面），
   没有 `from_attrs`，所以 k10r 自己带着宽度读，并用测试对着 `attrs()` 锁死。
   修法已裁决（2026-10-17），且不是给 `EdgeEncode` 补第二半：边的载荷改成
-  obj（okm ADR-0017 §3），一份文档声明同时生成两个方向与面条目。okm 落地后
+  obj（okm ADR-0017 §3）、声明换成 `GraphEncode`（每条面一条显式 `#[ok_index]`），
+  一份声明同时生成两个方向与面条目。okm 落地后
   k10r 切过去，届时删掉 `from_attrs` 与那把锁测试。
 - **草案的前缀布局是作废，不是保留**：手维护的 `node:` / `index:community:`
   前缀在上文被 okm 的面取代，于是草案「一个字段两种键形状」的矛盾被关掉，而

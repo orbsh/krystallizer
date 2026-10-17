@@ -40,7 +40,7 @@ macros.**
   on record as the migration mapping.
 - Atomic-fact graph: an OKM edge collection with declared faces, per
   ADR-0010 §1 — entities as a node collection (ns 36 proposed), facts as an
-  edge collection (ns 37) carrying `kind_id` plus the declared `since` /
+  edge collection (ns 37) carrying `predicate_id` plus the declared `since` /
   `confidence` / `weight` fields, with the kind and traversal faces. NOT an
   `edge:{src}:{label}:{dst}` key layout, and `EdgeTable` is a former name:
   the layer above is `Graph<S, E: KvGraph>` + `NodeRef` + the kind

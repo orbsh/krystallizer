@@ -296,9 +296,9 @@ pub struct EntityRow {
   exact lookup therefore re-verifies the row's name AND the decoded key's
   scope — the price of keeping the name out of the key.
 - `name` is an ATTRIBUTE (never key material); `kind_id` allocates through
-  this collection's own 0x2/0x3 dictionary — the same vocabulary dynamic
-  field names use (harmless: an id is only ever read back through the field
-  it was written into).
+  this collection's own KIND VOCABULARY (fixed faces 0x04/0x05, okm ADR-0017
+  §3) — separate from the 0x02/0x03 dictionary its props' names use, so no two
+  allocators share one id space.
 - `literal_num` is a literal node's integer projection (0 otherwise): a
   declared, fixed-width, ordered field, so a numeric read later stays a range
   scan over a face rather than a vector-distance guess.
@@ -315,25 +315,30 @@ pub struct EntityRow {
 ### Facts (ns 37) — edge collection
 
 An okm edge collection (`Graph<FjallStore, FactEdge>`), one ns per graph (okm
-ADR-0017). The derive supplies `NS_PREFIX`, `ATTR_SLOTS`, `attrs()` and one
-0x1 face per declared field; okm builds the primary and the four traversal
-faces itself.
+ADR-0017 §4). The DECLARATION is the graph — `GraphEncode`: `#[ok_ns(37)]`,
+`type Nodes = FactNodes` (the member collections — today `Entities`; admitting
+another collection is one enum variant, a code change), the payload's codec,
+and one 0x1 face per DECLARED `#[ok_index]`. The handle builds the primary, the
+payload's dynamic entry, the predicate dictionary and the four traversal
+faces.
 
 | Face | Key |
 |---|---|
-| 0x0 primary | `[edge_id 8B BE]` → `[src NodeRef][dst NodeRef][kind_id][attrs]` |
-| 0x1 declared field (`since` / `confidence` / `weight`) | `[field value][edge_id]` |
-| 0x4 kind index | `[kind_id][edge_id]` |
-| 0x5 out-edges | `[src NodeRef][edge_id]` |
-| 0x6 in-edges | `[dst NodeRef][edge_id]` |
-| 0x7 kind+out | `[kind_id][src NodeRef][edge_id]` |
-| 0x8 kind+in | `[kind_id][dst NodeRef][edge_id]` |
+| 0x0 primary | `[edge_id 8B BE]` → `[src NodeRef][dst NodeRef][predicate_id][attrs]` |
+| 0x1 dynamic segment | `[edge_id 8B BE]` → the relation's open props (`functional` rides here) |
+| 0x1nnn declared index (`since` / `confidence` / `weight`) | `[field value][edge_id]` |
+| 0x4/0x5 predicate dictionary | `[predicate name]` → `predicate_id` / `[predicate_id]` → name |
+| 0x6 predicate index | `[predicate_id][edge_id]` |
+| 0x7 out-edges | `[src NodeRef][edge_id]` |
+| 0x8 in-edges | `[dst NodeRef][edge_id]` |
+| 0x9 predicate+out | `[predicate_id][src NodeRef][edge_id]` |
+| 0xA predicate+in | `[predicate_id][dst NodeRef][edge_id]` |
 
 - **No scope segment on this side.** The edge collection builds its own keys
   (okm's edge shape), so the ownership boundary rides the ENDPOINTS: a
   `NodeRef` is `[ns 2B][len varint][entity key]`, and the entity key carries
   the scope. A traversal starts at a scoped node and stays in scope; only a
-  whole-ns scan (0x4, "every edge of kind K") crosses scopes, and filtering
+  whole-ns scan (0x6, "every edge of a predicate") crosses scopes, and filtering
   it by endpoints is the caller's job. A per-scope edge prefix would mean
   hand-rolling the collection against okm's `Graph`.
 - The three declared fields are the relation props' PROJECTIONS: `since`
@@ -347,20 +352,25 @@ faces itself.
   per-assertion `functional` flag is kept there — the assertion's own record
   of how it declared its kind's cardinality.
 - **`from_attrs` is k10r's** — `[since u64][confidence u8][weight u32]`, 13
-  bytes in the derive's declaration order. The `EdgeEncode` derive emits the
-  writer half only, so the reader carries the widths and a test locks it
-  against `attrs()`. Ruled 2026-10-17: the owed okm fix is NOT a second half
-  on the derive — the edge's payload becomes an obj (okm ADR-0017 §3), after
-  which this decoder and its locking test go away.
-- **Dictionary discipline (two vocabularies in one ns).** The edge ns holds
-  relation kinds (allocated by okm's `Graph` through its own long-lived
-  `DictCache`) AND the prop names k10r allocates. Two caches allocating in
-  one dictionary hand the same id to different names, and the frame then
-  reads back under the wrong name — silently. k10r therefore allocates
-  through a fresh cache per call, builds the edge handle per call, and primes
-  it (`kind_name`) before a typed read, because `Graph::typed_*` /
-  `edges_of_kind` answer from the non-allocating `by_name_get` and never fall
-  back to the engine. The owed okm-side items are in ADR-0010's owed list.
+  bytes in declaration order. The old `EdgeEncode` derive emitted the writer
+  half only, so the reader carries the widths and a test locks it against
+  `attrs()`. Ruled 2026-10-17: the owed okm fix is NOT a second half on that
+  derive — the edge's payload becomes an obj (okm ADR-0017 §3) and the
+  declaration becomes `GraphEncode`, after which this decoder and its locking
+  test go away.
+- **Dictionary discipline (two vocabularies in one ns) — RETIRED.** The edge
+  ns used to hold relation kinds (okm's `Graph`, long-lived `DictCache`) AND
+  the prop names k10r allocates; two caches allocating in one dictionary hand
+  the same id to different names, and the frame then reads back under the
+  wrong name — silently. okm ADR-0017 §3 split the vocabularies (the predicate
+  owns 0x04/0x05; the payload's field names keep 0x02/0x03), so the collision
+  is structurally gone and k10r's two disciplines — a fresh cache per call, a
+  handle per call — retire with it. What remains is the read side: priming
+  (`predicate_name`) before a typed read, because `Graph::typed_*` /
+  `edges_of_predicate` answer from the non-allocating `by_name_get` and never
+  fall back to the engine. The entity collection rides the same rule — its
+  kinds at 0x04/0x05, the props' names at 0x02/0x03 — so the discipline
+  retires there too. The owed okm-side items are in ADR-0010's owed list.
 
 ### Access (mem-core `GraphStore`)
 
