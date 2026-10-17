@@ -1,58 +1,89 @@
 //! Configuration loading (ADR-0007): one unified KDL document,
 //! `config/krystallizer.kdl`, one top-level node per subsystem. Each
-//! node is a struct here; secrets are NEVER in the file — the config
-//! names the environment variable that holds the value, and the
-//! process resolves it at call time. Parsing goes through knus;
-//! callers never see knus types.
+//! node is a struct here; secrets are NEVER in the file — a node that
+//! needs one names the environment variable that holds it, and the
+//! process resolves it at call time (the embedding node needs none: the
+//! model is local, ADR-0003). Parsing goes through knus; callers never
+//! see knus types.
 
 use knus::Decode;
+use std::path::PathBuf;
 
 /// Root of `config/krystallizer.kdl`. New subsystems are new top-level
 /// nodes here (and new fields here) — never new config files.
 #[derive(Decode, Debug, Clone)]
 pub struct KrystallizerConfig {
-    /// `embedding { ... }` — embedding provider (ADR-0003/0007: the
-    /// core's only network call, model locked with the data).
+    /// `embedding { ... }` — the built-in local embedding model
+    /// (ADR-0003: in-process, no endpoint, no key).
     #[knus(child)]
     pub embedding: EmbeddingConfig,
 }
 
-/// One OpenAI-compatible embeddings endpoint. `api_key_env` names the
-/// environment variable holding the Bearer token; the key itself never
-/// appears in the config or in this struct. Child-node form (knus maps
-/// Rust field names to KDL node names as kebab-case):
+/// The local embedding artifact's DIRECTORY. The three files inside are
+/// found by name (`config.json` = architecture, `model.safetensors` =
+/// weights, `tokenizer.json`), so one path is the whole configuration
+/// and a model swap is a directory swap. `dimensions` is the width the
+/// store declares for a row's vector frame; `metric` is the ranking
+/// metric downstream. Child-node form (knus maps Rust field names to
+/// KDL node names as kebab-case):
 ///
 /// ```kdl
 /// embedding {
-///     provider "dashscope"
-///     base-url "https://..."
-///     endpoint "/embeddings"
-///     model "text-embedding-v4"
-///     dimensions 1024
+///     model-dir "/…/models/bge-small-zh-v1.5"
+///     dimensions 512
 ///     metric "cosine"
-///     api-key-env "DASHSCOPE_API_KEY"
-///     timeout-ms 10000
 /// }
 /// ```
 #[derive(Decode, Debug, Clone)]
 pub struct EmbeddingConfig {
+    /// Directory holding the artifact. A deployment parameter, so the
+    /// environment overrides it — see `resolved_model_dir`.
     #[knus(child, unwrap(argument))]
-    pub provider: String,
-    #[knus(child, unwrap(argument))]
-    pub base_url: String,
-    #[knus(child, unwrap(argument))]
-    pub endpoint: String,
-    #[knus(child, unwrap(argument))]
-    pub model: String,
+    pub model_dir: String,
+    /// Vector width this model produces (512 for bge-small-zh-v1.5).
     #[knus(child, unwrap(argument))]
     pub dimensions: u32,
+    /// Ranking metric downstream; the engine emits unit-length vectors,
+    /// so `cosine` is an inner product.
     #[knus(child, unwrap(argument))]
     pub metric: String,
-    /// Environment variable name holding the API key (not the key).
-    #[knus(child, unwrap(argument))]
-    pub api_key_env: String,
-    #[knus(child, unwrap(argument))]
-    pub timeout_ms: u64,
+}
+
+/// Environment variable that overrides the configured model directory.
+/// The artifact is a deployment parameter (a ~96 MB, host-local file),
+/// so the file's value is the default and the environment wins.
+pub const MODEL_DIR_ENV: &str = "KRYSTALLIZER_MODEL_DIR";
+
+/// Fixed artifact file names inside the model directory (the layout the
+/// model ships in, HuggingFace's).
+pub const ARCH_FILE: &str = "config.json";
+pub const MODEL_FILE: &str = "model.safetensors";
+pub const TOKENIZER_FILE: &str = "tokenizer.json";
+
+impl EmbeddingConfig {
+    /// The directory in force: `KRYSTALLIZER_MODEL_DIR` when set and
+    /// non-empty, else the configured value.
+    pub fn resolved_model_dir(&self) -> String {
+        std::env::var(MODEL_DIR_ENV)
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| self.model_dir.clone())
+    }
+
+    /// The architecture config (`config.json`) inside the directory.
+    pub fn arch_path(&self) -> PathBuf {
+        PathBuf::from(self.resolved_model_dir()).join(ARCH_FILE)
+    }
+
+    /// The weights inside the directory.
+    pub fn model_path(&self) -> PathBuf {
+        PathBuf::from(self.resolved_model_dir()).join(MODEL_FILE)
+    }
+
+    /// The tokenizer inside the directory.
+    pub fn tokenizer_path(&self) -> PathBuf {
+        PathBuf::from(self.resolved_model_dir()).join(TOKENIZER_FILE)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -70,9 +101,6 @@ pub enum ConfigError {
         /// std::error::Error, so it cannot sit in `#[source]`.
         report: miette::Report,
     },
-    /// Environment variable named by `api_key_env` is unset or empty.
-    #[error("environment variable `{var}` (named by api_key_env) is unset or empty")]
-    MissingSecret { var: String },
 }
 
 impl KrystallizerConfig {
@@ -90,16 +118,6 @@ impl KrystallizerConfig {
             },
         )
     }
-
-    /// Resolve the embedding API key from the environment at call
-    /// time. Errors name the variable, never a value.
-    pub fn embedding_api_key(&self) -> Result<String, ConfigError> {
-        let var = &self.embedding.api_key_env;
-        std::env::var(var)
-            .ok()
-            .filter(|v| !v.is_empty())
-            .ok_or_else(|| ConfigError::MissingSecret { var: var.clone() })
-    }
 }
 
 #[cfg(test)]
@@ -112,24 +130,59 @@ mod tests {
 
     const FULL: &str = r#"
 embedding {
-    provider "dashscope"
-    base-url "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    endpoint "/embeddings"
-    model "text-embedding-v4"
-    dimensions 1024
+    model-dir "/models/bge-small-zh-v1.5"
+    dimensions 512
     metric "cosine"
-    api-key-env "DASHSCOPE_API_KEY"
-    timeout-ms 10000
 }
 "#;
 
     #[test]
     fn decodes_embedding_node() {
         let cfg = parse(FULL).unwrap();
-        assert_eq!(cfg.embedding.model, "text-embedding-v4");
-        assert_eq!(cfg.embedding.dimensions, 1024);
-        assert_eq!(cfg.embedding.api_key_env, "DASHSCOPE_API_KEY");
-        assert_eq!(cfg.embedding.timeout_ms, 10000);
+        assert_eq!(cfg.embedding.model_dir, "/models/bge-small-zh-v1.5");
+        assert_eq!(cfg.embedding.dimensions, 512);
+        assert_eq!(cfg.embedding.metric, "cosine");
+    }
+
+    /// ONE test owns `MODEL_DIR_ENV`: the environment is process-wide, so
+    /// a second test touching the same variable would race this one (and
+    /// a race here silently flips the resolved directory).
+    #[test]
+    fn the_directory_names_the_three_files_and_the_environment_overrides_it() {
+        let cfg = parse(FULL).unwrap();
+        std::env::remove_var(MODEL_DIR_ENV);
+        assert_eq!(
+            cfg.embedding.model_path(),
+            PathBuf::from("/models/bge-small-zh-v1.5/model.safetensors")
+        );
+        assert_eq!(
+            cfg.embedding.tokenizer_path(),
+            PathBuf::from("/models/bge-small-zh-v1.5/tokenizer.json")
+        );
+        assert_eq!(
+            cfg.embedding.arch_path(),
+            PathBuf::from("/models/bge-small-zh-v1.5/config.json")
+        );
+
+        // The override is a deployment parameter: env wins over the file.
+        std::env::set_var(MODEL_DIR_ENV, "/elsewhere/model");
+        assert_eq!(cfg.embedding.resolved_model_dir(), "/elsewhere/model");
+        assert_eq!(
+            cfg.embedding.model_path(),
+            PathBuf::from("/elsewhere/model/model.safetensors")
+        );
+
+        // Empty counts as unset: the file's value comes back.
+        std::env::set_var(MODEL_DIR_ENV, "");
+        assert_eq!(
+            cfg.embedding.resolved_model_dir(),
+            "/models/bge-small-zh-v1.5"
+        );
+        std::env::remove_var(MODEL_DIR_ENV);
+        assert_eq!(
+            cfg.embedding.resolved_model_dir(),
+            "/models/bge-small-zh-v1.5"
+        );
     }
 
     #[test]
@@ -138,7 +191,7 @@ embedding {
         assert!(parse(
             r#"
 embeddings {
-    provider "x"
+    model-dir "x"
 }
 "#
         )
@@ -147,8 +200,9 @@ embeddings {
         assert!(parse(
             r#"
 embedding {
-    provider "x"
-    dimenshun 1024
+    model-dir "x"
+    dimenshun 512
+    metric "cosine"
 }
 "#
         )
@@ -160,39 +214,22 @@ embedding {
         assert!(parse(
             r#"
 embedding {
-    provider "x"
+    model-dir "x"
 }
 "#
         )
         .is_err());
     }
 
+    /// The repo's own config file must decode: it is the one the service
+    /// loads at boot, and a typo there is a boot failure, not a test
+    /// fixture problem.
     #[test]
-    fn missing_secret_names_variable_not_value() {
-        std::env::remove_var("KRYSTALLIZER_TEST_UNSET_KEY_VAR");
-        let cfg = parse(FULL).unwrap();
-        // Point the config at the unset var for this check.
-        let cfg = KrystallizerConfig {
-            embedding: EmbeddingConfig {
-                api_key_env: "KRYSTALLIZER_TEST_UNSET_KEY_VAR".to_string(),
-                ..cfg.embedding
-            },
-        };
-        let err = cfg.embedding_api_key().unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("KRYSTALLIZER_TEST_UNSET_KEY_VAR"),
-            "names the var: {msg}"
-        );
-
-        // Empty counts as missing too.
-        std::env::set_var("KRYSTALLIZER_TEST_EMPTY_KEY_VAR", "");
-        let cfg2 = KrystallizerConfig {
-            embedding: EmbeddingConfig {
-                api_key_env: "KRYSTALLIZER_TEST_EMPTY_KEY_VAR".to_string(),
-                ..cfg.embedding
-            },
-        };
-        assert!(cfg2.embedding_api_key().is_err());
+    fn the_repo_config_decodes() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/krystallizer.kdl");
+        let cfg = KrystallizerConfig::load(&path).expect("repo config decodes");
+        assert_eq!(cfg.embedding.metric, "cosine");
+        assert_eq!(cfg.embedding.dimensions, 512);
     }
 }

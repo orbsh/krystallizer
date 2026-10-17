@@ -5,16 +5,16 @@
 // Node names are kebab-case (knus maps Rust field names via kebab-case).
 //
 // === embedding ===
-// Provider for mem-core retrieval (ADR-0003/0007). OpenAI-compatible;
-// the Rust process calls it directly — embedding is an internal detail,
-// its model locked with the data.
+// The built-in local embedding model for mem-core retrieval (ADR-0003):
+// it runs IN this process — no endpoint, no key, no transport hop — so
+// the node names the artifact's local DIRECTORY, not a provider. The
+// three files are found by name inside it (config.json / model.safetensors
+// / tokenizer.json); the artifact itself is not in this repo (this
+// machine keeps bge-small-zh-v1.5, 512-dim, CLS pooling, under
+// ~/.local/share/krystallizer/models/). A deployment parameter, so the
+// environment variable KRYSTALLIZER_MODEL_DIR overrides this value.
 embedding {
-    provider "dashscope"
-    base-url "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    endpoint "/embeddings"
-    model "text-embedding-v4"
-    dimensions 1024
+    model-dir "/home/master/.local/share/krystallizer/models/bge-small-zh-v1.5"
+    dimensions 512
     metric "cosine"
-    api-key-env "DASHSCOPE_API_KEY"  // env var holding the Bearer token
-    timeout-ms 10000
 }

@@ -9,6 +9,7 @@
 pub mod channel;
 pub mod code;
 pub mod config;
+pub mod embedding;
 pub mod graph;
 pub mod memory;
 pub mod service;
@@ -33,6 +34,7 @@ pub use channel::{
 };
 pub use code::{CodeKey, CodeRow, CodeStore};
 pub use config::{ConfigError, EmbeddingConfig, KrystallizerConfig};
+pub use embedding::{EmbedError, Embedder};
 pub use graph::{
     EntityKey, EntityRow, FactBody, FactEdge, FactTuple, GraphStore, IngestError, IngestOutcome,
     Relation, Term, ENTITY_NS, FACT_NS, FUNCTIONAL_PROP, LITERAL_KIND,
