@@ -1,7 +1,8 @@
-//! Phase 0 smoke: one flat-memory table over Fjall (ADR-0002), with a
-//! brute-force substring search (ADR-0003 bring-up stance; BM25/arroy land
-//! in Phase 1). Proves the OKM DocumentEncode -> Table -> FjallStore channel
-//! end to end.
+//! Flat memory: one table over Fjall (ADR-0002), with a brute-force
+//! substring search — the declared bring-up posture (ADR-0003). The lexical
+//! branch (BM25 / arroy / inverted index) is withdrawn; retrieval lands with
+//! the built-in embedding model and the graph's entrances. Proves the OKM
+//! DocumentEncode -> Table -> FjallStore channel end to end.
 
 use okm_core::{Document, DocumentEncode, FjallStore, KeyEncode, VirtualStorage};
 
