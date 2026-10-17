@@ -173,6 +173,41 @@ position, pre/post token counts — which is the future training set.
 The learning loop closes when real feedback signals exist; the engine's
 "engine" today means parameterizable + auditable, not adaptive.
 
+**The engine's inputs are k10r's own, and the verdict rides the
+projection.** There is no compression interface on the agent's side —
+the caller has no door that requests compression, and the judgment is
+not the caller's. The signals are the ones k10r holds: the increment's
+timestamps (max-gap), the assembled context's size (the budget
+percentage and the floor), and the member's read cursor (the cache
+clock — the prompt cache sits idle exactly while the member's
+projection has not been read, and §2's cursor IS that timestamp). The
+evaluation point is therefore the projection READ: the engine runs
+while the assembly is produced and returns its verdict WITH the
+assembly, never through a second call.
+
+**The compression point may sit mid-log, and the decision is a control
+field, never a marked record.** The point is the split the heuristics
+chose, not the tail; everything before it is what gets compressed. It
+travels beside the records the caller receives — a control field on the
+projection, shaped once as an object that holds the conversation and
+the control side by side (`{ records: [...], compress: { checkpoint:
+30, prompt: "…" } }`): an annotation smeared over the log rows is messy
+and leaves no room for the other tail-prompt and control purposes the
+same field is for, whereas one structured field absorbs them all
+without re-spelling the record shape. The tail prompt's TEXT rides that
+field, which makes it a k10r-declared artifact (PROMPTS) rather than
+something the caller invents.
+
+**The turn that compresses is a second branch, and coverage stays
+k10r's arithmetic.** On the directive the caller runs an extra turn —
+the records before the point plus the tail prompt — out of band, as a
+branch beside the user's turn: the user's interaction neither waits for
+it nor sees it. That turn's answer IS the summary and comes back
+through the ordinary append path; k10r takes the compressed span's own
+last record as the compression point, so the caller never states a
+coverage timestamp. This is §2's "tail (single-turn branch)" written
+concretely, not a second mechanism.
+
 ### 5. Division of labor with the memory add
 
 Both consume the same log; they serve different layers and do not

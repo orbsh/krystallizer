@@ -54,7 +54,9 @@ holds no state between calls, and scale-to-zero falls out for free.
 3. **Loop decomposition.** The agent separates into four parts — UI,
    intelligent session context (krystallizer's session+memory surfaces),
    execution (tools), and loop. The loop shrinks to:
-   read the projection → run turns → append the records.
+   read the projection → run turns → append the records — plus, when the
+   projection carries a control field, the out-of-band branch turn it asks
+   for (2.6's compression turn, ADR-0008 §4) beside the user's turn.
 
 ## Consequences
 
