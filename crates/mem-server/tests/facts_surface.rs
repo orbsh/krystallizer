@@ -10,7 +10,7 @@
 //! the graph shares the `memory` keyspace with flat memory without either
 //! seeing the other.
 
-use mem_server::{EntityDto, FactViewDto, IngestOutcomeDto, StoreMemory};
+use mem_server::{EntityDto, FactViewDto, GraphDto, IngestOutcomeDto, StoreMemory};
 use std::net::SocketAddr;
 use tempfile::TempDir;
 
@@ -351,5 +351,70 @@ async fn one_hop_traversal_resolves_both_ends() {
     assert!(
         none.is_empty(),
         "a node with no facts is a legal empty list"
+    );
+}
+
+/// The renderer's door: one scope's graph as nodes + links — what
+/// `docs/kg-demo-3d.html` reads instead of hand-written packets. Nothing
+/// from another scope rides it, and an empty scope is a legal empty graph.
+#[tokio::test]
+async fn the_visualization_door_serves_one_scope_as_nodes_and_links() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    ingest(
+        &client,
+        &base,
+        1,
+        tuple(r#"["user","person",{},"PREFERS",{},"iced_americano","coffee",{}]"#),
+    )
+    .await;
+    ingest(
+        &client,
+        &base,
+        1,
+        tuple(r#"["user","person",{},"BORN_IN",{},"1990","literal",{}]"#),
+    )
+    .await;
+    ingest(
+        &client,
+        &base,
+        2,
+        tuple(r#"["other","person",{},"PREFERS",{},"tea","drink",{}]"#),
+    )
+    .await;
+
+    let graph: GraphDto = client
+        .get(format!("{base}/graph/1"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(graph.nodes.len(), 3, "user + iced_americano + the literal");
+    assert_eq!(graph.links.len(), 2);
+    let names: Vec<&str> = graph.nodes.iter().map(|n| n.name.as_str()).collect();
+    assert!(names.contains(&"user") && names.contains(&"1990"));
+    assert!(
+        !names.contains(&"other"),
+        "another scope's nodes never ride this read"
+    );
+    assert_eq!(graph.links[0].source, 1, "links point by node id");
+    assert_eq!(
+        (graph.links[0].kind.as_str(), graph.links[0].target),
+        ("PREFERS", 2)
+    );
+
+    let empty: GraphDto = client
+        .get(format!("{base}/graph/9"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        empty.nodes.is_empty() && empty.links.is_empty(),
+        "an empty scope is a legal empty graph"
     );
 }

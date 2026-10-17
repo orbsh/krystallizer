@@ -30,6 +30,7 @@
 | `POST /facts/{scope}` | `GraphStore::ingest`（请求体就是 8 元组；`scope` 走路径） | 事实图——实体（36）+ 事实（37） | 已落（2026-10-17） |
 | `GET /facts/{scope}/entities/{name}` | `GraphStore::entity_by_name`（名/别名精确入口；未知名字 404） | 实体（36） | 已落（2026-10-17） |
 | `GET /facts/{scope}/entities/{node_id}/edges` | `GraphStore::out_facts`（一跳，两端都已解析） | 事实（37）+ 实体（36） | 已落（2026-10-17） |
+| `GET /graph/{scope}` | `GraphStore::scope_entities` + `scope_facts`（一个 scope 作为节点 + 连边——渲染方的批量读） | 实体（36）+ 事实（37） | 已落（2026-10-17） |
 | — 无路由 | `entity` / `entity_props` / `fact` / `fact_props` / `typed_out`（核心其余读），以及检索（落点 + 权重 Top-K） | 事实图（36/37） | core 已落；检索尚欠（Phase 4） |
 | — 无路由 | 初始化记忆装配（从用户节点出发遍历） | initialization memory | 已声明（ADR-0001），无 ns |
 | — 无路由 | 任务顶点 + `task_links` 边（第三个接口面——一个图，与事实同图） | task graph | 已声明（ADR-0001），无 ns |

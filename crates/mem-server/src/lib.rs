@@ -80,6 +80,7 @@ pub fn open(path: PathBuf) -> Result<Router, fjall::Error> {
             "/facts/{scope}/entities/{node_id}/edges",
             get(list_entity_edges),
         )
+        .route("/graph/{scope}", get(fetch_graph))
         .with_state(state))
 }
 
@@ -536,6 +537,75 @@ async fn list_entity_edges(
             .map(FactViewDto::from)
             .collect(),
     )
+}
+
+// ---- the graph's bulk read face (a renderer's door) ------------------
+//
+// One scope's graph in the shape a force-graph client consumes (nodes +
+// links), so `docs/kg-demo-3d.html` reads the real graph instead of
+// hand-written packets (PLAN's Deferred gate: a bulk read over the same
+// HTTP boundary, read-only, no new mechanism). No community id rides it —
+// that machinery (ADR-0010's steps 3–4) is not landed, and the demo colors
+// by node kind; and there is no paging yet: the gate's whole-table-vs-paged
+// question stays open until a corpus needs it.
+
+/// One node of a rendered graph.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct GraphNodeDto {
+    pub id: u64,
+    pub name: String,
+    pub kind: String,
+    pub literal_num: i64,
+}
+
+/// One link: a fact, with `source` / `target` as node ids (what the client
+/// needs) plus the declared fields it may render or ignore.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct GraphLinkDto {
+    pub edge_id: u64,
+    pub source: u64,
+    pub target: u64,
+    pub kind: String,
+    pub since: u64,
+    pub confidence: u8,
+    pub weight: u32,
+}
+
+/// A whole scope as nodes + links — one read, one scope.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct GraphDto {
+    pub nodes: Vec<GraphNodeDto>,
+    pub links: Vec<GraphLinkDto>,
+}
+
+/// `GET /graph/{scope}` — one scope's graph for a renderer. An empty
+/// scope is a legal empty graph, never an error.
+async fn fetch_graph(State(state): State<Arc<MemState>>, Path(scope): Path<u64>) -> Json<GraphDto> {
+    let mut graph = state.graph.lock().await;
+    let nodes: Vec<GraphNodeDto> = graph
+        .scope_entities(scope)
+        .into_iter()
+        .map(|(node_id, row)| GraphNodeDto {
+            id: node_id,
+            kind: graph.entity_kind(row.kind_id).unwrap_or_default(),
+            literal_num: row.literal_num,
+            name: row.name,
+        })
+        .collect();
+    let links: Vec<GraphLinkDto> = graph
+        .scope_facts(scope)
+        .into_iter()
+        .map(|fact| GraphLinkDto {
+            edge_id: fact.edge_id,
+            source: fact.src.node_id,
+            target: fact.dst.node_id,
+            kind: fact.kind,
+            since: fact.edge.since,
+            confidence: fact.edge.confidence,
+            weight: fact.edge.weight,
+        })
+        .collect();
+    Json(GraphDto { nodes, links })
 }
 
 /// Errors the shell itself can produce (the stores' primitives

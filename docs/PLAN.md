@@ -123,13 +123,18 @@ Deferred gates:
   (per-ns vs per-collection), whether to reuse okm's export surface if
   one lands — recorded here so the endpoint grows with consumers, not
   ahead of them.
-- Graph visualization endpoint: one read-only HTTP door that serves a
-  scope's graph in the shape a force-graph client consumes (nodes +
-  links), so the demo page `docs/kg-demo-3d.html` — today fed by
-  hand-written packets — reads the real graph instead (3d-force-graph as
-  the renderer; the community id ADR-0010 writes is what colors a
-  cluster, ADR-0010 §6). A bulk read over the same HTTP boundary
-  (ADR-0007): read-only, no new mechanism, no admin CLI. Deferred until
-  the fact graph is real (Phase 3) — the row→node / edge→link mapping,
-  the scope filter, and whole-table vs paged are its questions, recorded
-  here so the door grows with the graph instead of ahead of it.
+- Graph visualization endpoint: LANDED 2026-10-17 as
+  `GET /graph/{scope}` (`GraphStore::scope_entities` + `scope_facts`) —
+  one read-only bulk read over the same HTTP boundary (ADR-0007), no new
+  mechanism. Nodes carry id / name / kind / literal_num; links carry
+  source / target / kind / since / confidence / weight — the shape
+  3d-force-graph consumes, and the scope prefix bounds the scan, so the
+  demo page reads the real graph instead of hand-written packets. Still
+  open: (a) whole-table vs paged — one scope is read whole, paging waits
+  for a corpus that needs it; (b) wiring `docs/kg-demo-3d.html` to the
+  door — the page opens from `file://`, so a cross-origin fetch needs
+  either CORS on mem-server or the page served from it, a decision not
+  yet taken; (c) cluster coloring — the community id ADR-0010 §6 would
+  color with does not exist yet (`docs/viz-style.js` colors by node
+  kind), so it waits with everything else that consumes ADR-0010's steps
+  3–4.

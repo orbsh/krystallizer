@@ -495,6 +495,45 @@ impl GraphStore {
             .collect()
     }
 
+    /// Every node of one scope, key order — the whole-scope read a bulk
+    /// consumer (the visualization door) serves. The scan is bounded by
+    /// the primary-key prefix `[scope]`, so no other scope's rows are
+    /// touched.
+    pub fn scope_entities(&mut self, scope: u64) -> Vec<(u64, EntityRow)> {
+        let mut prefix = Vec::with_capacity(4 + 8);
+        prefix.extend_from_slice(<EntityRow as Document>::NS_PREFIX);
+        prefix.extend_from_slice(&PRIMARY_SLOT.to_be_bytes());
+        prefix.extend_from_slice(&scope.to_be_bytes());
+        self.store
+            .scan_suffix(&prefix)
+            .iter()
+            .filter_map(|sfx| {
+                let mut full = prefix.clone();
+                full.extend_from_slice(sfx);
+                let key = EntityKey::decode(&full[4..]);
+                let row = self.entities.get(&key)?;
+                Some((key.node_id, row))
+            })
+            .collect()
+    }
+
+    /// Every fact of one scope: each node's outgoing facts, node order
+    /// then edge order. Each edge is reached exactly once — `ingest`
+    /// creates both endpoints in the scope it was called with, so an
+    /// edge's source is always in this list.
+    pub fn scope_facts(&mut self, scope: u64) -> Vec<FactView> {
+        let nodes: Vec<u64> = self
+            .scope_entities(scope)
+            .into_iter()
+            .map(|(node_id, _)| node_id)
+            .collect();
+        let mut facts = Vec::new();
+        for node_id in nodes {
+            facts.extend(self.out_facts(scope, node_id));
+        }
+        facts
+    }
+
     /// A `NodeRef` back to its node: the ref is `[ns 2B][len varint]
     /// [entity key]`, so the entity key decodes straight out of it and
     /// the scope rides along (nothing external is consulted).

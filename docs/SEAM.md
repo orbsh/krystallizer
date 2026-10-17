@@ -31,6 +31,7 @@ primitives in `crates/mem-core/src/`.
 | `POST /facts/{scope}` | `GraphStore::ingest` (the body IS the 8-slot tuple; `scope` is the path) | fact graph — entities (36) + facts (37) | landed (2026-10-17) |
 | `GET /facts/{scope}/entities/{name}` | `GraphStore::entity_by_name` (the exact name/alias entrance; 404 on an unknown name) | entities (36) | landed (2026-10-17) |
 | `GET /facts/{scope}/entities/{node_id}/edges` | `GraphStore::out_facts` (one hop, both endpoints resolved) | facts (37) + entities (36) | landed (2026-10-17) |
+| `GET /graph/{scope}` | `GraphStore::scope_entities` + `scope_facts` (one scope as nodes + links — the renderer's bulk read) | entities (36) + facts (37) | landed (2026-10-17) |
 | — no route | `entity` / `entity_props` / `fact` / `fact_props` / `typed_out` (the rest of the core's reads), and the retrieval (landing + weight Top-K) | fact graph (36/37) | core landed; the retrieval is owed (Phase 4) |
 | — no route | initialization-memory assembly (traversal from the user node) | initialization memory | Declared (ADR-0001, no ns yet |
 | — no route | task vertices + `task_links` edges (the third interface surface — a graph, sharing the facts' graph) | task graph | Declared (ADR-0001, no ns yet |

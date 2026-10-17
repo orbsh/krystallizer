@@ -349,7 +349,11 @@ It returns `IngestOutcome::{Linked, Rewritten, Dropped}`.
 Reads: `entity(scope, node_id)`, `entity_by_name(scope, name)` →
 `(node_id, row)`, `entity_kind(kind_id)` → the token, `entity_props` /
 `fact_props` (the dynamic segments), `fact(edge_id)` → the decoded edge,
-`out_edges` and `typed_out` (the traversal currency). A functional rewrite is
+`out_edges` and `typed_out` (the traversal currency). For a bulk consumer
+(the visualization door) `scope_entities(scope)` and `scope_facts(scope)`
+return one scope whole — the scan is bounded by the primary-key prefix
+`[scope]`, and each edge is reached once because `ingest` puts both
+endpoints in the scope it was called with. A functional rewrite is
 `unlink` + `link` — two engine commits, because okm's `unlink` has no
 into-batch form (owed, ADR-0010).
 
