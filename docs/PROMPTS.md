@@ -55,7 +55,10 @@ the caller routing that tuple to `ingest(fact)`.
   `IMPLEMENTED_IN`, `PREVENTS`); props = the relation's modifiers (time /
   condition / cause / strength).
 - Empty props are written `{}` — the tuple is fixed-length, so no slot is
-  omitted; the type vocabulary is open.
+  omitted; the type vocabulary is open, with ONE reserved token: `literal`
+  marks a value that has no node identity of its own (a date, a number, a
+  short string), and k10r lands it as a literal node whose exact text is its
+  name.
 
 ## Examples
 User: "We're pivoting the Galaxy repo to an embedded Rust memory core named

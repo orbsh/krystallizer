@@ -1,6 +1,10 @@
 # ADR-0010: Algorithm Improvement — Write-Time Resolution and Automatic Cognitive Binning
 
-**Status**: Declared (design; implementation pending)
+**Status**: Partially landed (2026-10-17: the write side's steps 1–2 — the
+entities collection (ns 36) and the facts edge collection (ns 37) plus the
+deterministic `ingest(fact)` write-time resolution path, in
+`crates/mem-core/src/graph.rs`; pending: steps 3–4 (incremental LPA,
+community binning, the capsule collection) and the read side)
 **Date**: 2026-10-16
 **Chinese**: [0010-algorithm-improvement.zh-CN.md](0010-algorithm-improvement.zh-CN.md)
 
@@ -67,29 +71,37 @@ The model's active add produces structured facts (subject / predicate / object
 triples, serialized as the 8-slot tuple), and the caller hands them to the
 core through the deterministic `ingest(fact)` door; the core does not parse
 prose and does not call a model. Three collections carry the track's state; the
-okm-conformant layout is below (ns numbers are proposals — the dictionary is
-code, okm ADR-0002,
-so they are allocated when the tables land, next free after 35).
+okm-conformant layout is below (ns is allocated at landing: entities 36 and
+facts 37 are LANDED, 2026-10-17; the capsule's 38 is still a proposal).
 
 ```text
-Entities — node collection (ns 36 proposed), one per graph
+Entities — node collection (ns 36), one per graph
   0x0 primary        [scope u64][node_id u64]
                      → body: kind_id (hot), community_id (hot),
-                       name (cold TLV), props (dynamic segment)
+                       literal_num (hot, i64 — a literal node's integer
+                       projection), name (cold TLV), props (dynamic segment)
   0x1 node-kind face [kind_id u16][scope u64][node_id u64]        declared index
   0x1 by_name face   [name][scope u64][node_id u64]               exact name/alias entrance
   0x1 by_community   [community_id u64][scope u64][node_id u64]   ← the drafts' index:community:
 
-Facts — edge collection (ns 37 proposed), one ns per graph (okm ADR-0017)
-  0x0 primary        [scope u64][edge_id u64]
+Facts — edge collection (ns 37), one ns per graph (okm ADR-0017)
+  0x0 primary        [edge_id u64]
                      → body: [src NodeRef][dst NodeRef][kind_id][since][confidence][weight]
   0x1 declared-field face per declared field (since / confidence / weight)
-                     [field value][scope u64][edge_id u64]
-  0x4 kind index     [kind_id][scope u64][edge_id u64]
-  0x5 out-edges      [src NodeRef][scope u64][edge_id u64]
-  0x6 in-edges       [dst NodeRef][scope u64][edge_id u64]
-  0x7 kind+out       [kind_id][src NodeRef][scope u64][edge_id u64]
-  0x8 kind+in        [kind_id][dst NodeRef][scope u64][edge_id u64]
+                     [field value][edge_id u64]
+  0x4 kind index     [kind_id][edge_id u64]
+  0x5 out-edges      [src NodeRef][edge_id u64]
+  0x6 in-edges       [dst NodeRef][edge_id u64]
+  0x7 kind+out       [kind_id][src NodeRef][edge_id u64]
+  0x8 kind+in        [kind_id][dst NodeRef][edge_id u64]
+
+  No SCOPE segment on this side: the edge collection is a `Graph<S, E>` and
+  builds its own keys (okm's edge shape), so the ownership boundary rides the
+  ENDPOINTS — every `NodeRef` carries its entity key, scope included. A
+  traversal starts at a scoped node and stays in scope; only a whole-ns scan
+  (0x4, "every edge of kind K") crosses scopes, and it is the caller's to
+  filter by the endpoints. A per-scope edge prefix would mean hand-rolling
+  the collection against okm's Graph.
 
 Communities — capsule collection (ns 38 proposed)
   0x0 primary        [scope u64][community_id u64]
@@ -358,11 +370,12 @@ inspectable from a dashboard reading `get_stats`.
 - **No new retrieval mechanism.** The community index is a projection over
   the fact graph and the capsule is a cached summary read, never a scored
   branch; search still enters by landing or by exact name/alias lookup
-  (ADR-0003.
+  (ADR-0003).
 - **The vote consumes ADR-0005's weights** (`Weight(e)`, `confidence`, the
   read-write quadrants). ADR-0005's weight index, spelled there as
   `W:{weight}:{edge_id}`, is that same rule one layer down: a declared-field
-  face of the edge collection (`[weight][scope][edge_id]`).
+  face of the edge collection (`[weight][edge_id]` — the edge keys carry no
+  scope; the endpoints do).
 - **Every number here is a policy parameter** and belongs in
   `config/krystallizer.kdl` (ADR-0008's rule): the density threshold, the
   uncompressed-fact watermark, the iteration cap, the 2-hop radius. A
@@ -374,39 +387,71 @@ inspectable from a dashboard reading `get_stats`.
 
 ### Owed / open (not settled by this document)
 
-- **The fact graph's tables are Phase 3's Declared item; this ADR fixes their
-  key design, not their landing.** ns 36/37/38 are proposals allocated
-  through the dictionary when the tables land.
-- **Functional vs multi-valued kinds.** The overwrite rule holds only for a
-  kind that is functional at one source (`priority`: one value per entity); a
-  multi-valued kind legitimately holds parallel edges. How a kind declares
-  its cardinality (a flag in the kind dictionary, a declared field, or a
-  caller-supplied flag on `ingest`) is undecided.
+- **The tables:** the entities collection (ns 36) and the facts edge
+  collection (ns 37) LANDED 2026-10-17. The capsule collection's ns 38 is
+  still a proposal, allocated through the dictionary when it lands.
+- **Functional vs multi-valued kinds — CLOSED 2026-10-17.** The caller
+  declares it PER ASSERTION, in the relation's props: `{"functional": true}`
+  means one value per source, so the arriving fact is adjudicated against the
+  incumbent edge of the same kind out of the same source; absent (or false)
+  means multi-valued and the fact links a parallel edge. That default is the
+  safe one — a dropped fact is lost, an extra edge is recoverable — and the
+  declaration rides the assertion because the model that emits the triple is
+  the side that knows its predicate's cardinality. Storage does not police it:
+  the same predicate declared inconsistently is a data-level call, made per
+  arriving fact. The declaration is kept on the edge's dynamic segment (the
+  assertion's own record).
 - **The community's carrier.** The drafts disagree — `community_id` on the
   fact row (their resolution/index code) vs on the entity node (their LPA and
   the density metric). This ADR puts it on the NODE (LPA votes over nodes and
   `|V|` counts them) and pulls the community's edges through the traversal
   faces; an edge-side `by_community` face is the alternative if the injected
   packet must be edges directly.
-- **Literal objects.** An extracted object that is a date, a number or a
-  short string has no node identity, and okm's graph edge carries NodeRef
-  endpoints only. Whether it becomes a literal node (kind `Literal`, value in
-  the payload, reachable through `by_name`) or a declared attribute field on
-  the edge is Phase 3's decision.
+- **Literal objects — CLOSED 2026-10-17.** A literal becomes a NODE: kind
+  `literal`, its exact text in `name` (the `by_name` entrance) and its integer
+  projection in the declared hot `literal_num`. Uniformity is the reason —
+  every fact is two nodes and one edge, so traversal, binning and the density
+  metric need no special case — and the value's numeric form is a declared
+  field, so an interval or nearest read stays an ordered key scan rather than
+  a vector-distance guess. Owed within it: a canonical projection for dates
+  and non-numeric strings (only integers project today).
 - **The capsule call's carrier.** Since k10r cannot call out, the
   consolidation request has to be pulled by the caller or marked for it.
   Which door carries it (a pending-consolidation read on the memory surface
   vs a push the caller owns) is undecided.
 - **Community id issuance** rides okm's issuer discipline (`HighWater`
-  reduce, single writer); the mechanism lands with the tables.
+  reduce, single writer); the mechanism lands with steps 3–4.
+- **Two vocabularies in one ns, against okm's per-handle dictionary cache**
+  (found the hard way, 2026-10-17): the edge ns holds BOTH relation kinds
+  (allocated by okm's `Graph` through its own long-lived `DictCache`) and the
+  relation props' names (allocated by k10r). Two caches allocating in one
+  dictionary hand out the same id for different names — the frame then reads
+  back under the WRONG name, silently (the entity ns has the same split:
+  node kinds by k10r, prop names inside okm's `put_fields`). k10r holds the
+  discipline by allocating through a FRESH cache and by building the edge
+  handle PER CALL. Owed to okm: a dictionary handle the collection exposes
+  (or a rule that one ns holds one allocator), and an engine fallback in
+  `Graph::typed_*` / `edges_of_kind` — they answer from the non-allocating
+  `by_name_get` only, so a fresh handle reports "unknown kind" until
+  something loads the dictionary.
+- **`unlink` has no into-batch form** (owed to okm): a functional rewrite is
+  `unlink` + `link`, i.e. TWO engine commits, where ADR-0002's rule wants
+  one. The window is recovered by re-ingesting, and the edge id is
+  preserved.
+- **The edge's declared-attribute payload has no generated decoder**: the
+  derive emits `attrs()` (and the per-field faces) but no `from_attrs`, so
+  k10r's reader carries the widths and is locked against `attrs()` by a test.
+  Owed to okm: the decode half of `EdgeEncode`.
 - **The drafts' prefix layouts are retired, not preserved**: the
   hand-maintained `node:` / `index:community:` prefixes are replaced above by
   okm's faces, so the drafts' "two key shapes for one field" contradiction is
   closed rather than carried.
-- **ADR-0002 and MODELING still spell the fact graph as
-  `edge:{src}:{label}:{dst}` + `EdgeTable`** — stale on two counts against okm
-  ADR-0017. Re-expressing those lines is owed when Phase 3 lands and is not
-  done by this ADR.
+- **The retired spelling is swept where it described TODAY'S layout**:
+  ADR-0002's own line and MODELING's access-method inventory are rewritten
+  in place (2026-10-17). Still owed: ADR-0005's counter sketch spells its
+  delta keys `edge:{src}:{label}:{dst}/read/{ts}` — the retired LAYER, to be
+  re-expressed when the weight system lands (Phase 5), together with the
+  exact okm form of its delta table.
 - **Relationship to PLAN.** Community detection sits in Phase 5+ ("dreaming
   consolidation — petgraph community detection + human-reviewed op set, do
   not start early"). This ADR describes the incremental LOCAL form of it,

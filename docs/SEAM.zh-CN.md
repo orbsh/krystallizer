@@ -27,7 +27,8 @@
 | `POST /memory` | `MemoryStore::store`（id 由 store 发放；`created_at` 归调用方） | flat memory (32) | 已落（PLAN 1e） |
 | `GET /memory/{user_id}/search?q=` | `MemoryStore::search`（只扫该用户的键区间；空结果合法） | flat memory (32) | 已落（PLAN 1e） |
 | — 无路由 | `MemoryStore::forget` / `list` / `stats` | flat memory (32) | core 已落，无端点 |
-| — 无路由 | `ingest(fact)` + 图读（traversal、权重 Top-K） | fact graph | 已声明（ADR-0002/0003），无 ns |
+| — 无路由 | `ingest(fact)`（`GraphStore::ingest`） | 事实图——实体（36）+ 事实（37） | core 已落（2026-10-17）；尚无路由 |
+| — 无路由 | 图读：`entity_by_name`（精确入口）、`typed_out` / `out_edges`（遍历）、`fact`、`entity_props` / `fact_props` | 事实图（36/37） | core 已落（2026-10-17） |
 | — 无路由 | 初始化记忆装配（从用户节点出发遍历） | initialization memory | 已声明（ADR-0001），无 ns |
 | — 无路由 | 任务顶点 + `task_links` 边（第三个接口面——一个图，与事实同图） | task graph | 已声明（ADR-0001），无 ns |
 | 读侧随会话投影；写侧无路由 | 任务实例态（开 / 完——用于精确枚举的结构化字段） | task state | 已声明（gravity ADR-0003 §3/§4） |
@@ -43,8 +44,8 @@ in-process 不是第二道门：`InProcessSurface` 在调用方进程内链接�
 | 轮末追加 delta（用户消息 + 回复，同一个 `ts_ms`，`sub` 0/1） | `MemorySurface::append_message` | `POST /channels/{c}/messages` | `ChannelStore::append` | 已落 |
 | 压缩落地（summarize） | 未接 | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint` | 门已落，gravity 侧欠（Phase 2/2.6） |
 | 任务进度（一步一 task 行；读随轮首投影，完成在执行点写） | ADR-0003 §3/§4 | 读侧随 `GET /channels/{c}/members/{m}/session`；写侧尚无路由 | 任务顶点 + `task_links` 边，与事实同图 | 已声明——第三个接口面（ADR-0001）；gravity Phase 2.6 |
-| `recall_memory`——长期事实 | 工具面（未进代码） | `GET /memory/{user_id}/search?q=`（flat） | `MemoryStore::search`；图的检索（落点 + traversal + 权重 Top-K）尚欠 | flat 门已落（PLAN 1e）；图门欠（Phase 3）；工具欠 |
-| `commit_memory`——写事实 | 工具面 | `POST /memory`（flat） | `MemoryStore::store`（flat）/ `ingest(fact)`（图） | flat 门已落（PLAN 1e）；图门欠（Phase 3）；工具欠 |
+| `recall_memory`——长期事实 | 工具面（未进代码） | `GET /memory/{user_id}/search?q=`（flat） | `MemoryStore::search`；图的检索（落点 + traversal + 权重 Top-K）尚欠 | flat 门已落（PLAN 1e）；图的读已在 core 落地（2026-10-17），尚无路由；工具欠 |
+| `commit_memory`——写事实 | 工具面 | `POST /memory`（flat） | `MemoryStore::store`（flat）/ `GraphStore::ingest(fact)`（图） | flat 门已落（PLAN 1e）；图的 core 已落（2026-10-17），路由尚欠；工具欠 |
 | `resolve_skills`——可选 skills 列表 | 工具面 | `GET /code`（bring-up：池读） | `CodeStore::list` | bring-up 形态已落；skill 节点（前置 / 步骤 / 经验 / 后验）是 Phase 5+ deferred |
 | `invoke_skill`——计划里取码那一步 | 工具面 | `GET /code/{id}` | `CodeStore::get` | 已落 |
 | `invoke_skill`——调用本身 | 计划里的一步 | **不走 k10r**（见 §3） | — | gravity Phase 4.6 |
@@ -72,7 +73,7 @@ k10r 的任何路由都不会成为 LLM 的工具目标，k10r 也从不回调�
   （ADR-0008 §3）。任何新门都带同一条规则。
 - **一库两 keyspace，按写形态分**（每进程一个、一把锁）：`channel`
   （ns 33/34——队列式，自带 LSM 树，压缩不拖别的表）与 `memory`（今天
-  32/35，之后是图与技能）。新表加入它写形态所属的那个 keyspace；批不跨
+  32/35/36/37，之后是技能）。新表加入它写形态所属的那个 keyspace；批不跨
   keyspace。
 - **gravity 自己讲 mem-server 的 wire，而且是两处**：`HttpSurface`
   （`crates/core/src/surface.rs`）与 booth 的 turn guest

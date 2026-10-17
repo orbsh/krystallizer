@@ -28,7 +28,8 @@ primitives in `crates/mem-core/src/`.
 | `POST /memory` | `MemoryStore::store` (the store assigns the id; `created_at` is the caller's) | flat memory (32) | landed (PLAN 1e) |
 | `GET /memory/{user_id}/search?q=` | `MemoryStore::search` (one user's key range; an empty result is legal) | flat memory (32) | landed (PLAN 1e) |
 | — no route | `MemoryStore::forget` / `list` / `stats` | flat memory (32) | core landed, no endpoints |
-| — no route | `ingest(fact)` + graph reads (traversal, weight Top-K) | fact graph | Declared (ADR-0002/0003), no ns yet |
+| — no route | `ingest(fact)` (`GraphStore::ingest`) | fact graph — entities (36) + facts (37) | core landed (2026-10-17); no route yet |
+| — no route | graph reads: `entity_by_name` (the exact entrance), `typed_out` / `out_edges` (traversal), `fact`, `entity_props` / `fact_props` | fact graph (36/37) | core landed (2026-10-17) |
 | — no route | initialization-memory assembly (traversal from the user node) | initialization memory | Declared (ADR-0001, no ns yet |
 | — no route | task vertices + `task_links` edges (the third interface surface — a graph, sharing the facts' graph) | task graph | Declared (ADR-0001, no ns yet |
 | rides the session projection (read); no write route | task instance state (open / done — a structured field for exact enumeration) | task state | Declared (gravity ADR-0003 §3/§4) |

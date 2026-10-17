@@ -21,11 +21,13 @@ One entity class = one ns (OKM rule). Current state:
 | 35  | Code (delivered scripts) | Implemented (bring-up slice, 2026-10-15) | gravity ADR-0001/0003 |
 | —   | Session messages | superseded by the channel log | ADR-0008 |
 | —   | Tasks / task_links DAG | Declared (ADR-0001 — the third interface surface; same graph as the facts) | ADR-0001, ADR-0002 |
-| —   | Fact graph edges | Declared (ADR-0002) | ADR-0002 |
+| 36  | Entities (fact graph) | Implemented (2026-10-17) | ADR-0010 |
+| 37  | Facts (fact graph edges) | Implemented (2026-10-17) | ADR-0010 |
 | —   | Initialization memory (persona / style) | Declared (ADR-0001 | ADR-0001 |
 
-Session, tasks, and the fact graph land in later phases; their shapes
-below are the ADR commitments, not working code.
+The graph's read side (LPA, binning, the capsules), the session log's
+missing slices, and the tasks land in later phases; a row above marked
+`Declared` is an ADR commitment rather than working code.
 
 ## Memory kinds (who initiates)
 
@@ -103,15 +105,20 @@ assume per-user id density.
 Mandatory-per-OKM discipline: every entity's queries must be declared
 access methods, not scans. Current standing:
 
-- Flat memory: none declared (brute-force scan is the Phase 0 posture).
-  Phase 1 commitments: user-prefix scan (key prefix), name/alias point
-  lookup (entity identity), embedding vectors (`Vector<f32>` frames +
-  an in-memory search table), weight secondary index
-  `W:{weight}:{edge_id}` (ADR-0005).
-- Session messages: prefix scan by `[user_id][session_id]` with `seq`
-  in the key tail — replay/range reads are one prefix scan (ADR-0002).
-- Fact graph: `edge:{src}:{label}:{dst}` + EdgeTable bidirectional
-  adjacency (ADR-0002), weight index per ADR-0005.
+- Flat memory (ns 32): the user-prefix scan (key prefix). The table is the
+  PRE-GRAPH carrier of long-term memory and is withdrawn with the graph
+  (ADR-0001, PLAN Phase 3), so the vector landing and the name/alias point
+  lookup ADR-0003 specifies are declared on the graph's collections, not
+  here.
+- Channel messages (ns 33): prefix scan by `[channel_id][ts_ms][sub]` —
+  replay, increment and max-gap reads are one prefix scan (ADR-0008 §3).
+  Checkpoints (ns 34): point reads by `[channel_id][member_id]`.
+- Fact graph: an OKM node collection (entities) plus an edge collection
+  (facts) with declared faces, per ADR-0010 §1 — NOT an
+  `edge:{src}:{label}:{dst}` key layout (`EdgeTable` is a former name; the
+  layer above is `Graph<S, E: KvGraph>` + `NodeRef` + the kind dictionary,
+  okm ADR-0017). The weight secondary index is the edge collection's
+  `weight` declared field's face (ADR-0005, ADR-0010 §1).
 
 ## Hex stability
 
@@ -222,13 +229,138 @@ what a resolver or a linker picks from, and the declared bring-up
 posture (a whole-table scan that the graph's retrieval replaces,
 ADR-0003/0018). Source and parameter definition stay out of `list()`.
 
+## Fact graph (ns 36 entities, ns 37 facts)
+
+The 主动 (long-term) side's carrier: an okm node collection plus an okm
+edge collection, and the write-time resolution that lands one fact
+(ADR-0010 §1; landed 2026-10-17). Declared in
+`crates/mem-core/src/graph.rs`.
+
+### Entities (ns 36) — node collection
+
+```rust
+#[derive(KeyEncode, ...)]
+#[ok_ns(36)]
+pub struct EntityKey {
+    pub scope: u64,
+    pub node_id: u64,
+}
+
+#[derive(DocumentEncode, ...)]
+#[ok_ref(EntityKey)]
+#[ok_ns(36)]
+#[ok_index(
+    by_kind { fields(kind_id) },
+    by_name { fields(name) },
+    by_community { fields(community_id) },
+)]
+pub struct EntityRow {
+    pub kind_id: u16,
+    pub community_id: u64,
+    pub literal_num: i64,
+    pub name: String,
+}
+```
+
+- Key `[scope 8B BE][node_id 8B BE]` — `scope` leads because the corpus is
+  per-user (ADR-0003), the same ownership boundary flat memory uses. Ids are
+  store-assigned surrogates, recovered on reopen from the last key.
+- **A face carries the payload field first and the primary key last**: okm
+  joins the key tail itself, and the derive accepts payload fields only (a
+  key field inside `fields(...)` is a compile error). The entries land as
+  `[kind_id][scope][node_id]`, `[name][scope][node_id]` and
+  `[community_id][scope][node_id]` — ADR-0010 §1's three faces.
+- **Text-first regime**: `name` is variable-width and sits last among the
+  indexed fields, so a prefix scan for `alpha` also reaches `alphabet`. An
+  exact lookup therefore re-verifies the row's name AND the decoded key's
+  scope — the price of keeping the name out of the key.
+- `name` is an ATTRIBUTE (never key material); `kind_id` allocates through
+  this collection's own 0x2/0x3 dictionary — the same vocabulary dynamic
+  field names use (harmless: an id is only ever read back through the field
+  it was written into).
+- `literal_num` is a literal node's integer projection (0 otherwise): a
+  declared, fixed-width, ordered field, so a numeric read later stays a range
+  scan over a face rather than a vector-distance guess.
+- **Entity props merge.** A term's props (the tuple's head/tail props) land
+  on the node row's DYNAMIC segment (slot 1) — the entity's attributes,
+  shared by every fact about it — and they MERGE: a same-named attribute
+  takes the newer value, the rest survive.
+- `community_id` is written by ADR-0010's LPA pass (steps 3–4, not landed);
+  `0` is a legal community and means "not binned yet" (the `UNBINNED`
+  constant).
+
+### Facts (ns 37) — edge collection
+
+An okm edge collection (`Graph<FjallStore, FactEdge>`), one ns per graph (okm
+ADR-0017). The derive supplies `NS_PREFIX`, `ATTR_SLOTS`, `attrs()` and one
+0x1 face per declared field; okm builds the primary and the four traversal
+faces itself.
+
+| Face | Key |
+|---|---|
+| 0x0 primary | `[edge_id 8B BE]` → `[src NodeRef][dst NodeRef][kind_id][attrs]` |
+| 0x1 declared field (`since` / `confidence` / `weight`) | `[field value][edge_id]` |
+| 0x4 kind index | `[kind_id][edge_id]` |
+| 0x5 out-edges | `[src NodeRef][edge_id]` |
+| 0x6 in-edges | `[dst NodeRef][edge_id]` |
+| 0x7 kind+out | `[kind_id][src NodeRef][edge_id]` |
+| 0x8 kind+in | `[kind_id][dst NodeRef][edge_id]` |
+
+- **No scope segment on this side.** The edge collection builds its own keys
+  (okm's edge shape), so the ownership boundary rides the ENDPOINTS: a
+  `NodeRef` is `[ns 2B][len varint][entity key]`, and the entity key carries
+  the scope. A traversal starts at a scoped node and stays in scope; only a
+  whole-ns scan (0x4, "every edge of kind K") crosses scopes, and filtering
+  it by endpoints is the caller's job. A per-scope edge prefix would mean
+  hand-rolling the collection against okm's `Graph`.
+- The three declared fields are the relation props' PROJECTIONS: `since`
+  (the caller's clock — the adjudication input), `confidence` (the write
+  side's; 255 = absent, i.e. no penalty) and `weight` (the weight system's,
+  ADR-0005 — 0 until that system writes it). They are kept OUT of the edge's
+  dynamic entry: one datum, one home.
+- **The relation's open props ride the edge's dynamic segment** (slot 1 of
+  the edge's ns), built with okm's `put_frame_named` and committed in the
+  SAME batch as the link (ADR-0002: one WriteBatch = one transaction). The
+  per-assertion `functional` flag is kept there — the assertion's own record
+  of how it declared its kind's cardinality.
+- **`from_attrs` is k10r's** — `[since u64][confidence u8][weight u32]`, 13
+  bytes in the derive's declaration order. The `EdgeEncode` derive emits the
+  writer half only, so the reader carries the widths and a test locks it
+  against `attrs()`.
+- **Dictionary discipline (two vocabularies in one ns).** The edge ns holds
+  relation kinds (allocated by okm's `Graph` through its own long-lived
+  `DictCache`) AND the prop names k10r allocates. Two caches allocating in
+  one dictionary hand the same id to different names, and the frame then
+  reads back under the wrong name — silently. k10r therefore allocates
+  through a fresh cache per call, builds the edge handle per call, and primes
+  it (`kind_name`) before a typed read, because `Graph::typed_*` /
+  `edges_of_kind` answer from the non-allocating `by_name_get` and never fall
+  back to the engine. The owed okm-side items are in ADR-0010's owed list.
+
+### Access (mem-core `GraphStore`)
+
+`ingest(scope, fact)` decodes one 8-slot tuple and runs ADR-0010 §1's steps
+1–2: both endpoints resolve through `entity_by_name` (created when absent,
+allocating the kind), then the relation either links a new edge or — when the
+fact declares `functional` — is adjudicated against the incumbent edge of
+that kind out of that source (`since >` or `confidence >=` wins: the row is
+rewritten in place with the same `edge_id`, otherwise the fact is dropped).
+It returns `IngestOutcome::{Linked, Rewritten, Dropped}`.
+
+Reads: `entity(scope, node_id)`, `entity_by_name(scope, name)` →
+`(node_id, row)`, `entity_kind(kind_id)` → the token, `entity_props` /
+`fact_props` (the dynamic segments), `fact(edge_id)` → the decoded edge,
+`out_edges` and `typed_out` (the traversal currency). A functional rewrite is
+`unlink` + `link` — two engine commits, because okm's `unlink` has no
+into-batch form (owed, ADR-0010).
+
 ### Storage assembly
 
 One Fjall **database** per process (one directory, one lock file), and
 **two keyspaces**: `channel` (the log is queue-like and takes the store's
 highest write rate, so it gets its own LSM tree and its compaction never
-drags the other tables along) and `memory` (flat memory + code, and later
-the fact graph and the skills — those tables are discriminated by ns).
+drags the other tables along) and `memory` (flat memory + code + the fact
+graph, and later the skills — those tables are discriminated by ns).
 `crate::service::open_service` opens the database and attaches each group
 with `FjallStore::from_db`. Fjall locks the directory, so a second
 `FjallStore::open` on it fails — the keyspace attach is what lets the

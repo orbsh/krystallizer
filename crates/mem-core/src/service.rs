@@ -18,6 +18,7 @@
 
 use crate::channel::ChannelStore;
 use crate::code::CodeStore;
+use crate::graph::GraphStore;
 use crate::memory::MemoryStore;
 use crate::{KEYSPACE_CHANNEL, KEYSPACE_MEMORY};
 use okm_core::FjallStore;
@@ -32,6 +33,9 @@ pub struct ServiceStores {
     /// The code group (ns 35) — the SAME `memory` keyspace as flat
     /// memory: different entity classes, different ns, one tree.
     pub code: CodeStore,
+    /// The fact graph (ns 36 entities, ns 37 facts) — the `memory`
+    /// keyspace, like every table whose write shape is not the log's.
+    pub graph: GraphStore,
 }
 
 /// Open (or create) the service database at `path` and attach every table
@@ -44,6 +48,7 @@ pub fn open_service(path: &std::path::Path) -> Result<ServiceStores, fjall::Erro
     Ok(ServiceStores {
         channels: ChannelStore::wrap(channel_store),
         memory: MemoryStore::wrap(memory_store.clone()),
-        code: CodeStore::wrap(memory_store),
+        code: CodeStore::wrap(memory_store.clone()),
+        graph: GraphStore::wrap(memory_store),
     })
 }

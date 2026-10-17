@@ -25,7 +25,9 @@ and [图谱化记忆](https://github.com/orbsh/wiki/blob/main/graph-memory.md):
   interface surface (ADR-0001.
 - **Atomic-fact graph** — append-first facts, a fixed-length 8-slot tuple
   (roles `head` / `rel` / `tail` — head/tail `[value, type, props]`, the
-  relation `[name, props]`), entity-anchored
+  relation `[name, props]`); the write side's collections and
+  `ingest(fact)` landed 2026-10-17 (entities ns 36 + facts ns 37,
+  ADR-0010). Entity-anchored
   / temporal / causal-chain
   clustering as views, weight system (read-write quadrants,
   `tool_invoke_count`), fusion on write (in-domain id lookup / out-of-domain

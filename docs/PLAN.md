@@ -76,6 +76,21 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   bring-up posture for a resolver's pool read — the graph's retrieval
   replaces it.
 - [ ] Phase 3 — Atomic-fact graph: fact node/edge tables, ingestion of the 8-slot fact tuple (the facts arrive by the model's ACTIVE add — the caller routes that call to `ingest(fact)`; no compression pass and no trailing extraction worker, ADR-0008, write-time fusion (in-domain id / out-of-domain embedding convergence + small-candidate LLM decision — the LLM decision is gravity's, per ADR-0007's boundary), weight system (delta counts, read-write quadrants, tool_invoke_count, W: index); initialization memory (人设/风格) — a traversal from the user node, delivered at the context head; the task graph (task vertices + `task_links` dependency edges) shares that same graph — tasks are the third interface surface, their instance state structured rather than approximate. Write-time resolution (upsert on a new fact) and cognitive binning ride this side per ADR-0010 (fact node / community reverse index / capsule; ns allocated at landing, next free after 35). Scope note: append-first covers THIS side (node/edge rows, weights, derived entries) — the log does not (ADR-0002. Flat memory (ns 32) and its HTTP door are withdrawn in this landing: the graph is its successor (ADR-0001's carrier line, "flat memory, then the graph") — flat was the pre-graph form of the same extracted knowledge, and a text row carries no per-fact identity. What is owed with it: the fate of legacy flat rows (ADR-0002's PG migration imports them as-is) is a migration question, not a schema one. (ADR-0001, ADR-0002, ADR-0004, ADR-0005, ADR-0007, ADR-0010)
+  - [x] 3a. The write side's steps 1–2 LANDED (2026-10-17): the entities
+    collection (ns 36) + the facts edge collection (ns 37) and the
+    deterministic `ingest(fact)` path — `GraphStore` in
+    `crates/mem-core/src/graph.rs`: the three entity faces
+    (`by_kind` / `by_name` / `by_community`), the edge's declared
+    `since` / `confidence` / `weight`, the functional-vs-multi-valued
+    resolution the caller declares per assertion, literal nodes, and the
+    relation props on the edge's dynamic segment (same batch as the
+    link). Gates: mem-core 34/0 (graph 12 — layout locks, scope
+    isolation, the polygons of the resolution, the literal node, props
+    merge, id recovery), clippy 0, fmt clean. Owed: an HTTP route for
+    `ingest(fact)`; the graph's retrieval (embedding + name/alias into
+    traversal); and the okm-side items in ADR-0010's owed list (a
+    dictionary handle / an engine fallback for the typed reads,
+    `unlink_into`, a generated attribute decode).
 - [ ] Phase 4 — Clustered retrieval: entity-anchored / temporal / causal-chain views; progressive loading (Top-K by weight). Reads the write-time structure ADR-0010 lands (the node's community id + the community reverse index + capsules) instead of running a graph algorithm on the read path. (ADR-0005, ADR-0010)
 - [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), SKILL topological four-part nodes, Aura Actor nodes. (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.) ADR-0010 takes the incremental LOCAL form of community detection onto the write side and leaves OPEN whether that promotes a slice of Phase 5 ahead of Phase 3/4 — an open ruling, not settled.
 

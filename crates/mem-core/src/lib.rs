@@ -1,13 +1,15 @@
 //! mem-core: agent memory core.
 //!
-//! Storage + retrieval over Fjall with OKM-declared schemas.
-//! Two interface surfaces: session control (branch/tail/summarize) and
-//! memory (full-session / assist). Zero LLM dependency, zero transport
-//! dependency. Design: docs/adr/.
+//! Storage + retrieval over Fjall with OKM-declared schemas. Three
+//! interface surfaces: session control (branch/tail/summarize), memory
+//! (passive/short-horizon context and active/long-horizon facts —
+//! initialization memory included), and tasks. Zero LLM dependency,
+//! zero transport dependency. Design: docs/adr/.
 
 pub mod channel;
 pub mod code;
 pub mod config;
+pub mod graph;
 pub mod memory;
 pub mod service;
 
@@ -31,5 +33,9 @@ pub use channel::{
 };
 pub use code::{CodeKey, CodeRow, CodeStore};
 pub use config::{ConfigError, EmbeddingConfig, KrystallizerConfig};
+pub use graph::{
+    EntityKey, EntityRow, FactBody, FactEdge, FactTuple, GraphStore, IngestError, IngestOutcome,
+    Relation, Term, ENTITY_NS, FACT_NS, FUNCTIONAL_PROP, LITERAL_KIND,
+};
 pub use memory::{MemoryKey, MemoryRow, MemoryStats, MemoryStore};
 pub use service::{open_service, ServiceStores};

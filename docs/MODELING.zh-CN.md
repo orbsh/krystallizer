@@ -20,11 +20,12 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
 | 35  | Code（交付的脚本） | 已实现（bring-up 切片，2026-10-15） | gravity ADR-0001/0003 |
 | —   | Session 消息      | 被 channel log 取代      | ADR-0008 |
 | —   | Tasks / task_links DAG | 已声明（ADR-0001——第三个接口面；与事实同图） | ADR-0001, ADR-0002 |
-| —   | Fact graph 边     | 已声明（ADR-0002）       | ADR-0002 |
+| 36  | 实体（事实图）     | 已实现（2026-10-17）      | ADR-0010 |
+| 37  | 事实（事实图边）   | 已实现（2026-10-17）      | ADR-0010 |
 | —   | 初始化记忆（人设 / 风格） | 已声明（ADR-0001） | ADR-0001 |
 
-Session、tasks、fact graph 属后续阶段；下文形态是 ADR 承诺，非运行
-代码。
+图的读侧（LPA、分箱、胶囊）、会话日志缺的几块、以及任务，属后续阶段；
+上表标 `已声明` 的行是 ADR 承诺，非运行代码。
 
 ## 记忆种类（谁发起）
 
@@ -92,14 +93,17 @@ id），从其之后继续。后果：id 唯一但不按 user 连续，计数器
 
 OKM 强制纪律：每个实体的查询必须是声明的访问方法，不是扫描。现状：
 
-- Flat memory：未声明（暴力扫描是 Phase 0 姿态）。Phase 1 承诺：
-  user 前缀扫描（key 前缀）、名/别名点查（实体身份）、embedding 向量
-  （`Vector<f32>` 帧 + 内存检索表）、weight 二级索引
-  `W:{weight}:{edge_id}`（ADR-0005）。
-- Session 消息：`[user_id][session_id]` 前缀扫描，`seq` 在 key 尾
-  ——回放/范围读就是一次前缀扫描（ADR-0002）。
-- Fact graph：`edge:{src}:{label}:{dst}` + EdgeTable 双向邻接
-  （ADR-0002），weight 索引见 ADR-0005。
+- Flat memory（ns 32）：只有 user 前缀扫描（key 前缀）。这张表是长期记忆的
+  **图前**载体，随图一起撤销（ADR-0001，PLAN Phase 3），所以 ADR-0003 描述的
+  向量落址与名/别名点查声明在图的两个 collection 上，不在这张表上。
+- Channel 消息（ns 33）：`[channel_id][ts_ms][sub]` 前缀扫描——回放、
+  increment、max-gap 读都是一次前缀扫描（ADR-0008 §3）。checkpoint（ns 34）：
+  按 `[channel_id][member_id]` 点读。
+- Fact graph：OKM 节点 collection（entities）+ 边 collection（facts）带声明面，
+  见 ADR-0010 §1——不是 `edge:{src}:{label}:{dst}` 那种键布局（`EdgeTable` 是
+  旧名：上面那层是 `Graph<S, E: KvGraph>` + `NodeRef` + kind 字典，okm
+  ADR-0017）。weight 二级索引 = 边 collection 的 `weight` 声明字段的面
+  （ADR-0005、ADR-0010 §1）。
 
 ## Hex 稳定性
 
@@ -201,11 +205,118 @@ pub struct CodeRow {
 也是声明的 bring-up 姿态（全表扫描，由图谱检索取代，ADR-0003/0018）。
 `list()` 不带 source 与参数定义。
 
+## 事实图（ns 36 实体，ns 37 事实）
+
+主动面（长期）的载体：一个 okm 节点集合 + 一个 okm 边集合，以及把一条事实落地
+的写时消解（ADR-0010 §1；2026-10-17 落地）。声明在
+`crates/mem-core/src/graph.rs`。
+
+### 实体（ns 36）——节点集合
+
+```rust
+#[derive(KeyEncode, ...)]
+#[ok_ns(36)]
+pub struct EntityKey {
+    pub scope: u64,
+    pub node_id: u64,
+}
+
+#[derive(DocumentEncode, ...)]
+#[ok_ref(EntityKey)]
+#[ok_ns(36)]
+#[ok_index(
+    by_kind { fields(kind_id) },
+    by_name { fields(name) },
+    by_community { fields(community_id) },
+)]
+pub struct EntityRow {
+    pub kind_id: u16,
+    pub community_id: u64,
+    pub literal_num: i64,
+    pub name: String,
+}
+```
+
+- 键 `[scope 8B BE][node_id 8B BE]`——`scope` 打头是因为语料按用户划分
+  （ADR-0003），与 flat memory 同一条归属边界。id 是 store 发放的代理键，重开
+  时从最后一个键恢复。
+- **面是「payload 字段在前、主键在后」**：key 尾由 okm 自己拼接，而派生只接受
+  payload 字段（把 key 字段写进 `fields(...)` 是编译错误）。条目落成
+  `[kind_id][scope][node_id]`、`[name][scope][node_id]`、
+  `[community_id][scope][node_id]`——ADR-0010 §1 的三个面。
+- **文本优先（text-first）形态**：`name` 变长且排在索引字段末位，所以按
+  `alpha` 前缀扫描也会扫到 `alphabet`。精确查找因此要同时核验行里的 name
+  与解出的 key 的 scope——这是把名字留在键之外要付的价。
+- `name` 是**属性**（永不进键）；`kind_id` 走本集合自己的 0x2/0x3 字典分配
+  ——与动态字段名共用同一本词汇表（无害：一个 id 只会从它被写进的那个字段里
+  读回来）。
+- `literal_num` 是字面量节点的整数投影（其余为 0）：声明的、定宽的、有序的字
+  段，于是将来的数值读仍然是对某个面做 range scan，而不是向量距离的猜测。
+- **实体属性是合并的。** 一个词项的属性（元组的 head/tail 属性）落在节点行的
+  **动态段**（slot 1）——那是这个实体的属性，被关于它的每条事实共享——而且是
+  合并：同名属性取较新的值，其余存活。
+- `community_id` 由 ADR-0010 的 LPA 遍写（步骤 3–4，未落地）；`0` 是合法社区，
+  含义是「尚未分箱」（`UNBINNED` 常量）。
+
+### 事实（ns 37）——边集合
+
+一个 okm 边集合（`Graph<FjallStore, FactEdge>`），每图一个 ns（okm ADR-0017）。
+派生提供 `NS_PREFIX`、`ATTR_SLOTS`、`attrs()` 与每个声明字段一个 0x1 面；主表与
+四个遍历面由 okm 自己造。
+
+| 面 | 键 |
+|---|---|
+| 0x0 主表 | `[edge_id 8B BE]` → `[src NodeRef][dst NodeRef][kind_id][attrs]` |
+| 0x1 声明字段（`since` / `confidence` / `weight`） | `[字段值][edge_id]` |
+| 0x4 种类索引 | `[kind_id][edge_id]` |
+| 0x5 出边 | `[src NodeRef][edge_id]` |
+| 0x6 入边 | `[dst NodeRef][edge_id]` |
+| 0x7 种类+出 | `[kind_id][src NodeRef][edge_id]` |
+| 0x8 种类+入 | `[kind_id][dst NodeRef][edge_id]` |
+
+- **这一侧没有 scope 段。** 边集合自己造键（okm 的边形态），所以归属边界走
+  **端点**：`NodeRef` 是 `[ns 2B][len varint][实体键]`，实体键里带着 scope。
+  遍历从带 scope 的节点出发，也就一直在 scope 内；只有整 ns 的扫描（0x4，
+  「某种类的全部边」）跨 scope，按端点过滤是调用方的事。要在边键上带
+  per-scope 前缀，就得绕开 okm 的 `Graph` 手写这个集合。
+- 三个声明字段是关系 props 的**投影**：`since`（调用方的时钟——裁决输入）、
+  `confidence`（写侧的；255 = 缺省，即不惩罚）与 `weight`（权重系统的，
+  ADR-0005——在该系统写它之前为 0）。它们被排除在边的动态条目之外：一个数据
+  只有一个家。
+- **关系的开放 props 走边的动态段**（边 ns 的 slot 1），用 okm 的
+  `put_frame_named` 构造，与 link **同一批**提交（ADR-0002：一个 WriteBatch
+  = 一个事务）。按断言给的 `functional` 标志留在那里——这是该断言自己关于
+  「它如何声明那个种类的基数」的记录。
+- **`from_attrs` 是 k10r 自己的**——`[since u64][confidence u8][weight u32]`，
+  13 字节，按派生声明的顺序。`EdgeEncode` 派生只发写的那一半，所以读侧自带宽
+  度，并由测试对着 `attrs()` 锁死。
+- **字典纪律（一个 ns 两套词汇）。** 边 ns 里住着关系种类（由 okm 的 `Graph`
+  用它自己长驻的 `DictCache` 分配）**和** k10r 分配的 prop 名。两个 cache 在
+  同一本字典里分配，会把同一个 id 发给两个不同的名字，帧随后以错误的名字读回
+  来，而且无声。所以 k10r 分配一律走一次性 cache，边 handle 每次调用现建，并
+  在类型化读之前把它预热（`kind_name`）——因为 `Graph::typed_*` /
+  `edges_of_kind` 只从非分配的 `by_name_get` 取答案，从不回落到引擎。欠 okm 的
+  条目在 ADR-0010 的欠账清单里。
+
+### 访问面（mem-core `GraphStore`）
+
+`ingest(scope, fact)` 解一条 8 元组并跑 ADR-0010 §1 的步骤 1–2：两个端点经
+`entity_by_name` 解析（不存在则新建，并分配它的种类），随后关系要么挂一条新
+边，要么——当事实声明了 `functional`——与该源上该种类的在册边裁决（`since >`
+或 `confidence >=` 胜出：同一 `edge_id` 就地改写；否则这条事实被丢弃）。返回
+`IngestOutcome::{Linked, Rewritten, Dropped}`。
+
+读：`entity(scope, node_id)`、`entity_by_name(scope, name)` → `(node_id, row)`、
+`entity_kind(kind_id)` → 词项、`entity_props` / `fact_props`（动态段）、
+`fact(edge_id)` → 解出的事实、`out_edges` 与 `typed_out`（遍历通货）。函数式
+改写是 `unlink` + `link`——两次引擎提交，因为 okm 的 `unlink` 没有 into-batch
+形态（欠账，见 ADR-0010）。
+
 ### 存储组装
 
 一个进程一个 Fjall **database**（一个目录、一把锁文件），**两个
 keyspace**：`channel`（日志是类队列的，写频率全库最高，所以单独一棵 LSM
-树，它的 compaction 不会拖着别的表）与 `memory`（flat memory + code，将来
+树，它的 compaction 不会拖着别的表）与 `memory`（flat memory + code + 事实图，将来
 的 fact graph 与 skill 也进这里——这些表靠 ns 区分）。
 `crate::service::open_service` 打开 database，再用 `FjallStore::from_db`
 把各组挂上去。Fjall 锁目录，所以对同一目录第二次 `FjallStore::open` 会失

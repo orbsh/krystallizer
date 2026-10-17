@@ -33,7 +33,10 @@ convergence) similarly involves one LLM decision over a small candidate set.
   carry a name AND a type label; the relation carries only its name and props —
   its name IS its kind (the edge collection's own dictionary allocates it as
   `kind_id`, ADR-0010 §1), so a second, coarser label would have a face nobody
-  reads. Empty props are written `{}` — the tuple is fixed length, no slot is
+  reads. The type vocabulary is the caller's and open, with one reserved token:
+  `literal` marks a value with no node identity of its own (a date, a number, a
+  short string), and it lands as a literal node whose exact text is its name
+  (ADR-0010 §1). Empty props are written `{}` — the tuple is fixed length, no slot is
   omitted — and `category` is not part of a fact's form. The form is written
   down in the wiki's authoritative serialization section (krystallizer, both
   languages), the knowledge-triplets skill's format section, and this repo's

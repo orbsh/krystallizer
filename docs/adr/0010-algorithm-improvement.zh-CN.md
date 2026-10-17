@@ -1,6 +1,9 @@
 # ADR-0010: 算法改进 —— 写时消解与自动认知分箱
 
-**状态**：Declared（设计定案，实现未开始）
+**状态**：部分落地（2026-10-17：写侧步骤 1–2——实体集合（ns 36）与事实边集合
+（ns 37），以及确定性的 `ingest(fact)` 写时消解路径，见
+`crates/mem-core/src/graph.rs`；未落：步骤 3–4（增量 LPA、社区分箱、胶囊集合）
+与读侧）
 **日期**：2026-10-16
 **英文版**：[0010-algorithm-improvement.md](0010-algorithm-improvement.md)
 
@@ -54,28 +57,35 @@
 
 模型的主动添加产出结构化事实（主谓宾三元组，序列化为定长 8 元组），由调用方通过确定性的 `ingest(fact)`
 门交给核心；核心不解析散文，也不调模型。这条轨的状态由三张集合承载；符合
-okm 规范的布局如下（ns 号是提议值——ns 字典即代码，okm ADR-0002——在表落地
-时分配，取 35 之后的空号）。
+okm 规范的布局如下（ns 在落地时分配：实体 36 与事实 37 已落地（2026-10-17），
+胶囊的 38 仍是提议值）。
 
 ```text
-实体 —— 节点集合（提议 ns 36），每图一个
+实体 —— 节点集合（ns 36），每图一个
   0x0 主表           [scope u64][node_id u64]
                      → 行体：kind_id（热）、community_id（热）、
+                       literal_num（热，i64——字面量节点的整数投影）、
                        name（冷 TLV）、props（动态段）
   0x1 节点种类面     [kind_id u16][scope u64][node_id u64]        声明式索引
   0x1 by_name 面     [name][scope u64][node_id u64]               实体名/别名精确入口
   0x1 by_community   [community_id u64][scope u64][node_id u64]   ← 草案的 index:community:
 
-事实 —— 边集合（提议 ns 37），每图一个 ns（okm ADR-0017）
-  0x0 主表           [scope u64][edge_id u64]
+事实 —— 边集合（ns 37），每图一个 ns（okm ADR-0017）
+  0x0 主表           [edge_id u64]
                      → 行体：[src NodeRef][dst NodeRef][kind_id][since][confidence][weight]
   0x1 声明字段面（since / confidence / weight 各一面）
-                     [字段值][scope u64][edge_id u64]
-  0x4 种类索引       [kind_id][scope u64][edge_id u64]
-  0x5 出边           [src NodeRef][scope u64][edge_id u64]
-  0x6 入边           [dst NodeRef][scope u64][edge_id u64]
-  0x7 种类+出        [kind_id][src NodeRef][scope u64][edge_id u64]
-  0x8 种类+入        [kind_id][dst NodeRef][scope u64][edge_id u64]
+                     [字段值][edge_id u64]
+  0x4 种类索引       [kind_id][edge_id u64]
+  0x5 出边           [src NodeRef][edge_id u64]
+  0x6 入边           [dst NodeRef][edge_id u64]
+  0x7 种类+出        [kind_id][src NodeRef][edge_id u64]
+  0x8 种类+入        [kind_id][dst NodeRef][edge_id u64]
+
+  这一侧没有 SCOPE 段：边集合是 `Graph<S, E>`，自己造键（okm 的边形态），
+  所以归属边界走**端点**——每个 `NodeRef` 携带它自己的实体键，scope 在其中。
+  一次遍历从带 scope 的节点出发，也就一直在 scope 内；只有整 ns 的扫描
+  （0x4，「某种类的全部边」）会跨 scope，那是调用方按端点过滤的事。要在边键上
+  带 per-scope 前缀，就得绕开 okm 的 Graph 手写这个集合。
 
 社区 —— 胶囊集合（提议 ns 38）
   0x0 主表           [scope u64][community_id u64]
@@ -313,31 +323,52 @@ pub fn assist_search(query: &str, top_k: usize) -> AssistantContext {
 
 ### 欠账/未决（本文档未定案的部分）
 
-- **事实图的表是 Phase 3 的声明项；本文档定的是它们的键设计，不是它们的落地。**
-  提议的 ns 36/37/38 在表落地时经字典分配。
-- **函数式 vs 多值种类。** 覆写规则只对「在一个源上函数式」的种类成立
-  （`priority`：一个实体一个值）；多值种类合法地持有平行边。种类如何声明其
-  基数（种类字典里一个标志位、一个声明字段，还是 `ingest` 上由调用方给的标
-  志）未定。
+- **表：** 实体集合（ns 36）与事实边集合（ns 37）已于 2026-10-17 落地。
+  胶囊集合的 ns 38 仍是提议值，落地时经字典分配。
+- **函数式 vs 多值种类——2026-10-17 关闭。** 由调用方**按每条断言**声明，
+  放在关系的 props 里：`{"functional": true}` 表示「在一个源上一个值」，于是
+  到达的事实会与同源同种类的在册边裁决；缺省（或 false）表示多值，事实挂一
+  条平行边。这个缺省是安全侧——丢一条事实不可逆，多一条边可恢复——而声明随
+  断言走，因为发出三元组的模型才是知道该谓词基数的一侧。存储不裁判：同一谓词
+  在不同断言里声明不一致，是数据层的事，由每条到达的事实自行决定。该声明留在
+  边的动态段上（断言自己的记录）。
 - **社区的承载位置。** 两份草案互相矛盾——`community_id` 在事实行上（它们的
   消解/索引代码）还是在实体节点上（它们的 LPA 与密度指标）。本文档放在
   **节点**上（LPA 在节点之间投票，`|V|` 数的也是节点），社区的边通过遍历面
   取回；若注入的包必须是边本身，边侧再开一个 `by_community` 面是备选。
-- **字面量客体。** 提取出的客体若是日期、数字或短字符串，它没有节点身份，
-  而 okm 的图边只承载 NodeRef 端点。它成为一个字面量节点（种类 `Literal`，
-  值放 payload，经 `by_name` 可达），还是边上的一个声明属性字段，归 Phase 3
-  决定。
+- **字面量客体——2026-10-17 关闭。** 字面量成为**节点**：种类 `literal`，
+  精确文本进 `name`（`by_name` 入口），整数投影进声明的热字段 `literal_num`。
+  理由是形态一致——每条事实恒为两个节点加一条边，于是遍历、分箱与密度指标都
+  不需要特例——而值的数值形态是声明字段，区间/最近读就仍然是有序键扫描，不是
+  向量距离的猜测。其中仍欠：日期与非数字字符串的规范化投影（今天只有整数会
+  投影）。
 - **胶囊调用的载体。** 由于 k10r 不能外呼，固化请求只能由调用方拉取或被标
   记给它。具体哪扇门承载（记忆面上一次「待固化」读，还是调用方自己的一次推
   送）未定。
 - **社区 id 的发放**走 okm 的发放者纪律（`HighWater` reduce，单写者）；该机
-  制随表落地。
+  制随步骤 3–4 落地。
+- **一个 ns 两套词汇，对上 okm 按 handle 缓存的字典**（2026-10-17 踩出来的）：
+  边 ns 里同时住着关系种类（okm 的 `Graph` 用它自己长驻的 `DictCache` 分配）
+  与关系 props 的名字（k10r 分配）。两个 cache 在同一本字典里分配，会把同一个
+  id 发给两个不同的名字——帧随后以**错误的名字**读回来，而且无声（实体 ns 有
+  同样的分叉：节点种类由 k10r 分配，props 名字在 okm 的 `put_fields` 里）。
+  k10r 用两条纪律守住：分配一律走一次性 cache，边 handle 每次调用现建。欠
+  okm 的：collection 暴露一个字典 handle（或立下「一个 ns 一个分配者」的规
+  则），以及给 `Graph::typed_*` / `edges_of_kind` 加引擎兜底——它们只从非分配
+  的 `by_name_get` 取答案，所以新建的 handle 在字典被加载之前会答「未知种类」。
+- **`unlink` 没有 into-batch 形态**（欠 okm）：函数式改写是 `unlink` + `link`，
+  即**两次**引擎提交，而 ADR-0002 的规则要一次。这个窗口靠重放 ingest 恢复，
+  且边 id 保持不变。
+- **边声明属性载荷没有生成式解码器**：派生只发 `attrs()`（与逐字段的面），没
+  有 `from_attrs`，所以 k10r 自己带着宽度读，并用测试对着 `attrs()` 锁死。欠
+  okm 的：`EdgeEncode` 的解码那一半。
 - **草案的前缀布局是作废，不是保留**：手维护的 `node:` / `index:community:`
   前缀在上文被 okm 的面取代，于是草案「一个字段两种键形状」的矛盾被关掉，而
   不是被继承。
-- **ADR-0002 与 MODELING 仍把事实图写成 `edge:{src}:{label}:{dst}` +
-  `EdgeTable`**——对照 okm ADR-0017 两处过时。改写那几行是 Phase 3 落地时的
-  欠账，本文档不动它们。
+- **描述「今日布局」的旧拼法已就地扫掉**：ADR-0002 自己那行与 MODELING 的
+  访问方法清单已改写（2026-10-17）。仍欠：ADR-0005 的计数草图把 delta 键写成
+  `edge:{src}:{label}:{dst}/read/{ts}`——那是作废的**层**，要在权重系统落地
+  （Phase 5）时连它的 delta 表的 okm 形态一起改写。
 - **与 PLAN 的关系。** 社区发现位于 Phase 5+（「dreaming consolidation——
   petgraph 社区发现 + 人工审核的操作集，不要提前开工」）。本文档说的是它的
   增量局部形态，搬进了写时后台。这是否把 Phase 5 的一块提前到 Phase 3/4 之前，
