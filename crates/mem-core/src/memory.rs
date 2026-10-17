@@ -1,10 +1,14 @@
 //! Flat memory: one table over Fjall (ADR-0002), with a brute-force
 //! substring search — the declared bring-up posture (ADR-0003). The lexical
 //! branch (BM25 / arroy / inverted index) is withdrawn; retrieval lands with
-//! the built-in embedding model and the graph's entrances. Proves the OKM
-//! DocumentEncode -> Table -> FjallStore channel end to end.
+//! the built-in embedding model and the graph's entrances. The row CARRIES
+//! the vector the built-in engine produced; ranking by it is Phase 1c.
+//! Proves the OKM DocumentEncode -> Table -> FjallStore channel end to end.
 
-use okm_core::{Document, DocumentEncode, FjallStore, KeyEncode, VirtualStorage};
+// `VectorElem` is in scope for the derive's generated element codec.
+use okm_core::{
+    Document, DocumentEncode, FjallStore, KeyEncode, Vector, VectorElem, VirtualStorage,
+};
 
 /// Flat memory identity: user-scoped surrogate id.
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -14,7 +18,16 @@ pub struct MemoryKey {
     pub id: u64,
 }
 
-/// Flat memory row: free text plus a monotonic insert counter.
+/// Flat memory row: free text, a monotonic insert counter, and the row's
+/// vector.
+///
+/// `embedding` is the built-in engine's output (ADR-0003): a cold frame of
+/// ANY length (the frame carries its own count, so a model swap changes the
+/// data, not the wire), L2-normalized at the source so the contract's
+/// `cosine` is an inner product downstream. It sits at the tail of the cold
+/// segment — new fields are appended there, per okm's schema-evolution rule.
+/// An EMPTY vector is a legal row (one written without an engine): it is not
+/// a zero vector, and the retrieval side skips it.
 ///
 /// The ns is declared here (#[ok_ns]) — the row is the table's
 /// declaration point; Table::new no longer takes an ns argument.
@@ -24,6 +37,7 @@ pub struct MemoryKey {
 pub struct MemoryRow {
     pub text: String,
     pub created_at: u64,
+    pub embedding: Vector<f32>,
 }
 
 /// Per-user counts plus the table-wide total.
@@ -70,16 +84,29 @@ impl MemoryStore {
     }
 
     /// Store one memory for `user_id`; returns the assigned id.
-    pub fn store(&mut self, user_id: u64, text: &str, created_at: u64) -> u64 {
+    ///
+    /// `embedding` is the row's vector and the WRITER states it: empty
+    /// means the row carries none (legal, and what a caller with no engine
+    /// attached passes), while a serving process passes the built-in
+    /// engine's output — the engine is k10r's own and runs in-process
+    /// (ADR-0003), so no client ever sends a vector.
+    pub fn store(&mut self, user_id: u64, text: &str, created_at: u64, embedding: &[f32]) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         let key = MemoryKey { user_id, id };
         let row = MemoryRow {
             text: text.to_string(),
             created_at,
+            embedding: Vector::new(embedding.to_vec()),
         };
         self.table.put(&key, &row);
         id
+    }
+
+    /// One row by identity. `search` and `list` return the text alone; a
+    /// caller that needs the ROW (its vector included) reads it here.
+    pub fn get(&self, user_id: u64, id: u64) -> Option<MemoryRow> {
+        self.table.get(&MemoryKey { user_id, id })
     }
 
     /// Brute-force substring search: scan the user's memories, keep rows

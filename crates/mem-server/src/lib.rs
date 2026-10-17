@@ -45,20 +45,39 @@ pub struct MemState {
     /// come from the model's own add, the caller routes the tuple to
     /// `ingest(fact)`).
     graph: tokio::sync::Mutex<GraphStore>,
+    /// The built-in embedding engine (ADR-0003), loaded once per process
+    /// and shared: the memory door embeds a row's text in-process before
+    /// it lands, so the client never sends a vector. `None` = no engine
+    /// attached, and rows then land with an empty vector frame (a legal
+    /// row, which is what the storage tests take); a serving process
+    /// attaches one through `open_with`.
+    embedder: Option<Arc<mem_core::Embedder>>,
 }
 
-/// Open the database at `path` and build the router.
+/// Open the database at `path` and build the router WITHOUT an embedding
+/// engine — memory rows then carry no vector. This is the shape the
+/// storage-level tests use; a serving deployment wants `open_with`.
+pub fn open(path: PathBuf) -> Result<Router, fjall::Error> {
+    open_with(path, None)
+}
+
+/// Open the database at `path` and build the router, optionally with an
+/// embedding engine attached.
 ///
 /// One database per process (one directory, one lock file): mem-core's
 /// service assembly attaches every table group to it, so mem-server holds
 /// one handle and one lock per keyspace.
-pub fn open(path: PathBuf) -> Result<Router, fjall::Error> {
+pub fn open_with(
+    path: PathBuf,
+    embedder: Option<Arc<mem_core::Embedder>>,
+) -> Result<Router, fjall::Error> {
     let stores = mem_core::open_service(&path)?;
     let state = Arc::new(MemState {
         store: tokio::sync::Mutex::new(stores.channels),
         code: tokio::sync::Mutex::new(stores.code),
         memory: tokio::sync::Mutex::new(stores.memory),
         graph: tokio::sync::Mutex::new(stores.graph),
+        embedder,
     });
     Ok(Router::new()
         .route("/channels/{channel_id}/messages", post(append_message))
@@ -353,14 +372,25 @@ pub struct MemorySearchQuery {
 }
 
 /// `POST /memory` — store one flat memory; the store assigns the id.
+///
+/// The row's vector is computed HERE, in-process, by the attached engine
+/// (ADR-0003: the client states nothing about embedding). No engine
+/// attached = an empty vector frame, which is a legal row rather than a
+/// zero vector.
 async fn store_memory(
     State(state): State<Arc<MemState>>,
     Json(body): Json<StoreMemory>,
-) -> Json<MemoryIdDto> {
+) -> Result<Json<MemoryIdDto>, EngineError> {
+    let vector = match &state.embedder {
+        Some(engine) => engine
+            .embed(&body.text)
+            .map_err(|e| EngineError(e.to_string()))?,
+        None => Vec::new(),
+    };
     let mut memory = state.memory.lock().await;
-    Json(MemoryIdDto {
-        memory_id: memory.store(body.user_id, &body.text, body.created_at),
-    })
+    Ok(Json(MemoryIdDto {
+        memory_id: memory.store(body.user_id, &body.text, body.created_at, &vector),
+    }))
 }
 
 /// `GET /memory/{user_id}/search?q=` — the user's rows containing `q`, in

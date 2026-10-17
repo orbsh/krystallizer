@@ -153,3 +153,55 @@ async fn memory_and_code_share_one_keyspace_without_seeing_each_other() {
         .unwrap();
     assert_eq!(pool.len(), 1, "the memory row does not leak into the pool");
 }
+
+/// Boot the router with the built-in embedding engine attached (ADR-0003),
+/// or skip when this machine has no artifact: the model is ~96 MB and is
+/// deliberately not in the repo, so the default gate must stay runnable
+/// without it.
+async fn spawn_server_with_engine() -> Option<(String, TempDir)> {
+    let cfg_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/krystallizer.kdl");
+    let cfg = mem_core::KrystallizerConfig::load(&cfg_path).ok()?;
+    if !std::path::Path::new(&cfg.embedding.model_dir)
+        .join(mem_core::config::MODEL_FILE)
+        .exists()
+    {
+        eprintln!(
+            "skipping: no embedding model in {}",
+            cfg.embedding.model_dir
+        );
+        return None;
+    }
+    let engine = std::sync::Arc::new(mem_core::Embedder::from_config(&cfg.embedding).unwrap());
+    let dir = TempDir::new().unwrap();
+    let app = mem_server::open_with(dir.path().to_path_buf(), Some(engine)).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    Some((format!("http://{addr}"), dir))
+}
+
+/// With an engine attached, the door embeds in-process before the row
+/// lands — the CLIENT still sends no vector — and the surface is
+/// unchanged: the row's text is still searchable.
+///
+/// The vector's CONTENTS are asserted in mem-core (`Embedder`'s own
+/// inference tests + the store's row round trip), because no door returns
+/// a row's vector: shipping 2 KB per hit is what the code store's own
+/// pool-read rule refuses.
+#[tokio::test]
+async fn the_memory_door_serves_with_an_engine_attached() {
+    let Some((base, _dir)) = spawn_server_with_engine().await else {
+        return;
+    };
+    let client = reqwest::Client::new();
+
+    let id = store(&client, &base, memory(1, "fjall 是 LSM 存储引擎", 1000)).await;
+    assert_eq!(id.memory_id, 1);
+
+    let hits = search(&client, &base, 1, "fjall").await;
+    assert_eq!(hits.len(), 1, "an embedded row is still text-searchable");
+    assert_eq!(hits[0].text, "fjall 是 LSM 存储引擎");
+}

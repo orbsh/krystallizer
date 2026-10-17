@@ -22,7 +22,7 @@ fn the_service_assembly_serves_every_group() {
     let code_id = stores
         .code
         .put("nu", "log into a host", "{}", "ssh $args.host");
-    let memory_id = stores.memory.store(1, "a fact", 1_000);
+    let memory_id = stores.memory.store(1, "a fact", 1_000, &[]);
     let fact = FactTuple::from_json(
         r#"["galaxy_repo","repository",{},"PIVOTED_TO",{},"k10r_core","system",{}]"#,
     )

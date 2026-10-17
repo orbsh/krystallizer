@@ -9,9 +9,9 @@ fn store_and_search_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let mut mem = MemoryStore::open(dir.path()).unwrap();
 
-    let id1 = mem.store(101, "krystallizer uses Fjall for storage", 1_000);
-    let _id2 = mem.store(101, "unrelated note about rust macros", 1_001);
-    let _id3 = mem.store(202, "krystallizer note from another user", 1_002);
+    let id1 = mem.store(101, "krystallizer uses Fjall for storage", 1_000, &[]);
+    let _id2 = mem.store(101, "unrelated note about rust macros", 1_001, &[]);
+    let _id3 = mem.store(202, "krystallizer note from another user", 1_002, &[]);
 
     let hits = mem.search(101, "Fjall");
     assert_eq!(hits.len(), 1, "user-scoped: other users' rows excluded");
@@ -29,7 +29,7 @@ fn reopens_from_disk() {
     let dir = tempfile::tempdir().unwrap();
     {
         let mut mem = MemoryStore::open(dir.path()).unwrap();
-        mem.store(7, "persisted across reopen", 42);
+        mem.store(7, "persisted across reopen", 42, &[]);
         mem.persist().unwrap();
     }
     let mem = MemoryStore::open(dir.path()).unwrap();
@@ -40,15 +40,15 @@ fn reopens_from_disk() {
 fn next_id_recovered_after_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let mut mem = MemoryStore::open(dir.path()).unwrap();
-    let id1 = mem.store(101, "first", 1);
-    mem.store(202, "second", 2);
+    let id1 = mem.store(101, "first", 1, &[]);
+    mem.store(202, "second", 2, &[]);
     mem.persist().unwrap();
     drop(mem);
 
     // Reopen: the recovered counter must continue past the highest
     // stored id — no reuse, no silent overwrite.
     let mut mem = MemoryStore::open(dir.path()).unwrap();
-    let id3 = mem.store(101, "after reopen", 3);
+    let id3 = mem.store(101, "after reopen", 3, &[]);
     assert!(id3 > id1);
     mem.persist().unwrap();
     drop(mem);
@@ -62,9 +62,9 @@ fn next_id_recovered_after_reopen() {
 fn forget_list_stats() {
     let dir = tempfile::tempdir().unwrap();
     let mut mem = MemoryStore::open(dir.path()).unwrap();
-    let id1 = mem.store(101, "first memory", 1);
-    let id2 = mem.store(101, "second memory", 2);
-    mem.store(202, "other user memory", 3);
+    let id1 = mem.store(101, "first memory", 1, &[]);
+    let id2 = mem.store(101, "second memory", 2, &[]);
+    mem.store(202, "other user memory", 3, &[]);
 
     // list: user-scoped, insert order
     let listed = mem.list(101);
@@ -89,6 +89,39 @@ fn forget_list_stats() {
     );
     assert_eq!(mem.list(101), vec![(id2, "second memory".into())]);
     assert_eq!(mem.stats().total, 2);
+}
+
+/// The row carries the vector the writer stated: it is a FIELD (it
+/// survives a reopen), any length, and an empty slice is a legal "no
+/// vector" — distinct from a zero vector by its frame count.
+#[test]
+fn the_row_carries_the_vector_the_writer_stated() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut mem = MemoryStore::open(dir.path()).unwrap();
+
+    let id = mem.store(9, "embedded row", 5, &[0.25, -0.5, 0.75]);
+    let row = mem.get(9, id).expect("row reads back");
+    assert_eq!(row.text, "embedded row");
+    assert_eq!(row.embedding.len(), 3);
+    assert_eq!(row.embedding.elems, vec![0.25, -0.5, 0.75]);
+
+    let bare = mem.store(9, "no vector", 6, &[]);
+    let bare_row = mem.get(9, bare).unwrap();
+    assert!(bare_row.embedding.is_empty());
+
+    // Same length as the width an engine emits, so the frame really is
+    // count-then-elements rather than one byte per float.
+    let wide = mem.store(9, "wide", 7, &[1.0; 512]);
+    assert_eq!(mem.get(9, wide).unwrap().embedding.len(), 512);
+
+    mem.persist().unwrap();
+    drop(mem);
+    let mem = MemoryStore::open(dir.path()).unwrap();
+    assert_eq!(
+        mem.get(9, id).unwrap().embedding.elems,
+        vec![0.25, -0.5, 0.75]
+    );
+    assert_eq!(mem.get(9, wide).unwrap().embedding.len(), 512);
 }
 
 #[test]

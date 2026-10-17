@@ -21,8 +21,13 @@ impl PyMemoryStore {
     }
 
     /// Store one memory for user_id; returns the assigned id.
+    ///
+    /// This binding attaches NO engine, so the row lands with an empty
+    /// vector frame: a Python consumer's rows are text-searchable and are
+    /// skipped by the vector path (ADR-0003's engine is k10r's own; a
+    /// binding shell does not grow one).
     fn store(&mut self, user_id: u64, text: &str, created_at: u64) -> u64 {
-        self.inner.store(user_id, text, created_at)
+        self.inner.store(user_id, text, created_at, &[])
     }
 
     /// Brute-force substring search over the user's memories.
