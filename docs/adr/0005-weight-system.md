@@ -24,6 +24,15 @@ put edge:{src}:{label}:{dst}/read/{ts}  → +1        # append-first: this path 
 put edge:{src}:{label}:{dst}/count/read → N         # folded, whole-value put
 ```
 
+The key on the left is spelled in an earlier pass's notation: `edge:{src}:
+{label}:{dst}` is a **former LAYER**, not a layout to restore — the graph's
+edges are an okm edge collection keyed by `[edge_id]` with the endpoints and the
+kind carried as refs and an allocated `kind_id` (ADR-0010 §1), so the two
+counting keys land on that identity when this system is built (Phase 5). What
+this decision fixes is unchanged: count by appending deltas, fold to a
+whole-value count key in the background, and keep the layout
+delta-compatible from day one so the multi-writer switch changes no schema.
+
 - Reads merge the delta chain for the current count; low-peak fold writes
   the merged value to the count key.
 - The single-process start can use direct RMW on the count key (per the
