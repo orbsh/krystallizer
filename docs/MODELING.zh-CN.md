@@ -227,11 +227,9 @@ pub struct EntityKey {
 #[ok_index(
     by_kind { fields(kind_id) },
     by_name { fields(name) },
-    by_community { fields(community_id) },
 )]
 pub struct EntityRow {
     pub kind_id: u16,
-    pub community_id: u64,
     pub literal_num: i64,
     pub name: String,
 }
@@ -242,8 +240,7 @@ pub struct EntityRow {
   时从最后一个键恢复。
 - **面是「payload 字段在前、主键在后」**：key 尾由 okm 自己拼接，而派生只接受
   payload 字段（把 key 字段写进 `fields(...)` 是编译错误）。条目落成
-  `[kind_id][scope][node_id]`、`[name][scope][node_id]`、
-  `[community_id][scope][node_id]`——ADR-0010 §1 的三个面。
+  `[kind_id][scope][node_id]` 与 `[name][scope][node_id]`。
 - **文本优先（text-first）形态**：`name` 变长且排在索引字段末位，所以按
   `alpha` 前缀扫描也会扫到 `alphabet`。精确查找因此要同时核验行里的 name
   与解出的 key 的 scope——这是把名字留在键之外要付的价。
@@ -255,8 +252,10 @@ pub struct EntityRow {
 - **实体属性是合并的。** 一个词项的属性（元组的 head/tail 属性）落在节点行的
   **动态段**（slot 1）——那是这个实体的属性，被关于它的每条事实共享——而且是
   合并：同名属性取较新的值，其余存活。
-- `community_id` 由 ADR-0010 的 LPA 遍写（步骤 3–4，未落地）；`0` 是合法社区，
-  含义是「尚未分箱」（`UNBINNED` 常量）。
+- **`community_id` 与它的 `by_community` 面尚未声明。** 它们属于 ADR-0010 的
+  步骤 3–4（增量 LPA + 分箱），而今天没有任何东西读它们：没有写入者的字段和
+  没有扫描者的面，代价由每条记录承担，所以它们随消费它们的读路径一起落
+  （PLAN Phase 4/5）。ADR-0010 §1 保留设计形态。
 
 ### 事实（ns 37）——边集合
 

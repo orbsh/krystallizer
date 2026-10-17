@@ -79,8 +79,10 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   - [x] 3a. The write side's steps 1–2 LANDED (2026-10-17): the entities
     collection (ns 36) + the facts edge collection (ns 37) and the
     deterministic `ingest(fact)` path — `GraphStore` in
-    `crates/mem-core/src/graph.rs`: the three entity faces
-    (`by_kind` / `by_name` / `by_community`), the edge's declared
+    `crates/mem-core/src/graph.rs`: the two entity faces
+    (`by_kind` / `by_name`; `community_id` and `by_community` wait for the
+    read path that scans them — ADR-0010's steps 3–4 are deferred), the
+    edge's declared
     `since` / `confidence` / `weight`, the functional-vs-multi-valued
     resolution the caller declares per assertion, literal nodes, and the
     relation props on the edge's dynamic segment (same batch as the

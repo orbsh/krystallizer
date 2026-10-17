@@ -63,12 +63,12 @@ okm 规范的布局如下（ns 在落地时分配：实体 36 与事实 37 已�
 ```text
 实体 —— 节点集合（ns 36），每图一个
   0x0 主表           [scope u64][node_id u64]
-                     → 行体：kind_id（热）、community_id（热）、
-                       literal_num（热，i64——字面量节点的整数投影）、
-                       name（冷 TLV）、props（动态段）
+                     → 行体：kind_id（热）、community_id（热——步骤 3–4：
+                       在没有东西读它之前不声明）、literal_num（热，i64——字面量
+                       节点的整数投影）、name（冷 TLV）、props（动态段）
   0x1 节点种类面     [kind_id u16][scope u64][node_id u64]        声明式索引
   0x1 by_name 面     [name][scope u64][node_id u64]               实体名/别名精确入口
-  0x1 by_community   [community_id u64][scope u64][node_id u64]   ← 草案的 index:community:
+  0x1 by_community   [community_id u64][scope u64][node_id u64]   ← 草案的 index:community:（步骤 3–4）
 
 事实 —— 边集合（ns 37），每图一个 ns（okm ADR-0017）
   0x0 主表           [edge_id u64]

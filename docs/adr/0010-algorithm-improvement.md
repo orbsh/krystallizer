@@ -77,12 +77,13 @@ facts 37 are LANDED, 2026-10-17; the capsule's 38 is still a proposal).
 ```text
 Entities — node collection (ns 36), one per graph
   0x0 primary        [scope u64][node_id u64]
-                     → body: kind_id (hot), community_id (hot),
+                     → body: kind_id (hot), community_id (hot — steps 3–4:
+                       NOT declared until something reads it),
                        literal_num (hot, i64 — a literal node's integer
                        projection), name (cold TLV), props (dynamic segment)
   0x1 node-kind face [kind_id u16][scope u64][node_id u64]        declared index
   0x1 by_name face   [name][scope u64][node_id u64]               exact name/alias entrance
-  0x1 by_community   [community_id u64][scope u64][node_id u64]   ← the drafts' index:community:
+  0x1 by_community   [community_id u64][scope u64][node_id u64]   ← the drafts' index:community: (steps 3–4)
 
 Facts — edge collection (ns 37), one ns per graph (okm ADR-0017)
   0x0 primary        [edge_id u64]

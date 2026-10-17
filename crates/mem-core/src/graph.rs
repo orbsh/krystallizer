@@ -7,10 +7,11 @@
 //!
 //! - **Entities** = a node collection (ns 36), ordinary document layout:
 //!   `[scope][node_id]` primary, `kind_id` + `literal_num` as declared
-//!   fields, `name` as the cold segment, and three declared 0x1 faces —
-//!   `by_name` (the exact name/alias entrance), `by_kind` (the node-kind
-//!   face) and `by_value` (a literal's numeric projection, so numeric
-//!   queries stay range scans, never vector distance).
+//!   fields, `name` as the cold segment, and two declared 0x1 faces —
+//!   `by_name` (the exact name/alias entrance) and `by_kind` (the
+//!   node-kind face). A literal's numeric form is a declared FIELD, so a
+//!   numeric read stays an ordered key scan rather than vector distance;
+//!   the face over it lands with the read that scans it.
 //! - **Facts** = an okm edge collection (ns 37, one ns per graph): the
 //!   edge body carries the self-describing `NodeRef` endpoints plus
 //!   `since` / `confidence` / `weight` as declared fields (ADR-0010 §1's
@@ -32,7 +33,9 @@
 //! text in `name` and its integer projection in `literal_num`.
 //!
 //! Not here yet: ADR-0010's steps 3–4 (incremental LPA, community
-//! binning, capsules) and the weight system's writer (ADR-0005, Phase 5).
+//! binning, capsules — with them the node row's `community_id` and its
+//! `by_community` face, which are NOT declared until something reads
+//! them) and the weight system's writer (ADR-0005, Phase 5).
 
 use okm_core::obj_dict::DictCache;
 use okm_core::obj_dynamic::{put_frame_named, DynamicValue};
@@ -60,9 +63,6 @@ pub const FUNCTIONAL_PROP: &str = "functional";
 /// the edge's own open props live here, beside the graph's 0x0–0x8
 /// entry kinds.
 const FIELDS_SLOT: u16 = 0x0001;
-/// A node that no LPA pass has binned yet (ADR-0010 §2 writes the real
-/// community id; 0 is a legal community and the only value until then).
-pub const UNBINNED: u64 = 0;
 
 /// Entity identity: `[scope][node_id]`. `scope` leads because the corpus
 /// is per-user (ADR-0003) — the ownership boundary flat memory shares.
@@ -88,21 +88,20 @@ pub struct EntityKey {
 #[ok_ns(36)]
 #[ok_index(
     // Payload fields only: the key tail appends the primary key, so the
-    // entries land as `[kind_id][scope][node_id]`, `[name][scope][node_id]`
-    // and `[community_id][scope][node_id]` — ADR-0010 §1's three faces.
-    // Text-first regime: an exact match re-verifies the row's name and
-    // the decoded key's scope — a prefix scan for `alpha` also reaches
-    // `alphabet`, which is what dictionary order means.
+    // entries land as `[kind_id][scope][node_id]` and
+    // `[name][scope][node_id]`. Text-first regime: an exact match
+    // re-verifies the row's name and the decoded key's scope — a prefix
+    // scan for `alpha` also reaches `alphabet`, which is what dictionary
+    // order means.
     by_kind { fields(kind_id) },
     by_name { fields(name) },
-    by_community { fields(community_id) },
 )]
 pub struct EntityRow {
     pub kind_id: u16,
-    /// The node's community (ADR-0010 §2 — written by the incremental LPA
-    /// pass; 0 until that pass lands, and 0 is also a legal community for
-    /// an un-binned node).
-    pub community_id: u64,
+    /// A literal node's integer projection (0 for an ordinary entity): a
+    /// declared, fixed-width, ordered field, so a numeric read later stays
+    /// a range scan rather than a vector-distance guess. No face is
+    /// declared over it yet — the face lands with the read that scans it.
     #[ok_default(0)]
     pub literal_num: i64,
     pub name: String,
@@ -610,7 +609,6 @@ impl GraphStore {
         self.next_node += 1;
         let row = EntityRow {
             kind_id,
-            community_id: UNBINNED,
             literal_num: literal_num(term),
             name: term.value.clone(),
         };

@@ -252,11 +252,9 @@ pub struct EntityKey {
 #[ok_index(
     by_kind { fields(kind_id) },
     by_name { fields(name) },
-    by_community { fields(community_id) },
 )]
 pub struct EntityRow {
     pub kind_id: u16,
-    pub community_id: u64,
     pub literal_num: i64,
     pub name: String,
 }
@@ -268,8 +266,7 @@ pub struct EntityRow {
 - **A face carries the payload field first and the primary key last**: okm
   joins the key tail itself, and the derive accepts payload fields only (a
   key field inside `fields(...)` is a compile error). The entries land as
-  `[kind_id][scope][node_id]`, `[name][scope][node_id]` and
-  `[community_id][scope][node_id]` — ADR-0010 §1's three faces.
+  `[kind_id][scope][node_id]` and `[name][scope][node_id]`.
 - **Text-first regime**: `name` is variable-width and sits last among the
   indexed fields, so a prefix scan for `alpha` also reaches `alphabet`. An
   exact lookup therefore re-verifies the row's name AND the decoded key's
@@ -285,9 +282,11 @@ pub struct EntityRow {
   on the node row's DYNAMIC segment (slot 1) — the entity's attributes,
   shared by every fact about it — and they MERGE: a same-named attribute
   takes the newer value, the rest survive.
-- `community_id` is written by ADR-0010's LPA pass (steps 3–4, not landed);
-  `0` is a legal community and means "not binned yet" (the `UNBINNED`
-  constant).
+- **`community_id` and its `by_community` face are NOT declared yet.**
+  They belong to ADR-0010's steps 3–4 (the incremental LPA + binning), and
+  nothing reads them today: a field with no writer and a face with no
+  scanner are paid for by every record, so they land with the read path
+  that consumes them (PLAN Phase 4/5). ADR-0010 §1 keeps the design.
 
 ### Facts (ns 37) — edge collection
 
