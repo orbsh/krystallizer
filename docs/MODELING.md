@@ -65,28 +65,36 @@ Physical layout: `[user_id 8B BE][id 8B BE]` = 16 bytes, zero padding.
 `user_id` is the organizational prefix (user-scoped scans); `id` is a
 surrogate identity — attributes are payload, never key.
 
-### Row: `MemoryRow` (`RowEncode`)
+### Row: `MemoryRow` (`DocumentEncode`)
 
 ```rust
-#[derive(RowEncode, ...)]
-#[kv_ref(MemoryKey)]
-#[kv_ns(32)] // the row is the table's declaration point
+#[derive(DocumentEncode, ...)]
+#[ok_ref(MemoryKey)]
+#[ok_ns(32)] // the row is the table's declaration point
 pub struct MemoryRow {
-    pub text: String,       // cold TLV segment
-    pub created_at: u64,    // hot segment (fixed width)
+    pub text: String,           // cold TLV segment
+    pub created_at: u64,        // hot segment (fixed width)
+    pub embedding: Vector<f32>, // cold frame, ANY length — the row's vector
 }
 ```
 
-- ns 32 is declared on the row (`#[kv_ns]`); the key type carries none
-  (new OKM API: `Table::new(store)` takes no ns; assembly uses
-  `MemoryRow::table(store)`).
+- ns 32 is declared on the row (`#[ok_ns]`); the key type carries none (the
+  collection takes no ns: assembly is
+  `<MemoryRow as Document>::collection(store)`).
 - Payload: fixed-width fields contiguous (hot), variable text as TLV
-  (cold). Layout version defaults to 1.
-- No `#[kv_index]` access methods yet — retrieval is the Phase 0
+  (cold). Layout version defaults to 1. `embedding` is appended at the tail
+  of the cold segment — new fields go at the tail (okm's schema-evolution
+  rule).
+- `embedding` is the built-in engine's output (ADR-0003), L2-normalized at
+  the source so the contract's `cosine` is an inner product. The frame
+  carries its own count, so a model swap changes the DATA, not the wire; an
+  EMPTY frame is a row written without an engine (legal, and the retrieval
+  side skips it — it is not a zero vector).
+- No `#[ok_index]` access methods yet — retrieval is the Phase 0
   brute-force substring scan (`scan_keys` + filter). This is the
   declared bring-up posture (ADR-0003), not the end state; Phase 1
-  adds the built-in local embedding model (vectors as `Vector<f32>`
-  frames, searched from an in-memory table) + name/alias point lookup
+  searches the built-in local embedding model's vectors (`Vector<f32>`
+  frames, read into an in-memory table) + name/alias point lookup
   + weight metadata (ADR-0005). The lexical branch (jieba / inverted
   index / BM25 / RRF / arroy) is withdrawn — ADR-0003
   2026-10-14.
@@ -341,7 +349,9 @@ faces itself.
 - **`from_attrs` is k10r's** — `[since u64][confidence u8][weight u32]`, 13
   bytes in the derive's declaration order. The `EdgeEncode` derive emits the
   writer half only, so the reader carries the widths and a test locks it
-  against `attrs()`.
+  against `attrs()`. Ruled 2026-10-17: the owed okm fix is NOT a second half
+  on the derive — the edge's payload becomes an obj (okm ADR-0017 §3), after
+  which this decoder and its locking test go away.
 - **Dictionary discipline (two vocabularies in one ns).** The edge ns holds
   relation kinds (allocated by okm's `Graph` through its own long-lived
   `DictCache`) AND the prop names k10r allocates. Two caches allocating in

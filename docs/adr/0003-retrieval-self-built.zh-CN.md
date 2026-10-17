@@ -1,6 +1,6 @@
 # ADR-0003: 检索 — 内置 embedding 模型，向量着陆 + 图遍历
 
-**状态**：Accepted（设计定案，实现未开始）
+**状态**：部分落地（2026-10-17：embedding 引擎——进程内置的本地模型，从一个模型目录加载——配置面，以及行的向量载体；内存向量表与读路径仍欠，PLAN 1c/1d）
 **日期**：2026-09-08
 **英文版**：[0003-retrieval-self-built.md](0003-retrieval-self-built.md)
 
@@ -16,6 +16,20 @@
 模型身份与数据锁定（不同模型的向量不共享空间，所以持有 embedding 一致性
 的是记忆系统，不是任何调用方），且没有端点、没有密钥、没有传输跳——这正是
 mem-core「零传输依赖」字面成立的原因。向量以 `Vector<f32>` 帧写入。
+
+2026-10-17 落地：**BAAI/bge-small-zh-v1.5**（512 维、CLS 池化、fp32 约
+96 MB），由纯 Rust 的 BERT（`candle`）运行，模型来自 `config/krystallizer.kdl`
+的 `embedding` 节点所命名的**模型目录**——三个文件按固定名在目录里找——
+且 `KRYSTALLIZER_MODEL_DIR` 可覆盖该值，因为工件住哪里是部署事实而非仓库
+事实。这个选择是暂定的：能推翻它的是召回对照（PLAN 1d），而换模型等于换
+目录**加上**把整个语料重 embed 一遍——向量不跨模型携带，这正是模型要与数据
+锁定、而不是每次调用现选的原因。
+
+向量的载体同一批落地：行的 `embedding: Vector<f32>` 是**任意长度**的 cold
+帧（计数随帧走，所以换模型换的是数据、不是 wire——刻意不加 `#[ok_len]`
+契约），在源头 L2 归一，于是 `cosine` 就是内积。向量由**进程内**的引擎算
+好（服务进程挂上的那个），HTTP 客户端从不发向量；没挂引擎时写的行带**空
+帧**——合法的一行，检索侧跳过它，而不是零向量。
 
 **向量检索：每 ns 一份内存表 + 暴力内积。** 语料按 user 分；几万向量装内存
 绰绰有余。ANN 只在**实测**语料越过阈值时重开，且 arroy 不是它的默认形态：
@@ -52,5 +66,8 @@ arroy 0.6 是 LMDB（内存映射）索引，做不到「序列化进 Fjall」�
   论述。
 - PG 退出闸门变成固定查询集上的端到端召回对照，不再是逐分支对 pgvector +
   pdb.bm25 + RRF 的对照（PLAN 1d）。
-- `config/krystallizer.kdl` 的 `embedding` 节点在 Phase 1c 落地时去掉
-  base-url / api-key-env，改为 model + tokenizer 路径。
+- `embedding` 节点是**本地**的（2026-10-17 落地）：`base-url` / `endpoint` /
+  `api-key-env` / `timeout-ms` 去掉，`model-dir` 命名工件目录（`config.json` /
+  `model.safetensors` / `tokenizer.json` 按固定名在目录里找），
+  `KRYSTALLIZER_MODEL_DIR` 可覆盖它。工件本身住在本机、不进仓库——这是
+  任何模型尺寸的东西的既定规则。

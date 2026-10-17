@@ -60,27 +60,33 @@ pub struct MemoryKey {
 是组织前缀（user 范围扫描）；`id` 是代理身份——属性是 payload，不
 进 key。
 
-### Row：`MemoryRow`（`RowEncode`）
+### Row：`MemoryRow`（`DocumentEncode`）
 
 ```rust
-#[derive(RowEncode, ...)]
-#[kv_ref(MemoryKey)]
-#[kv_ns(32)] // row 是表的声明点
+#[derive(DocumentEncode, ...)]
+#[ok_ref(MemoryKey)]
+#[ok_ns(32)] // row 是表的声明点
 pub struct MemoryRow {
-    pub text: String,       // cold TLV 段
-    pub created_at: u64,    // hot 段（定宽）
+    pub text: String,           // cold TLV 段
+    pub created_at: u64,        // hot 段（定宽）
+    pub embedding: Vector<f32>, // cold 帧，长度任意——该行的向量
 }
 ```
 
-- ns 32 声明在 row 上（`#[kv_ns]`）；key 类型不携带 ns（新版 OKM
-  API：`Table::new(store)` 不收 ns；组装用 `MemoryRow::table(store)`）。
+- ns 32 声明在 row 上（`#[ok_ns]`）；key 类型不携带 ns（collection 不收
+  ns：组装用 `<MemoryRow as Document>::collection(store>`）。
 - Payload：定宽字段连续排列（hot），变长 text 走 TLV（cold）。布局
-  版本默认 1。
-- 尚无 `#[kv_index]` 访问方法——检索是 Phase 0 的暴力 substring 扫描
+  版本默认 1。`embedding` 追加在 cold 段尾部——新字段一律追加在尾部
+  （okm 的 schema 演进规则）。
+- `embedding` 是内置引擎的输出（ADR-0003），在源头做 L2 归一，于是契约
+  里的 `cosine` 就是内积。帧自带计数，所以换模型换的是**数据**、不是
+  wire；空帧表示该行写入时没有挂引擎（合法，检索侧跳过它——它不是
+  零向量）。
+- 尚无 `#[ok_index]` 访问方法——检索是 Phase 0 的暴力 substring 扫描
   （`scan_keys` + 过滤）。这是声明的 bring-up 姿态（ADR-0003），非终
-  态；Phase 1 增加内置本地 embedding 模型（向量存为 `Vector<f32>`
-  帧，从内存表检索）+ 名/别名点查 + weight 元数据（ADR-0005）。词法
-  分支（jieba / 倒排索引 / BM25 / RRF / arroy）已撤销——ADR-0003。
+  态；Phase 1 检索内置本地 embedding 模型的向量（`Vector<f32>` 帧，
+  读进内存表）+ 名/别名点查 + weight 元数据（ADR-0005）。词法分支
+  （jieba / 倒排索引 / BM25 / RRF / arroy）已撤销——ADR-0003。
 
 ### 身份生成
 
@@ -300,7 +306,9 @@ pub struct EntityRow {
   「它如何声明那个种类的基数」的记录。
 - **`from_attrs` 是 k10r 自己的**——`[since u64][confidence u8][weight u32]`，
   13 字节，按派生声明的顺序。`EdgeEncode` 派生只发写的那一半，所以读侧自带宽
-  度，并由测试对着 `attrs()` 锁死。
+  度，并由测试对着 `attrs()` 锁死。已裁决 2026-10-17：欠 okm 的修法不是给派生
+  补第二半——边的载荷改成 obj（okm ADR-0017 §3），之后这个解码器与那把锁测试
+  一起消失。
 - **字典纪律（一个 ns 两套词汇）。** 边 ns 里住着关系种类（由 okm 的 `Graph`
   用它自己长驻的 `DictCache` 分配）**和** k10r 分配的 prop 名。两个 cache 在
   同一本字典里分配，会把同一个 id 发给两个不同的名字，帧随后以错误的名字读回

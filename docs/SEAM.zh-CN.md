@@ -24,7 +24,7 @@
 | `POST /code` | `CodeStore::put` | code (35) | 已落 |
 | `GET /code` | `CodeStore::list`（池读：id + language + description，无 source） | code (35) | 已落 |
 | `GET /code/{id}` | `CodeStore::get`（整行，含 source） | code (35) | 已落 |
-| `POST /memory` | `MemoryStore::store`（id 由 store 发放；`created_at` 归调用方） | flat memory (32) | 已落（PLAN 1e） |
+| `POST /memory` | `MemoryStore::store`（id 由 store 发放；`created_at` 归调用方；挂上引擎时该行的向量由进程内引擎算好——客户端从不发向量，ADR-0003） | flat memory (32) | 已落（PLAN 1e） |
 | `GET /memory/{user_id}/search?q=` | `MemoryStore::search`（只扫该用户的键区间；空结果合法） | flat memory (32) | 已落（PLAN 1e） |
 | — 无路由 | `MemoryStore::forget` / `list` / `stats` | flat memory (32) | core 已落，无端点 |
 | `POST /facts/{scope}` | `GraphStore::ingest`（请求体就是 8 元组；`scope` 走路径） | 事实图——实体（36）+ 事实（37） | 已落（2026-10-17） |

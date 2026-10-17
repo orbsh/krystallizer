@@ -116,6 +116,13 @@ ns 32), not an optimization. `NodeRef` is `[ns 2B][len varint][pkey]`,
 self-describing (okm ADR-0017 §2), so any node collection participates with
 zero declaration.
 
+A term's props — the tuple's head/tail props — land on the entity row's
+dynamic segment: the entity's attributes, shared by every fact about
+it. They MERGE, and the merge is the ruled reading: a same-named
+attribute takes the newer value while the others survive. Wholesale
+replacement would let one fact's props erase every other fact's
+attributes on the same entity, which is why it was rejected.
+
 Five points where this differs from the drafts, and why:
 
 - **Names never enter a key, and nothing is hashed into one.** `KeyEncode`
@@ -439,10 +446,14 @@ inspectable from a dashboard reading `get_stats`.
   `unlink` + `link`, i.e. TWO engine commits, where ADR-0002's rule wants
   one. The window is recovered by re-ingesting, and the edge id is
   preserved.
-- **The edge's declared-attribute payload has no generated decoder**: the
+- **The edge's declared-attribute payload has no generated decoder yet**: the
   derive emits `attrs()` (and the per-field faces) but no `from_attrs`, so
   k10r's reader carries the widths and is locked against `attrs()` by a test.
-  Owed to okm: the decode half of `EdgeEncode`.
+  The fix is RULED (2026-10-17), and it is not a second half on `EdgeEncode`:
+  the edge's payload becomes an obj (okm ADR-0017 §3), so one document
+  declaration generates both codec directions and the face entries. k10r
+  adopts that form when okm lands it and then deletes `from_attrs` with its
+  locking test.
 - **The drafts' prefix layouts are retired, not preserved**: the
   hand-maintained `node:` / `index:community:` prefixes are replaced above by
   okm's faces, so the drafts' "two key shapes for one field" contradiction is

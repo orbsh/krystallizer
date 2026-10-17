@@ -25,7 +25,7 @@ primitives in `crates/mem-core/src/`.
 | `POST /code` | `CodeStore::put` | code (35) | landed |
 | `GET /code` | `CodeStore::list` (pool read: id + language + description, no source) | code (35) | landed |
 | `GET /code/{id}` | `CodeStore::get` (the whole row, source included) | code (35) | landed |
-| `POST /memory` | `MemoryStore::store` (the store assigns the id; `created_at` is the caller's) | flat memory (32) | landed (PLAN 1e) |
+| `POST /memory` | `MemoryStore::store` (the store assigns the id; `created_at` is the caller's; the row's vector is computed in-process by the attached engine when one is attached — the client never sends one, ADR-0003) | flat memory (32) | landed (PLAN 1e) |
 | `GET /memory/{user_id}/search?q=` | `MemoryStore::search` (one user's key range; an empty result is legal) | flat memory (32) | landed (PLAN 1e) |
 | — no route | `MemoryStore::forget` / `list` / `stats` | flat memory (32) | core landed, no endpoints |
 | `POST /facts/{scope}` | `GraphStore::ingest` (the body IS the 8-slot tuple; `scope` is the path) | fact graph — entities (36) + facts (37) | landed (2026-10-17) |

@@ -6,6 +6,9 @@ Phases reference ADRs; design content lives in the ADRs, never here.
 - [ ] Phase 1 — Flat memory parity: store / search / forget / list / stats semantics on Fjall; retrieval = built-in local embedding model (in-process, no API, model locked with the data) landing into graph traversal, plus an exact name/alias point lookup as the second entrance. PG exit gate: end-to-end recall comparison on a fixed query set. (ADR-0002, ADR-0003, ADR-0007)
   - [x] 1a. Semantics: store / search (user-prefix scan) / forget / list / stats; config loading (`config/krystallizer.kdl`, knus, env-resolved secrets)
   - [ ] 1b. Built-in embedder: local small model loaded in-process (no endpoint, no key), embeddings written as `Vector<f32>` frames; name/alias → node id point lookup
+    - Engine half LANDED 2026-10-17: `mem-core/src/embedding.rs` (`Embedder`: candle BERT, WordPiece tokenize → BERT → CLS pooling → L2 normalize), config `embedding { model-dir … }` + `KRYSTALLIZER_MODEL_DIR` override, model = BAAI/bge-small-zh-v1.5 (512-dim, artifact under `~/.local/share/krystallizer/models/`, not in the repo). Gates: mem-core 8/0 (embedding 3 — a missing artifact names the file it could not read; a Chinese sentence embeds to 512 unit-length floats; related text beats unrelated — the two inference tests skip when the machine has no artifact, so the default gate stays runnable anywhere), clippy 0, fmt clean.
+    - Frame half LANDED 2026-10-17: `MemoryRow.embedding: Vector<f32>` (cold frame, ANY length — no `#[ok_len]` contract, because a model swap changes the data rather than the wire); `MemoryStore::store(…, embedding: &[f32])` states the vector and `get()` reads a row back; the SHELL embeds at the door — a `mem_core::Embedder` rides `mem-server`'s state (`open_with(path, Some(engine))`), while `open()` = no engine and rows then land with an empty frame. Gates: mem-core 8/0 lib + 6/0 smoke (a row's vector round-trips through a reopen, including a 512-wide one; an empty frame is not a zero vector), mem-server 5/0 memory_surface (an engine-attached door still round-trips), clippy 0, fmt clean. The mem-ffi binding passes an empty slice — it attaches no engine.
+    - Owed: the per-user in-memory vector table + brute-force Top-K (1c), reading rows through `get` / a bulk vector read. Note: no door returns a row's VECTOR (2 KB per hit is what the code store's own pool-read rule refuses), so the vector's contents are asserted in mem-core and the door's test asserts that embedding does not change the surface.
   - [ ] 1c. In-memory vector search: per-ns float table loaded from okm, brute-force inner-product Top-K (ANN re-opened only when a measured corpus crosses the threshold)
   - [ ] 1d. PG exit gate: end-to-end recall comparison on a fixed query set (landing confidence floor + a legal "nothing landed" outcome)
   - [x] 1e. HTTP face for the 主动面 LANDED (2026-10-16): `POST /memory` (`MemoryStore::store` — the store assigns the id, the caller's `created_at` rides the request) and `GET /memory/{user_id}/search?q=` (`MemoryStore::search` — one user's key range; an empty result is legal). `forget` / `list` / `stats` still have no route. This is the tool face gravity and other agents read and write through (ADR-0001; the graph's door (`ingest(fact)`) is Phase 3. Gates: mem-server 12/0 (4 in `tests/memory_surface.rs` — round trip, user-scoped scan, legal empty result, flat memory + code sharing one keyspace without leaking into each other), mem-core 22/0 untouched, clippy 0, fmt clean. Transitional: this door is withdrawn together with the table when the fact graph lands (Phase 3).
@@ -29,7 +32,10 @@ Phases reference ADRs; design content lives in the ADRs, never here.
 - [ ] Phase 2.5 — View-layer serialization: projection read path
   (checkpoint + increment assembly) with tool-call pruning in the view
   (storage always full; read-side only), enabling the stateless-agent
-  integration contract (append → read projection → run). Assembly is
+  integration contract (append → read projection → run). The assembled
+  projection is a structured object — the records plus the control
+  field(s) the caller must act on out of band (2.6's compression
+  directive) — never markers written into records. Assembly is
   ORDERED, head first: the global layer (persona / style) → the
   compression point → the messages after it, and it stays a k10r internal
   detail (ADR-0008. (ADR-0006, ADR-0008)
@@ -37,7 +43,15 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   (cache-clock, budget percentage, max-gap split — all from
   `krystallizer.kdl`, per-user override layer reserved), structured
   decision logs; regression tuning deferred until feedback labels exist.
-  (ADR-0008)
+  The engine owns its inputs (the log's timestamps, the assembled
+  context's size, the member's read cursor) and evaluates at the
+  projection read; its verdict rides the projection as a control field
+  (`compress: { checkpoint, prompt }`) — there is NO agent-side
+  compression interface. The caller runs the extra branch turn and
+  returns the summary; k10r derives coverage from the compressed span.
+  Owed with it: the decision-log table + its ns, and the tail prompt's
+  text in PROMPTS. Lands with/after 2.5 — its budget signal measures
+  the assembled view. (ADR-0008)
 - [ ] Phase 2.7 — Multi-party participation: member display-name/role
   fields + per-message attribution in serialization; profile knowledge as
   graph facts (a member node plus its edges — the `kind=profile` flat category
@@ -131,10 +145,10 @@ Deferred gates:
   3d-force-graph consumes, and the scope prefix bounds the scan, so the
   demo page reads the real graph instead of hand-written packets. Still
   open: (a) whole-table vs paged — one scope is read whole, paging waits
-  for a corpus that needs it; (b) wiring `docs/kg-demo-3d.html` to the
-  door — the page opens from `file://`, so a cross-origin fetch needs
-  either CORS on mem-server or the page served from it, a decision not
-  yet taken; (c) cluster coloring — the community id ADR-0010 §6 would
+  for a corpus that needs it; (b) RULED 2026-10-17: the page is served
+  FROM mem-server, same origin — no CORS is opened on the memory service
+  (it holds user memory; letting `file://` sandboxes read it is the wrong
+  trade) and the page's fetch stays same-origin; (c) cluster coloring — the community id ADR-0010 §6 would
   color with does not exist yet (`docs/viz-style.js` colors by node
   kind), so it waits with everything else that consumes ADR-0010's steps
   3–4.

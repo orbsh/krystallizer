@@ -1,6 +1,9 @@
 # ADR-0003: Retrieval — Built-In Embedding Model, Vector Landing + Graph Traversal
 
-**Status**: Accepted (design; implementation pending)
+**Status**: Partially landed (2026-10-17: the embedding engine — a built-in
+local model loaded in-process from a model directory — its config surface, and
+the row's vector carrier; the in-memory vector table and the read path are
+owed, PLAN 1c/1d)
 **Date**: 2026-09-08
 **Chinese**: [0003-retrieval-self-built.zh-CN.md](0003-retrieval-self-built.zh-CN.md)
 
@@ -18,6 +21,24 @@ from different models do not share a space, so the memory system — not any
 caller — owns embedding consistency), and there is no endpoint, no key and no
 transport hop: this is what makes mem-core's "zero transport dependency"
 literal. Vectors are written as `Vector<f32>` frames.
+
+Landed 2026-10-17: **BAAI/bge-small-zh-v1.5** (512-dim, CLS pooling, ~96 MB
+fp32), run by a pure-Rust BERT (`candle`) from a model DIRECTORY named by
+`config/krystallizer.kdl`'s `embedding` node — the three artifact files are
+found by name inside it, and `KRYSTALLIZER_MODEL_DIR` overrides the value,
+since where the artifact lives is a deployment fact rather than a repo fact.
+The pick is provisional: the recall comparison (PLAN 1d) is the instrument
+that can overturn it, and a swap is a directory swap PLUS an embed of the
+whole corpus — vectors do not carry across models, which is exactly why the
+model is locked with the data rather than chosen per call.
+
+The vector's carrier landed with it: a row's `embedding: Vector<f32>` is a cold
+frame of ANY length (its own count rides the frame, so a swap changes the data
+and not the wire — no `#[ok_len]` contract, deliberately), L2-normalized at the
+source so `cosine` is an inner product. The vector is computed INSIDE k10r, by
+the engine the serving process attached, so the HTTP client never sends one;
+a row written with no engine attached carries an EMPTY frame — a legal row the
+retrieval side skips, never a zero vector.
 
 **Vector search: a per-ns in-memory table + brute-force inner product.** The
 corpus is per-user; tens of thousands of vectors fit memory by orders of
@@ -67,5 +88,9 @@ only complex ones (PageRank, community detection) earn a dependency.
   our control" is no longer a trade-off claim this route makes.
 - The PG exit gate becomes an end-to-end recall comparison on a fixed query set,
   not a per-branch comparison against pgvector + pdb.bm25 + RRF (PLAN 1d).
-- `config/krystallizer.kdl`'s `embedding` node loses base-url / api-key-env and
-  gains model + tokenizer paths when Phase 1c lands.
+- The `embedding` node is LOCAL (landed 2026-10-17): `base-url` / `endpoint` /
+  `api-key-env` / `timeout-ms` are gone, and `model-dir` names the artifact
+  directory (`config.json` / `model.safetensors` / `tokenizer.json` are found
+  by name inside it) with `KRYSTALLIZER_MODEL_DIR` overriding it. The artifact
+  itself is host-local and NOT in the repo — this is the standing rule for
+  anything of model size.
