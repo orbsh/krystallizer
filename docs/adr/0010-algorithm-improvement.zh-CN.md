@@ -364,20 +364,26 @@ pub fn assist_search(query: &str, top_k: usize) -> AssistantContext {
   本字典里分配会把同一个 id 发给两个不同的名字——帧随后以**错误的名字**读回来，
   而且无声。okm ADR-0017 §3 把谓词字典与载荷字段名字典分开（谓词 0x04/0x05、
   字段名 0x02/0x03）之后，这个撞名结构性消失，k10r 的两条纪律——「分配一律走
-  一次性 cache」「边 handle 每次调用现建」——随之退役。仍欠 okm 的只剩读侧：
-  `Graph::typed_*` / `edges_of_predicate` 只从非分配的 `by_name_get` 取答案，
-  所以新建的 handle 在字典被加载之前仍会答「未知谓词」——要么补引擎兜底，要么
-  保留"读前预热"。**实体侧现在也对称**（kinds 走 0x04/0x05，props 名走 0x02/0x03），
-  那边的"一次性 cache"纪律一并退役。
+  一次性 cache」「边 handle 每次调用现建」——随之退役。**读侧也已付清
+  （2026-10-19 落地）：** okm 的 `DictCache::id_get` 在探测时自加载词汇，新建
+  handle 直接答类型化读，不必预热——`facts_primed` 那段壳已删除。**实体侧同样
+  对称**（kinds 走 0x04/0x05，props 名走 0x02/0x03），那边的"一次性 cache"
+  纪律一并退役。
 - **`unlink` 没有 into-batch 形态**（欠 okm）：函数式改写是 `unlink` + `link`，
   即**两次**引擎提交，而 ADR-0002 的规则要一次。这个窗口靠重放 ingest 恢复，
   且边 id 保持不变。
-- **边声明属性载荷暂时没有生成式解码器**：派生只发 `attrs()`（与逐字段的面），
-  没有 `from_attrs`，所以 k10r 自己带着宽度读，并用测试对着 `attrs()` 锁死。
-  修法已裁决（2026-10-17），且不是给 `EdgeEncode` 补第二半：边的载荷改成
-  obj（okm ADR-0017 §3）、声明换成 `GraphEncode`（每条面一条显式 `#[ok_index]`），
-  一份声明同时生成两个方向与面条目。okm 落地后
-  k10r 切过去，届时删掉 `from_attrs` 与那把锁测试。
+- **边的载荷编解码归声明所有——已付清（2026-10-19）。** 边的载荷就是一份 obj
+  （okm ADR-0017 §3），声明是 `GraphEncode`，于是一份声明同时生成双向编解码与
+  面条目：`FactEdge::encode_payload` / `decode_payload`，`since` /
+  `confidence` / `weight` 各一条显式 `#[ok_index]` 面。k10r 手写的 `from_attrs`
+  （自带 13 字节宽度）与那把锁测试一并删除；裁决输入改成
+  `FactEdge::decode_payload(&body.payload)`。
+- **k10r 的前缀扫描还按作废的 4 字节头写的——已修（2026-10-19）。** okm
+  ADR-0030 之后固定面是一字节，主表键头是 `[ns 2B][0x00]`（3 字节，不是 4）。
+  四处读路径仍在按旧形状拼前缀或在 offset 4 处解码：channel 日志
+  （`messages_after`——每次读回全空）、按用户的记忆读（`search` / `list`）、
+  实体 scope 扫描、以及重开库时的 edge_id 回收（会发出重复 `edge_id`）。
+  现在一律走 `write_slot` + 3 字节偏移。
 - **草案的前缀布局是作废，不是保留**：手维护的 `node:` / `index:community:`
   前缀在上文被 okm 的面取代，于是草案「一个字段两种键形状」的矛盾被关掉，而
   不是被继承。

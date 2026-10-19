@@ -447,25 +447,30 @@ inspectable from a dashboard reading `get_stats`.
   the predicate its OWN dictionary (0x04/0x05; the payload's field names keep
   0x02/0x03), so the collision is structurally gone and k10r's two
   disciplines — "allocate through a FRESH cache", "build the edge handle PER
-  CALL" — RETIRE with it. Still owed to okm (read side only): `Graph::typed_*`
-  / `edges_of_predicate` answer from the non-allocating `by_name_get`, so a
-  fresh handle still reports "unknown predicate" until something loads the
-  dictionary — either an engine fallback, or keep priming before a typed read.
-  The ENTITY side is symmetric now (its kinds at 0x04/0x05, prop names at
+  CALL" — RETIRE with it. **The read side is paid too (LANDED 2026-10-19):**
+  okm's `DictCache::id_get` loads the vocabulary on probe, so a fresh handle
+  answers typed reads with no priming — the `facts_primed` shim is deleted.
+  The ENTITY side is symmetric (its kinds at 0x04/0x05, prop names at
   0x02/0x03), so the one-cache-per-call discipline retires there too.
 - **`unlink` has no into-batch form** (owed to okm): a functional rewrite is
   `unlink` + `link`, i.e. TWO engine commits, where ADR-0002's rule wants
   one. The window is recovered by re-ingesting, and the edge id is
   preserved.
-- **The edge's declared-attribute payload has no generated decoder yet**: the
-  derive emits `attrs()` (and the per-field faces) but no `from_attrs`, so
-  k10r's reader carries the widths and is locked against `attrs()` by a test.
-  The fix is RULED (2026-10-17), and it is not a second half on `EdgeEncode`:
-  the edge's payload becomes an obj (okm ADR-0017 §3) and the declaration
-  becomes `GraphEncode` (an explicit `#[ok_index]` per face), so one
-  declaration generates both codec directions and the face entries. k10r
-  adopts that form when okm lands it and then deletes `from_attrs` with its
-  locking test.
+- **The edge's payload codec is the declaration's — PAID (2026-10-19).** The
+  edge's payload is an obj (okm ADR-0017 §3) and the declaration is
+  `GraphEncode`, so one declaration generates both codec directions and the
+  face entries: `FactEdge::encode_payload` / `decode_payload`, with `since` /
+  `confidence` / `weight` each declared as an explicit `#[ok_index]` face.
+  k10r's hand-written `from_attrs` (13 bytes of carried widths) and its
+  locking test are deleted; the adjudication input is
+  `FactEdge::decode_payload(&body.payload)`.
+- **k10r's prefix scans assumed the retired 4-byte head — FIXED (2026-10-19).**
+  After okm ADR-0030 a fixed face is ONE byte, so a primary-key head is
+  `[ns 2B][0x00]` (3 bytes, not 4). Four readers still built the old prefix or
+  decoded at offset 4: the channel log (`messages_after` — every fetch came
+  back empty), per-user memory reads (`search` / `list`), the entity
+  scope scan, and the edge-id recovery on reopen (which would hand out
+  duplicate `edge_id`s). All now go through `write_slot` + a 3-byte offset.
 - **The drafts' prefix layouts are retired, not preserved**: the
   hand-maintained `node:` / `index:community:` prefixes are replaced above by
   okm's faces, so the drafts' "two key shapes for one field" contradiction is

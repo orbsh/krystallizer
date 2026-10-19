@@ -278,17 +278,17 @@ pub struct EntityRow {
 ### 事实（ns 37）——边集合
 
 一个 okm 边集合（`Graph<FjallStore, FactEdge>`），每图一个 ns（okm ADR-0017）。
-声明**就是**这张图——`GraphEncode`：`#[ok_ns(37)]`、`type Nodes = FactNodes`
-（成员集合——今天是 `Entities`；再加一个集合就是多一个枚举变体，改代码）、载荷的
+声明**就是**这张图——`GraphEncode`：`#[ok_ns(37)]`、`#[ok_nodes(FactNodes)]`
+（成员集合——今天是 `Entities`；再加一个集合就是多一个枚举变体、`NS_VALUES` 里加一个 ns，改代码）、载荷的
 编解码、以及每条**声明**的 `#[ok_index]` 一个 0x1 面；主表、载荷的动态段条目、
 谓词字典与四个遍历面由句柄造。
 
 | 面 | 键 |
 |---|---|
-| 0x0 主表 | `[edge_id 8B BE]` → `[src NodeRef][dst NodeRef][predicate_id][attrs]` |
+| 0x0 主表 | `[edge_id 8B BE]` → `[src NodeRef][dst NodeRef][predicate_id][obj 载荷]` |
 | 0x1 动态段 | `[edge_id 8B BE]` → 关系的开放 props（`functional` 标志住这里） |
 | 0x1nnn 声明索引（`since` / `confidence` / `weight`） | `[字段值][edge_id]` |
-| 0x4/0x5 谓词字典 | `[谓词名]` → `predicate_id` / `[predicate_id]` → 谓词名 |
+| 0x4/0x5 谓词字典 | `[predicate_id]` → 谓词名 / `[谓词名]` → `predicate_id` |
 | 0x6 谓词索引 | `[predicate_id][edge_id]` |
 | 0x7 出边 | `[src NodeRef][edge_id]` |
 | 0x8 入边 | `[dst NodeRef][edge_id]` |
@@ -308,20 +308,19 @@ pub struct EntityRow {
   `put_frame_named` 构造，与 link **同一批**提交（ADR-0002：一个 WriteBatch
   = 一个事务）。按断言给的 `functional` 标志留在那里——这是该断言自己关于
   「它如何声明那个种类的基数」的记录。
-- **`from_attrs` 是 k10r 自己的**——`[since u64][confidence u8][weight u32]`，
-  13 字节，按声明顺序。旧的 `EdgeEncode` 派生只发写的那一半，所以读侧自带宽
-  度，并由测试对着 `attrs()` 锁死。已裁决 2026-10-17：欠 okm 的修法不是给那个
-  派生补第二半——边的载荷改成 obj（okm ADR-0017 §3）、声明换成 `GraphEncode`，
-  之后这个解码器与那把锁测试一起消失。
-- **字典纪律（一个 ns 两套词汇）——已退役。** 边 ns 里曾住着关系种类（由 okm 的
-  `Graph` 用长驻 `DictCache` 分配）**和** k10r 分配的 prop 名；两个 cache 在同一
-  本字典里分配会把同一个 id 发给两个不同的名字，帧随后以错误的名字读回来，而且
-  无声。okm ADR-0017 §3 把两套词汇分开（谓词占 0x04/0x05、载荷字段名保留
-  0x02/0x03）之后，这个撞名结构性消失，k10r 那两条纪律（一次性 cache、handle
-  每次现建）随之退役。剩下的只有读侧：类型化读之前仍要预热（`predicate_name`）
-  ——因为 `Graph::typed_*` / `edges_of_predicate` 只从非分配的 `by_name_get` 取
-  答案，从不回落到引擎。实体集合走同一条规则——kinds 占 0x04/0x05、props 名留
-  0x02/0x03——那边的纪律同样退役。欠 okm 的条目在 ADR-0010 的欠账清单里。
+- **载荷编解码归声明所有（2026-10-19 落地）。** `FactEdge` 的载荷就是一份普通
+  obj 载荷（`[version u8][hot_len u16 BE][since u64][confidence u8][weight u32]`），
+  由同一份声明写与读：`encode_payload` / `decode_payload`。k10r 手写的
+  `from_attrs` 与那把锁测试已删；裁决输入是
+  `FactEdge::decode_payload(&body.payload)`。
+- **字典纪律（一个 ns 两套词汇）——已退役，不再有替代品。** 边 ns 里曾住着关系
+  种类（由 okm 的 `Graph` 用长驻 `DictCache` 分配）**和** k10r 分配的 prop 名；
+  两个 cache 在同一本字典里分配会把同一个 id 发给两个不同的名字，帧随后以错误的
+  名字读回来，而且无声。okm ADR-0017 §3 把两套词汇分开（谓词占 0x04/0x05、载荷
+  字段名保留 0x02/0x03）之后，这个撞名结构性消失；k10r 那两条纪律（一次性
+  cache、handle 每次现建）随之退役，读侧的"预热"也不再需要（okm 的
+  `DictCache::id_get` 在探测时自加载）。实体集合走同一条规则——kinds 占
+  0x04/0x05、props 名留 0x02/0x03。
 
 ### 访问面（mem-core `GraphStore`）
 

@@ -316,18 +316,19 @@ pub struct EntityRow {
 
 An okm edge collection (`Graph<FjallStore, FactEdge>`), one ns per graph (okm
 ADR-0017 §4). The DECLARATION is the graph — `GraphEncode`: `#[ok_ns(37)]`,
-`type Nodes = FactNodes` (the member collections — today `Entities`; admitting
-another collection is one enum variant, a code change), the payload's codec,
+`#[ok_nodes(FactNodes)]` (the member collections — today `Entities`; admitting
+another collection is one enum variant plus its ns in `NS_VALUES`, a code
+change), the payload's codec,
 and one 0x1 face per DECLARED `#[ok_index]`. The handle builds the primary, the
 payload's dynamic entry, the predicate dictionary and the four traversal
 faces.
 
 | Face | Key |
 |---|---|
-| 0x0 primary | `[edge_id 8B BE]` → `[src NodeRef][dst NodeRef][predicate_id][attrs]` |
+| 0x0 primary | `[edge_id 8B BE]` → `[src NodeRef][dst NodeRef][predicate_id][obj payload]` |
 | 0x1 dynamic segment | `[edge_id 8B BE]` → the relation's open props (`functional` rides here) |
 | 0x1nnn declared index (`since` / `confidence` / `weight`) | `[field value][edge_id]` |
-| 0x4/0x5 predicate dictionary | `[predicate name]` → `predicate_id` / `[predicate_id]` → name |
+| 0x4/0x5 predicate dictionary | `[predicate_id]` → name / `[predicate name]` → `predicate_id` |
 | 0x6 predicate index | `[predicate_id][edge_id]` |
 | 0x7 out-edges | `[src NodeRef][edge_id]` |
 | 0x8 in-edges | `[dst NodeRef][edge_id]` |
@@ -351,26 +352,23 @@ faces.
   SAME batch as the link (ADR-0002: one WriteBatch = one transaction). The
   per-assertion `functional` flag is kept there — the assertion's own record
   of how it declared its kind's cardinality.
-- **`from_attrs` is k10r's** — `[since u64][confidence u8][weight u32]`, 13
-  bytes in declaration order. The old `EdgeEncode` derive emitted the writer
-  half only, so the reader carries the widths and a test locks it against
-  `attrs()`. Ruled 2026-10-17: the owed okm fix is NOT a second half on that
-  derive — the edge's payload becomes an obj (okm ADR-0017 §3) and the
-  declaration becomes `GraphEncode`, after which this decoder and its locking
-  test go away.
-- **Dictionary discipline (two vocabularies in one ns) — RETIRED.** The edge
-  ns used to hold relation kinds (okm's `Graph`, long-lived `DictCache`) AND
-  the prop names k10r allocates; two caches allocating in one dictionary hand
-  the same id to different names, and the frame then reads back under the
-  wrong name — silently. okm ADR-0017 §3 split the vocabularies (the predicate
-  owns 0x04/0x05; the payload's field names keep 0x02/0x03), so the collision
-  is structurally gone and k10r's two disciplines — a fresh cache per call, a
-  handle per call — retire with it. What remains is the read side: priming
-  (`predicate_name`) before a typed read, because `Graph::typed_*` /
-  `edges_of_predicate` answer from the non-allocating `by_name_get` and never
-  fall back to the engine. The entity collection rides the same rule — its
-  kinds at 0x04/0x05, the props' names at 0x02/0x03 — so the discipline
-  retires there too. The owed okm-side items are in ADR-0010's owed list.
+- **The payload codec is the declaration's (LANDED 2026-10-19).** `FactEdge`'s
+  payload is an ordinary obj payload (`[version u8][hot_len u16 BE][since u64]
+  [confidence u8][weight u32]`), produced and read by the one declaration:
+  `encode_payload` / `decode_payload`. k10r's hand-written `from_attrs` and its
+  locking test are gone; the adjudication input is
+  `FactEdge::decode_payload(&body.payload)`.
+- **Dictionary discipline (two vocabularies in one ns) — RETIRED, nothing
+  replaces it.** The edge ns used to hold relation kinds (okm's `Graph`,
+  long-lived `DictCache`) AND the prop names k10r allocates; two caches
+  allocating in one dictionary hand the same id to different names, and the
+  frame then reads back under the wrong name — silently. okm ADR-0017 §3 split
+  the vocabularies (the predicate owns 0x04/0x05; the payload's field names
+  keep 0x02/0x03), so the collision is structurally gone; k10r's two
+  disciplines — a fresh cache per call, a handle per call — retire with it, and
+  so does the read-side priming (okm's `DictCache::id_get` loads on probe).
+  The entity collection rides the same rule — kinds at 0x04/0x05, prop names at
+  0x02/0x03.
 
 ### Access (mem-core `GraphStore`)
 
