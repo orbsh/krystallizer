@@ -250,6 +250,7 @@ pub struct EntityRow {
     pub kind_id: u16,
     pub literal_num: i64,
     pub name: String,
+    pub embedding: Vector<f32>,
 }
 ```
 
@@ -270,6 +271,17 @@ pub struct EntityRow {
 - **实体属性是合并的。** 一个词项的属性（元组的 head/tail 属性）落在节点行的
   **动态段**（slot 1）——那是这个实体的属性，被关于它的每条事实共享——而且是
   合并：同名属性取较新的值，其余存活。
+- **`embedding` 是节点的向量（ADR-0003）**：内建引擎对实体**名字**的输出，在
+  ingest 时于进程内计算——HTTP 客户端从不发送向量。任意长度的冷段帧（长度住在
+  帧里，所以换模型换的是数据、不是 wire），源头做 L2 归一化，于是 `cosine` 就是
+  一次内积。**空帧是合法行**（写入时没有挂引擎），检索侧跳过它，绝不是零向量。
+- **检索（`GraphStore::retrieve`、`GET /facts/{scope}/search?q=&k=`）是向量落地，
+  不是查询语言**：嵌 query → 与该 scope 的**派生**内存表做内积 → 丢掉
+  `LANDING_FLOOR`（0.35）以下的 → 取前 `k` 个种子 `{node_id, score, name,
+  kind}`。空结果是合法的（什么都没落地，调用方不注入记忆）。表在首次使用时从
+  KV 重建、**每次写入即失效**，所以不可能拿旧语料作答；它带字节预算与 LRU 淘汰，
+  扫描形态是 `Flat`（暴力）——分桶形态是文档化的下一步，只在单个 scope 的表装不下
+  时（ADR-0003 的可测阈值）才取。
 - **`community_id` 与它的 `by_community` 面尚未声明。** 它们属于 ADR-0010 的
   步骤 3–4（增量 LPA + 分箱），而今天没有任何东西读它们：没有写入者的字段和
   没有扫描者的面，代价由每条记录承担，所以它们随消费它们的读路径一起落

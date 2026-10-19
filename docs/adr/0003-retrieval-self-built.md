@@ -84,6 +84,23 @@ only complex ones (PageRank, community detection) earn a dependency.
   outbound surface empty (ADR-0007).
 - Bring-up posture: brute-force inner product stands in for ANN below the
   measured threshold; ANN integration must not be a Phase-1 blocker.
+  **Landed 2026-10-19:** `GraphStore::retrieve` + `GET /facts/{scope}/search`
+  — per-scope in-memory table (loaded from the KV on first use, dropped on
+  every write, byte-budgeted with LRU eviction), inner product over
+  unit-length vectors, `LANDING_FLOOR` (0.35) and a legal empty landing.
+- **The three costs, and the shape past the threshold (2026-10-19).** A scan
+  strategy pays in compute, memory or I/O, and the choice is a MEASURED one:
+  an in-memory table pays memory (~2 KB/vector) and scans in O(N·d) — at
+  10⁴ rows that is sub-millisecond, at 10⁵ ~6 ms with AVX2; IVF pays training
+  plus a retrain-and-rewrite cycle but probes only nprobe buckets; HNSW pays
+  a persisted graph (deletes become tombstones, model swaps a rebuild) for
+  logarithmic hops, and buys nothing while the whole path is already a few
+  milliseconds. When one scope's table outgrows the budget, the next shape is
+  **IVF with the bucket encoded in the KV key** (`[ns][bucket][node_id]`) —
+  no second storage engine, deletes stay natural. arroy stays rejected for
+  the LMDB reason above; a persisted HNSW only if a MEASURED latency budget
+  still fails after that, and then as DERIVED state rebuilt from the rows,
+  never as a second source of truth.
 - There is no tokenizer to control, so "tokenization and scoring fully under
   our control" is no longer a trade-off claim this route makes.
 - The PG exit gate becomes an end-to-end recall comparison on a fixed query set,

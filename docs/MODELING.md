@@ -281,6 +281,7 @@ pub struct EntityRow {
     pub kind_id: u16,
     pub literal_num: i64,
     pub name: String,
+    pub embedding: Vector<f32>,
 }
 ```
 
@@ -306,6 +307,23 @@ pub struct EntityRow {
   on the node row's DYNAMIC segment (slot 1) — the entity's attributes,
   shared by every fact about it — and they MERGE: a same-named attribute
   takes the newer value, the rest survive.
+- **`embedding` is the node's vector (ADR-0003)**: the built-in engine's
+  output over the entity's NAME, computed in-process at ingest — the HTTP
+  client never sends a vector. A cold frame of ANY length (its own count
+  rides the frame, so a model swap changes the data, not the wire),
+  L2-normalized at the source so `cosine` is an inner product. EMPTY is a
+  legal row (written with no engine attached) and retrieval skips it — never
+  a zero vector.
+- **Retrieval (`GraphStore::retrieve`, `GET /facts/{scope}/search?q=&k=`)**
+  is vector landing, not a query language: embed the query, inner-product it
+  against one scope's DERIVED in-memory table, drop everything under
+  `LANDING_FLOOR` (0.35), return the top `k` seeds `{node_id, score, name,
+  kind}`. An empty result is legal (nothing landed — the caller injects no
+  memory). The table is rebuilt from the KV on first use and DROPPED on every
+  write, so it can never answer from a stale corpus; it is byte-budgeted with
+  LRU eviction, and the scan is `Flat` (brute force) — the bucketed form is
+  the documented next step, taken only when one scope's table no longer fits
+  (ADR-0003's measured threshold).
 - **`community_id` and its `by_community` face are NOT declared yet.**
   They belong to ADR-0010's steps 3–4 (the incremental LPA + binning), and
   nothing reads them today: a field with no writer and a face with no
