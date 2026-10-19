@@ -22,7 +22,7 @@
 //!   (ADR-0010 §1's three algorithm-queried fields, one 0x1 face each), and
 //!   the endpoints stay self-describing `NodeRef`s — a ref carries its own
 //!   pkey width, so endpoints need no declaration. The relation NAME is the
-//!   edge's PREDICATE: it allocates in the graph's own kind vocabulary
+//!   edge's PREDICATE: it allocates in the graph's own predicate vocabulary
 //!   (0x04/0x05) and is listed by one prefix scan of it.
 //! - **The relation's open props** (condition / cause / strength / the
 //!   per-assertion `functional` flag) ride the edge's dynamic segment
@@ -58,7 +58,7 @@
 use crate::embedding::Embedder;
 use crate::render::RenderFormat;
 use okm_core::index::DYNAMIC_SLOT;
-use okm_core::obj_dict::{DictCache, FIELD_DICT, KIND_VOCAB};
+use okm_core::obj_vocab::{VocabCache, FIELD_VOCAB, PREDICATE_VOCAB};
 use okm_core::obj_dynamic::{put_frame_named, DynamicValue};
 use okm_core::{
     Collection, Document, DocumentEncode, EdgeHead, FjallStore, Graph, GraphEncode, KeyEncode,
@@ -719,16 +719,16 @@ impl GraphStore {
     }
 
     /// Allocate (or look up) an ENTITY KIND token in the collection's own
-    /// kind vocabulary (0x04/0x05). The entity's props are field names and
+    /// predicate vocabulary (0x04/0x05). The entity's props are field names and
     /// live in 0x02/0x03, so the two never share an id.
     fn dict_id(&mut self, ns_prefix: &[u8], name: &str) -> u16 {
-        let mut dict = DictCache::new(KIND_VOCAB);
+        let mut dict = VocabCache::new(PREDICATE_VOCAB);
         dict.id_for(&mut self.store, ns_prefix, name)
     }
 
-    /// The reverse direction of the kind vocabulary.
+    /// The reverse direction of the predicate vocabulary.
     fn dict_name(&self, ns_prefix: &[u8], id: u16) -> Option<String> {
-        let mut dict = DictCache::new(KIND_VOCAB);
+        let mut dict = VocabCache::new(PREDICATE_VOCAB);
         dict.name_for(&self.store, ns_prefix, id)
     }
 
@@ -770,7 +770,7 @@ impl GraphStore {
     pub fn fact(&mut self, edge_id: u64) -> Option<FactBody> {
         let mut facts = self.facts();
         let body = facts.get_edge(edge_id)?;
-        let kind = facts.predicate_name(body.predicate_id)?;
+        let kind = facts.predicate_vocab_name(body.predicate_vocab_id)?;
         Some(FactBody {
             edge_id,
             src: body.src,
@@ -786,7 +786,7 @@ impl GraphStore {
     /// removed).
     pub fn fact_view(&mut self, edge_id: u64) -> Option<FactView> {
         let body = self.facts().get_edge(edge_id)?;
-        let kind = self.facts().predicate_name(body.predicate_id)?;
+        let kind = self.facts().predicate_vocab_name(body.predicate_vocab_id)?;
         Some(FactView {
             edge_id,
             kind,
@@ -1080,7 +1080,7 @@ impl GraphStore {
         let Some(body) = facts.get_edge(edge_id) else {
             return Ok(None);
         };
-        let Some(predicate) = facts.predicate_name(body.predicate_id) else {
+        let Some(predicate) = facts.predicate_vocab_name(body.predicate_vocab_id) else {
             return Ok(None);
         };
         let edge = FactEdge::decode_payload(&body.payload).touched(kind, now);
@@ -1387,7 +1387,7 @@ impl GraphStore {
             let mut body = Vec::new();
             // The prop names are FIELD names: their own vocabulary (0x02/0x03),
             // untouched by the predicate allocation link_into just did.
-            let mut dict = DictCache::new(FIELD_DICT);
+            let mut dict = VocabCache::new(FIELD_VOCAB);
             {
                 let store = &mut self.store;
                 let mut resolver = |name: &str| dict.id_for(store, FactEdge::NS_PREFIX, name);
@@ -1458,7 +1458,7 @@ fn decode_props(
     store: &FjallStore,
     ns_prefix: &[u8],
 ) -> Option<BTreeMap<String, DynamicValue>> {
-    let mut dict = DictCache::new(FIELD_DICT);
+    let mut dict = VocabCache::new(FIELD_VOCAB);
     let frames =
         okm_core::obj_dynamic::decode_named(raw, &mut |id| dict.name_for(store, ns_prefix, id));
     if frames.is_empty() {
