@@ -571,7 +571,7 @@
             { op: "add_node", node: { id: "vector-landing", kind: "concept", name: "向量着陆检索", weight: 7, refs: 4, community: "c_algorithm" } },
             { op: "add_node", node: { id: "write-resolve", kind: "concept", name: "写时消解", weight: 5, refs: 2, community: "c_algorithm" } },
             { op: "add_node", node: { id: "lpa-binning", kind: "concept", name: "增量 LPA 认知分箱", weight: 6, refs: 3, community: "c_algorithm" } },
-            { op: "add_node", node: { id: "capsule", kind: "concept", name: "语义胶囊", weight: 5, refs: 2, community: "c_algorithm" } },
+            { op: "add_node", node: { id: "render", kind: "concept", name: "社区渲染（带 id）", weight: 5, refs: 2, community: "c_algorithm" } },
 
             { op: "batch", label: "欠账 / 未决（PLAN 的 Deferred gates）" },
             { op: "add_node", node: { id: "owed-backup", kind: "owed", name: "欠：备份导出端点", weight: 3, refs: 1, community: "c_owed" } },
@@ -593,7 +593,7 @@
             { op: "add_link", link: { source: "adr-0008", target: "session-projection", kind: "declares", rel: "投影式会话", strength: 4 } },
             { op: "add_link", link: { source: "adr-0010", target: "write-resolve", kind: "declares", rel: "写时消解", strength: 4 } },
             { op: "add_link", link: { source: "adr-0010", target: "lpa-binning", kind: "declares", rel: "增量 LPA 分箱", strength: 4 } },
-            { op: "add_link", link: { source: "adr-0010", target: "capsule", kind: "declares", rel: "语义胶囊", strength: 3 } },
+            { op: "add_link", link: { source: "adr-0010", target: "render", kind: "declares", rel: "读时渲染", strength: 3 } },
             { op: "add_link", link: { source: "modeling", target: "ns33", kind: "declares", rel: "表结构之家", strength: 3 } },
             { op: "add_link", link: { source: "modeling", target: "ns35", kind: "declares", rel: "表结构之家", strength: 3 } },
             { op: "add_link", link: { source: "modeling", target: "graph-tables", kind: "declares", rel: "声明未落地", strength: 3 } },

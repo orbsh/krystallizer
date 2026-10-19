@@ -93,7 +93,9 @@ only complex ones (PageRank, community detection) earn a dependency.
   plus the read answer (`GraphStore::recall`, `GET /facts/{scope}/recall`):
   the seeds, the communities they landed in, and those communities' facts
   rendered as id-bearing text under a fact budget (ADR-0010 §3–§5).
-  Weight-ordered ranking is ADR-0005's.
+  Weight-ordered ranking is ADR-0005's. `/search` is the ANALYSIS door (the
+  landing alone, for inspection); `/recall` is the CORE door (the memory
+  answer) — ADR-0007 owns the two-class split.
 - **The three costs, and the shape past the threshold (2026-10-19).** A scan
   strategy pays in compute, memory or I/O, and the choice is a MEASURED one:
   an in-memory table pays memory (~2 KB/vector) and scans in O(N·d) — at

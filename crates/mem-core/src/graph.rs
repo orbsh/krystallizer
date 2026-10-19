@@ -40,9 +40,11 @@
 //! string — no node identity) becomes a node of kind `literal`, its exact
 //! text in `name` and its integer projection in `literal_num`.
 //!
-//! Not here yet: ADR-0010's steps 3–4 (incremental LPA, community
-//! binning, capsules — with them the node row's `community_id` and its
-//! `by_community` face).
+//! ADR-0010's steps 3–4 are here: incremental LPA and community binning
+//! run inside `ingest`, the node row carries `community_id` with its
+//! `by_community` face, and a per-scope SEQUENCE row issues community ids.
+//! What is NOT here is a summary: the read side renders the community
+//! (crate::view), so there is no capsule table to keep in step.
 //!
 //! The weight system (ADR-0005) is the edge's own metadata layer: the
 //! counters ride the edge row (`read_count` / `write_count` /
@@ -641,10 +643,9 @@ pub struct GraphStore {
     tables: ScopeTables,
     /// How those tables are scanned. `Flat` is the only strategy today.
     strategy: ScanStrategy,
-    /// Next community id per scope (ADR-0010 §2 — a fresh seed per landed
-    /// node). Loaded lazily as one past the scope's current maximum; the
-    /// capsule table itself is the evidence, so there is no second counter
-    /// row to keep in sync.
+    /// Next community id per scope (ADR-0010 §1 — a fresh seed per landed
+    /// node). The SEQUENCE row is the source of truth and only ever grows;
+    /// this map is the in-process cache of it.
     next_community: HashMap<u64, u64>,
 }
 

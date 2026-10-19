@@ -23,7 +23,10 @@ work unit rather than a message count).
 
 ## Decision
 
-The core exposes three interface surfaces.
+The core exposes three interface surfaces. A surface is a family of CORE
+doors: the read-only ANALYSIS doors (the bulk graph render, the landing in
+isolation, one hop, the unrouted read primitives) belong to none of them —
+ADR-0007 owns the two-class split, and `docs/SEAM.md` keeps the two lists.
 
 ### Surface 1: Session control (the passive side · short-term)
 

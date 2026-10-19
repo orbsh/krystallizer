@@ -17,34 +17,68 @@ agent with no turn loop) joins by adding a section, not a new mechanism.
 Routes are declared in `crates/mem-server/src/lib.rs` (the router block);
 primitives in `crates/mem-core/src/`.
 
+**Two classes of door, and they are not interchangeable.**
+
+- **The CORE API** — what a consumer's operation actually runs on: the loop's
+  context read and appends, the memory answer, the exact identity entrance, the
+  counter a caller reports, the code store. These doors' SHAPES are contract:
+  a change is an ADR-level decision, and a consumer's turn path may only use
+  these.
+- **The ANALYSIS API** — read-only inspection for audit, visualization and
+  debugging: the raw graph, the landing in isolation, one hop, the unrouted
+  core reads. It is a SECOND-CLASS surface: its shape may change as the
+  analysis needs it, it is never on the model's tool list, and nothing in a
+  consumer's turn loop may depend on it.
+
+The line exists because internal structure may appear INSIDE a core result
+(node ids, edge ids, the community id) as handles, while MAINTAINING that
+structure is never a consumer's chore. A door that asks the consumer to list,
+pull, fix up or write back k10r's own indexing is therefore not a door of
+either class — it is a design error, and the consolidation doors that used to
+sit here were exactly that (retired 2026-10-20).
+
+### 1a. Core API
+
 | Door (HTTP) | mem-core primitive | Table (ns) | Status |
 |---|---|---|---|
 | `POST /channels/{c}/messages` | `ChannelStore::append` | messages (33) | landed |
-| `GET /channels/{c}/members/{m}/session` | `ChannelStore::fetch_full` | messages + checkpoints (33/34) | landed |
+| `GET /channels/{c}/members/{m}/session` | `channel::fetch_full` + `view::assemble` (head → checkpoint → increment) | messages + checkpoints (33/34) + the head's facts (36/37) | landed (view shape 2026-10-20) |
 | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint` | checkpoints (34) | landed |
+| `POST /facts/{scope}` | `GraphStore::ingest` (the body IS the 8-slot tuple; `scope` is the path) | entities (36) + facts (37) | landed (2026-10-17) |
+| `GET /facts/{scope}/recall?q=&k=&budget=&ts_ms=` | `GraphStore::recall` (landing → the landed COMMUNITY's bucket → the rendered, id-bearing text; ranked by weight, capped by `budget`; no engine = an empty answer) | entities (36) + facts (37) | landed (2026-10-20) |
+| `GET /facts/{scope}/entities/{name}` | `GraphStore::entity_by_name` (the exact name/alias entrance; 404 on an unknown name) | entities (36) | landed (2026-10-17) |
+| `POST /facts/{scope}/edges/{id}/touch` | `GraphStore::touch` (a caller-reported TOOL consult: counters bump, weight folds; 404 for an unknown edge or another scope's) | facts (37) | landed (2026-10-19) |
 | `POST /code` | `CodeStore::put` | code (35) | landed |
 | `GET /code` | `CodeStore::list` (pool read: id + language + description, no source) | code (35) | landed |
 | `GET /code/{id}` | `CodeStore::get` (the whole row, source included) | code (35) | landed |
-| ~~`POST /memory`~~ | ~~`MemoryStore::store`~~ | flat memory (32) | **withdrawn 2026-10-19** — the graph is the carrier (ADR-0001) |
-| ~~`GET /memory/{user_id}/search?q=`~~ | ~~`MemoryStore::search`~~ | flat memory (32) | **withdrawn 2026-10-19** |
-| ~~`MemoryStore::forget` / `list` / `stats`~~ | — | flat memory (32) | **withdrawn 2026-10-19** |
-| `POST /facts/{scope}/edges/{id}/touch` | `GraphStore::touch` (a caller-reported TOOL consult: counters bump, weight folds; 404 for an unknown edge or another scope's) | facts (37) | landed (2026-10-19) |
-| `POST /facts/{scope}` | `GraphStore::ingest` (the body IS the 8-slot tuple; `scope` is the path) | fact graph — entities (36) + facts (37) | landed (2026-10-17) |
-| `GET /facts/{scope}/entities/{name}` | `GraphStore::entity_by_name` (the exact name/alias entrance; 404 on an unknown name) | entities (36) | landed (2026-10-17) |
-| `GET /facts/{scope}/entities/{node_id}/edges` | `GraphStore::out_facts` (one hop, both endpoints resolved) | facts (37) + entities (36) | landed (2026-10-17) |
-| `GET /graph/{scope}` | `GraphStore::scope_entities` + `scope_facts` (one scope as nodes + links — the renderer's bulk read) | entities (36) + facts (37) | landed (2026-10-17) |
-| `GET /facts/{scope}/search?q=&k=` | `GraphStore::retrieve` (the landing: node vectors, inner product, the 0.35 floor; no engine = 200 + `[]`) | entities (36) | landed (2026-10-19) |
-| `GET /facts/{scope}/recall?q=&k=&budget=&ts_ms=` | `GraphStore::recall` (landing → the landed COMMUNITY's bucket → the rendered, id-bearing text; facts ranked by weight, capped by `budget`; no engine = an empty answer) | entities (36) + facts (37) | landed (2026-10-20) |
-| — no route | `entity` / `entity_props` / `fact` / `fact_props` / `typed_out` (the rest of the core's reads), and a scope-wide weight Top-K | fact graph (36/37) | core landed, no route; the scope-wide Top-K is a FOLLOW-UP (Phase 4 — it needs a `[scope][weight][edge_id]` projection, ADR-0005) |
-| — no route | initialization-memory assembly (traversal from the user node) | initialization memory | Declared (ADR-0001, no ns yet) |
-| — no route | task vertices + `task_links` edges (the third interface surface — a graph, sharing the facts' graph) | task graph | Declared (ADR-0001, no ns yet) |
-| rides the session projection (read); no write route | task instance state (open / done — a structured field for exact enumeration) | task state | Declared (gravity ADR-0003 §3/§4) |
+
+Withdrawn from this class (2026-10-19, with flat memory): `POST /memory`,
+`GET /memory/{user_id}/search?q=`, and `MemoryStore::forget` / `list` /
+`stats` — the graph is the carrier (ADR-0001).
+
+Declared, not yet a door (core side, later phases): initialization-memory
+assembly (rides the session projection's head, ADR-0001/0008), task vertices +
+`task_links` edges and task instance state (the third interface surface,
+ADR-0001; gravity ADR-0003 §3/§4).
+
+### 1b. Analysis API
+
+| Door (HTTP) | mem-core primitive | Table (ns) | Status |
+|---|---|---|---|
+| `GET /graph/{scope}` | `GraphStore::scope_entities` + `scope_facts` (one scope as nodes + links — the renderer's bulk read; nodes carry `community_id`) | entities (36) + facts (37) | landed (2026-10-17) |
+| `GET /facts/{scope}/search?q=&k=` | `GraphStore::retrieve` (the landing ALONE: node vectors, inner product, the 0.35 floor; no engine = 200 + `[]`) — what `recall` does before it answers | entities (36) | landed (2026-10-19) |
+| `GET /facts/{scope}/entities/{node_id}/edges` | `GraphStore::out_facts` (one hop, both endpoints resolved) — inspection, and a caller's own composition starts here | facts (37) + entities (36) | landed (2026-10-17) |
+| — no route | `entity` / `entity_props` / `fact` / `fact_props` / `typed_out` (the rest of the core's READ primitives) | fact graph (36/37) | core landed, no route — audit reads |
+| — no route | a scope-wide weight Top-K | facts (37) | FOLLOW-UP (Phase 4 — it needs a `[scope][weight][edge_id]` projection, ADR-0005) |
 
 `in-process` is not a second door: `InProcessSurface` links the same
 primitives in the caller's process (a same-machine deployment detail); HTTP is
 the single cross-process form (ADR-0007 as revised).
 
 ## 2. gravity's operations → the door each one uses
+
+Every operation in this table rides a CORE door (§1a); the analysis class
+(§1b) appears nowhere in a consumer's turn loop.
 
 | gravity operation | gravity-side name | Door | mem-core primitive | Status |
 |---|---|---|---|---|
@@ -103,8 +137,9 @@ an actor (ADR-0007).
 ## 5. Keeping this page true
 
 - A new door is registered here **in the same pass** that lands it (route +
-  primitive + ns + status), normally alongside its PLAN phase sub-step and its
-  ADR.
+  primitive + ns + status **and its class** — core §1a or analysis §1b),
+  normally alongside its PLAN phase sub-step and its ADR. A door whose class is
+  unclear is not ready to land.
 - A door's status moves only with evidence: the integration test that
   exercises it through a real server, or the core test that locks the
   primitive.

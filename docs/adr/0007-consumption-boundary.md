@@ -53,6 +53,23 @@ three ways to reach k10r across a process boundary — there is exactly
 one (HTTP), plus local-linking and bindings that are not boundary
 shapes at all.
 
+**k10r's API has two classes, and they are not interchangeable.** The
+**core API** is what a consumer's operation runs on — the session projection
+and appends, the memory answer (`recall`), the exact identity entrance, the
+reported counter, the code store. Its SHAPES are contract: a change is this
+ADR's class of decision, and a consumer's turn path may only use these doors.
+The **analysis API** is read-only inspection for audit, visualization and
+debugging — the raw graph, the landing in isolation, one hop, the unrouted
+core READ primitives. It is a second-class surface: its shape may change as
+the analysis needs it, it is never on a model's tool list, and no consumer's
+turn loop may depend on it. The line is drawn where structure is allowed:
+internal structure (node id, edge id, community id) may appear INSIDE a core
+result as a handle, while MAINTAINING that structure is never a consumer's
+chore — a door that asks a consumer to list, pull, fix up or write back k10r's
+own indexing is neither class, it is a design error (the consolidation doors
+retired on 2026-10-20 were exactly that). `docs/SEAM.md` keeps the two lists
+apart, one table each.
+
 **LLM orchestration belongs to gravity.** Extraction-pipeline LLM
 decisions (stage classification, out-of-domain fusion decisions,
 summarize when policy needs one) are gravity's work — k10r hands over

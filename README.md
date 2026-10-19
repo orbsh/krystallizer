@@ -34,9 +34,11 @@ and [图谱化记忆](https://github.com/orbsh/wiki/blob/main/graph-memory.md):
   `tool_invoke_count`), fusion on write (in-domain id lookup / out-of-domain
   embedding convergence).
 - **Built-in retrieval** — a small local embedding model runs in-process
-  (no API, no key; the vector space is locked with the data), landing into
-  graph traversal alongside an exact name/alias lookup and weight-ordered
-  Top-K. No lexical index, no fusion stage, no second storage engine.
+  (no API, no key; the vector space is locked with the data). The query lands,
+  the answer is the landed COMMUNITY (its nodes and edges, weight-ordered,
+  rendered as id-bearing text under a fact budget), and an exact name/alias
+  point lookup is the second entrance. No lexical index, no fusion stage, no
+  summarization pass, no second storage engine.
 
 ## Crates
 
@@ -44,7 +46,7 @@ and [图谱化记忆](https://github.com/orbsh/wiki/blob/main/graph-memory.md):
 |---|---|
 | `mem-core` | Storage + retrieval core. Zero LLM dependency, zero transport dependency. |
 | `mem-ffi` | PyO3 bindings (maturin). |
-| `mem-server` | axum HTTP surface — the single cross-process form (ADR-0007 as revised; channel-log endpoints landed 2026-10-10, the code store 2026-10-15, the fact graph 2026-10-17 — the write door `POST /facts/{scope}`, the exact name entrance, one-hop edges, and the render graph `GET /graph/{scope}`). |
+| `mem-server` | axum HTTP surface — the single cross-process form (ADR-0007 as revised). It serves TWO classes of door, kept apart in `docs/SEAM.md`: the CORE API a consumer runs on (session projection and appends, `POST /facts/{scope}`, `GET /facts/{scope}/recall`, the exact name entrance, `.../edges/{id}/touch`, the code store) and the ANALYSIS API for audit and visualization (the render graph `GET /graph/{scope}`, the landing alone, one hop). |
 
 Storage: Fjall, with schemas declared via OKM derive macros (compile-time key
 encoding, hex stability tests).

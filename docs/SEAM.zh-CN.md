@@ -16,33 +16,60 @@
 路由声明在 `crates/mem-server/src/lib.rs`（router 块）；原语在
 `crates/mem-core/src/`。
 
+**门分两类，不可互换。**
+
+- **核心 API**——消费方的操作真正跑在它上面：循环的上下文读与追加、记忆答案、
+  身份精确入口、调用方上报的计数、code 存储。这一类的**形状就是契约**：改动是
+  ADR 级别的决定；消费方的一轮只能走这一类。
+- **分析 API**——只读的检视面，给审计、可视化、调试用：原始图、单独一步落点、
+  一跳、无路由的核心读原语。它**次一等**：形状可以随分析需要改，永远不进模型的
+  工具清单，消费方的一轮里任何东西都不许依赖它。
+
+这条线存在的理由：内部结构可以**出现在核心结果里**当句柄（node id、edge id、
+community id），但**维护**那个结构从来不是消费方的活儿。所以「请消费方去列出、
+拉取、修补、回写 k10r 自己的索引」的门既不属于核心也不属于分析——它是设计错误；
+曾经待在这里的那四扇固化门就是它（2026-10-20 撤除）。
+
+### 1a. 核心 API
+
 | 门（HTTP） | mem-core 原语 | 表（ns） | 状态 |
 |---|---|---|---|
 | `POST /channels/{c}/messages` | `ChannelStore::append` | messages (33) | 已落 |
-| `GET /channels/{c}/members/{m}/session` | `ChannelStore::fetch_full` | messages + checkpoints (33/34) | 已落 |
+| `GET /channels/{c}/members/{m}/session` | `channel::fetch_full` + `view::assemble`（头部 → 压缩点 → 增量） | messages + checkpoints (33/34) + 头部的那些事实 (36/37) | 已落（视图形状 2026-10-20） |
 | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint` | checkpoints (34) | 已落 |
+| `POST /facts/{scope}` | `GraphStore::ingest`（请求体就是 8 元组；`scope` 走路径） | 实体（36）+ 事实（37） | 已落（2026-10-17） |
+| `GET /facts/{scope}/recall?q=&k=&budget=&ts_ms=` | `GraphStore::recall`（落点 → 着陆到的**社区**的桶 → 渲染好的带 id 文本；按权重排序、受 `budget` 封顶；无 engine = 空答案） | 实体（36）+ 事实（37） | 已落（2026-10-20） |
+| `GET /facts/{scope}/entities/{name}` | `GraphStore::entity_by_name`（名/别名精确入口；未知名字 404） | 实体（36） | 已落（2026-10-17） |
+| `POST /facts/{scope}/edges/{id}/touch` | `GraphStore::touch`（调用方上报的工具调用：计数加一、权重重折；未知边或别的 scope 404） | facts (37) | 已落（2026-10-19） |
 | `POST /code` | `CodeStore::put` | code (35) | 已落 |
 | `GET /code` | `CodeStore::list`（池读：id + language + description，无 source） | code (35) | 已落 |
 | `GET /code/{id}` | `CodeStore::get`（整行，含 source） | code (35) | 已落 |
-| ~~`POST /memory`~~ | ~~`MemoryStore::store`~~ | flat memory (32) | **2026-10-19 撤除**——载体是事实图（ADR-0001） |
-| ~~`GET /memory/{user_id}/search?q=`~~ | ~~`MemoryStore::search`~~ | flat memory (32) | **2026-10-19 撤除** |
-| ~~`MemoryStore::forget` / `list` / `stats`~~ | — | flat memory (32) | **2026-10-19 撤除** |
-| `POST /facts/{scope}/edges/{id}/touch` | `GraphStore::touch`（调用方上报的工具调用：计数加一、权重重折；未知边或别的 scope 404） | facts (37) | 已落（2026-10-19） |
-| `POST /facts/{scope}` | `GraphStore::ingest`（请求体就是 8 元组；`scope` 走路径） | 事实图——实体（36）+ 事实（37） | 已落（2026-10-17） |
-| `GET /facts/{scope}/entities/{name}` | `GraphStore::entity_by_name`（名/别名精确入口；未知名字 404） | 实体（36） | 已落（2026-10-17） |
-| `GET /facts/{scope}/entities/{node_id}/edges` | `GraphStore::out_facts`（一跳，两端都已解析） | 事实（37）+ 实体（36） | 已落（2026-10-17） |
-| `GET /graph/{scope}` | `GraphStore::scope_entities` + `scope_facts`（一个 scope 作为节点 + 连边——渲染方的批量读） | 实体（36）+ 事实（37） | 已落（2026-10-17） |
-| `GET /facts/{scope}/search?q=&k=` | `GraphStore::retrieve`（落点：节点向量、内积、0.35 地板；无 engine = 200 + `[]`） | 实体（36） | 已落（2026-10-19） |
-| `GET /facts/{scope}/recall?q=&k=&budget=&ts_ms=` | `GraphStore::recall`（落点 → 着陆到的**社区**的桶 → 渲染好的带 id 文本；事实按权重排序、受 `budget` 封顶；无 engine = 空答案） | 实体（36）+ 事实（37） | 已落（2026-10-20） |
-| — 无路由 | `entity` / `entity_props` / `fact` / `fact_props` / `typed_out`（核心其余读），以及 scope 级的权重 Top-K | 事实图（36/37） | core 已落、无路由；scope 级 Top-K 是后续件（Phase 4——需要 `[scope][weight][edge_id]` 投影表，ADR-0005） |
-| — 无路由 | 初始化记忆装配（从用户节点出发遍历） | initialization memory | 已声明（ADR-0001），无 ns |
-| — 无路由 | 任务顶点 + `task_links` 边（第三个接口面——一个图，与事实同图） | task graph | 已声明（ADR-0001），无 ns |
-| 读侧随会话投影；写侧无路由 | 任务实例态（开 / 完——用于精确枚举的结构化字段） | task state | 已声明（gravity ADR-0003 §3/§4） |
+
+已从这一类撤除（2026-10-19，随 flat 记忆）：`POST /memory`、
+`GET /memory/{user_id}/search?q=`、以及 `MemoryStore::forget` / `list` /
+`stats`——载体是事实图（ADR-0001）。
+
+已声明、尚无门（核心侧，后续阶段）：初始化记忆装配（随会话投影的头部到达，
+ADR-0001/0008）、任务顶点 + `task_links` 边与任务实例态（第三个接口面，
+ADR-0001；gravity ADR-0003 §3/§4）。
+
+### 1b. 分析 API
+
+| 门（HTTP） | mem-core 原语 | 表（ns） | 状态 |
+|---|---|---|---|
+| `GET /graph/{scope}` | `GraphStore::scope_entities` + `scope_facts`（一个 scope 作为节点 + 连边——渲染方的批量读；节点带 `community_id`） | 实体（36）+ 事实（37） | 已落（2026-10-17） |
+| `GET /facts/{scope}/search?q=&k=` | `GraphStore::retrieve`（**只有落点**：节点向量、内积、0.35 地板；无 engine = 200 + `[]`）——`recall` 回答之前做的那一步 | 实体（36） | 已落（2026-10-19） |
+| `GET /facts/{scope}/entities/{node_id}/edges` | `GraphStore::out_facts`（一跳，两端都已解析）——检视用；调用方要自己组更深的走法也从这里起步 | 事实（37）+ 实体（36） | 已落（2026-10-17） |
+| — 无路由 | `entity` / `entity_props` / `fact` / `fact_props` / `typed_out`（核心其余**读**原语） | 事实图（36/37） | core 已落、无路由——审计读 |
+| — 无路由 | scope 级的权重 Top-K | 事实（37） | 后续件（Phase 4——需要 `[scope][weight][edge_id]` 投影表，ADR-0005） |
 
 in-process 不是第二道门：`InProcessSurface` 在调用方进程内链接同一批原
 语（同机部署细节）；HTTP 是唯一的跨进程形态（ADR-0007 as revised）。
 
 ## 2. gravity 的操作 → 各自走的门
+
+这张表里的每个操作都走**核心**门（§1a）；分析类（§1b）在消费方的一轮里
+一个都不出现。
 
 | gravity 操作 | gravity 侧名称 | 门 | mem-core 原语 | 状态 |
 |---|---|---|---|---|
@@ -93,7 +120,8 @@ k10r 的任何路由都不会成为 LLM 的工具目标，k10r 也从不回调�
 
 ## 5. 保持这页为真
 
-- 新门在**落地同一批**登记在此（路由 + 原语 + ns + 状态），通常与它的
-  PLAN 子步、ADR 正文一起。
+- 新门在**落地同一批**登记在此（路由 + 原语 + ns + 状态，**以及它的类别**——
+  核心 §1a 还是分析 §1b），通常与它的 PLAN 子步、ADR 正文一起。类别说不清的
+  门，就是还没到能落地的时候。
 - 门的状态只能凭证据移动：走真实服务的集成测试，或锁住原语的核心测试。
 - 设计问题不住在这里。一句话若需要论证，它属于 ADR，本页只指过去。

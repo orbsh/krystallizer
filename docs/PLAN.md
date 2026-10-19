@@ -3,7 +3,7 @@
 Phases reference ADRs; design content lives in the ADRs, never here.
 
 - [x] Phase 0 — Skeleton: mem-core crate + Fjall engine + PyO3 binding channel smoke test (one store / one search). (ADR-0002)
-- [ ] Phase 1 — Flat memory parity: store / search / forget / list / stats semantics on Fjall; retrieval = built-in local embedding model (in-process, no API, model locked with the data) landing into graph traversal, plus an exact name/alias point lookup as the second entrance. PG exit gate: end-to-end recall comparison on a fixed query set. (ADR-0002, ADR-0003, ADR-0007)
+- [ ] Phase 1 — Flat memory parity: store / search / forget / list / stats semantics on Fjall; retrieval = built-in local embedding model (in-process, no API, model locked with the data) landing into the landed community (rendered as id-bearing text), plus an exact name/alias point lookup as the second entrance. PG exit gate: end-to-end recall comparison on a fixed query set. (ADR-0002, ADR-0003, ADR-0007)
   - [x] 1a. Semantics: store / search (user-prefix scan) / forget / list / stats; config loading (`config/krystallizer.kdl`, knus, env-resolved secrets)
   - [ ] 1b. Built-in embedder: local small model loaded in-process (no endpoint, no key), embeddings written as `Vector<f32>` frames; name/alias → node id point lookup
     - Engine half LANDED 2026-10-17: `mem-core/src/embedding.rs` (`Embedder`: candle BERT, WordPiece tokenize → BERT → CLS pooling → L2 normalize), config `embedding { model-dir … }` + `KRYSTALLIZER_MODEL_DIR` override, model = BAAI/bge-small-zh-v1.5 (512-dim, artifact under `~/.local/share/krystallizer/models/`, not in the repo). Gates: mem-core 8/0 (embedding 3 — a missing artifact names the file it could not read; a Chinese sentence embeds to 512 unit-length floats; related text beats unrelated — the two inference tests skip when the machine has no artifact, so the default gate stays runnable anywhere), clippy 0, fmt clean.
@@ -109,7 +109,8 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     face landed with it: `GET /facts/{scope}/entities/{name}` (the exact
     name/alias entrance, 404 when absent) and
     `GET /facts/{scope}/entities/{node_id}/edges` (one hop with both
-    endpoints resolved). Gates: mem-server 19/0 (facts 7 — the write
+    endpoints resolved — the ANALYSIS class: inspection, not the answer).
+    Gates: mem-server 19/0 (facts 7 — the write
     round trip incl. the incumbent rewrite and scope isolation, the
     refusal, the keyspace leak test, the entrance, the one-hop read),
     mem-core 34/0, clippy 0, fmt clean. Owed: the graph's retrieval

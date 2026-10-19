@@ -52,9 +52,6 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
   `last_read`、`last_write`；布局 v2）。`weight` 是折出来的毫单位公式值。原声明的
   三个面（`by_since` / `by_confidence` / `by_weight`）**不再声明**：没有读者扫它们，
   而每次 touch 都要为不存在的读者维护（ADR-0005）。
-- `CommunityRow`（ns 38）：`[scope][community_id]` → `updated_at`、`state`
-  （0 pending / 1 done）、`uncompressed`、`title`、`summary`。一个社区一行、原地
-  覆盖——是缓存，不是日志。
 - `CommunitySeqRow`（ns 38）：`[scope]` → `high_water`，最后发出的社区 id。
   每 scope 一行，原地覆写，单调递增——取代了 `HighWater` reduce 与「读现存社区
   最大值」两种发号（ADR-0010 §1）。ns 38 曾经装的那张胶囊表已退役。
@@ -294,18 +291,20 @@ pub struct EntityRow {
   ingest 时于进程内计算——HTTP 客户端从不发送向量。任意长度的冷段帧（长度住在
   帧里，所以换模型换的是数据、不是 wire），源头做 L2 归一化，于是 `cosine` 就是
   一次内积。**空帧是合法行**（写入时没有挂引擎），检索侧跳过它，绝不是零向量。
-- **检索（`GraphStore::retrieve`、`GET /facts/{scope}/search?q=&k=`）是向量落地，
+- **检索（`GraphStore::retrieve`、`GET /facts/{scope}/search?q=&k=`——**分析**类：
+  只有落点，供检视；核心答案是下面的 `recall`）是向量落地，
   不是查询语言**：嵌 query → 与该 scope 的**派生**内存表做内积 → 丢掉
   `LANDING_FLOOR`（0.35）以下的 → 取前 `k` 个种子 `{node_id, score, name,
   kind}`。空结果是合法的（什么都没落地，调用方不注入记忆）。表在首次使用时从
   KV 重建、**每次写入即失效**，所以不可能拿旧语料作答；它带字节预算与 LRU 淘汰，
   扫描形态是 `Flat`（暴力）——分桶形态是文档化的下一步，只在单个 scope 的表装不下
   时（ADR-0003 的可测阈值）才取。
-- **`GraphStore::recall`（`GET /facts/{scope}/recall`）是落地 + 一跳**：先给种子，
-  再给**两个方向**上碰到这些种子的每条事实，按 edge id 去重（两个种子之间的一条
-  事实只出现一次，归最先触到它的种子），一次返回，调用方不必拼两次调用。更深的
-  walk 由调用方在 `out_edges` / `in_edges` 上组合；集合内部的按权重排序等
-  ADR-0005 的写入者（每条事实带着自己声明的 `weight`，在那之前为 0）。
+- **`GraphStore::recall`（`GET /facts/{scope}/recall?q=&k=&budget=&ts_ms=`——**核心**
+  类：消费方跑在上面的记忆答案**）是落地 + 着陆到的**社区**：种子的 `community_id`
+  当作桶读（成员走 `by_community` 面，两端都在社区内的事实走遍历面），按权重
+  （ADR-0005）排序，受 `budget` 条事实封顶，渲染成带 id 的文本——一个表头、每节点
+  一行、每事实一行。空落地就是空答案（无种子、无文本），不是错误。更深的 walk 由
+  调用方在 `out_edges` / `in_edges` 上组合。
 - **`community_id` 与它的 `by_community` 面** 属于 ADR-0010 的步骤 3–4
   （增量 LPA + 分箱），并随之落地（2026-10-19）：读侧把这个面当作社区的桶来
   消费。ADR-0010 §1 保留设计形态。
