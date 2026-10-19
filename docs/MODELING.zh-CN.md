@@ -335,8 +335,9 @@ pub struct EntityRow {
 `fact(edge_id)` → 解出的事实、`out_edges` 与 `typed_out`（遍历通货）。批量消费者
 （可视化门）用 `scope_entities(scope)` 与 `scope_facts(scope)` 整取一个 scope——
 扫描以主键前缀 `[scope]` 为界，而每条边只被走到一次（`ingest` 把两个端点都建在
-调用时给的 scope 里）。函数式改写是 `unlink` + `link`——两次引擎提交，因为 okm
-的 `unlink` 没有 into-batch 形态（欠账，见 ADR-0010）。
+调用时给的 scope 里）。函数式改写是**一个**引擎批——okm 的 `unlink_into` +
+`link_into`，加上 k10r 自己那条例子的动态段条目，边 id 不变，两次提交之间的窗口
+不存在（ADR-0010，2026-10-19 付清）。
 
 ### 存储组装
 

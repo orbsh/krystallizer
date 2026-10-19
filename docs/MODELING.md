@@ -387,9 +387,10 @@ Reads: `entity(scope, node_id)`, `entity_by_name(scope, name)` →
 (the visualization door) `scope_entities(scope)` and `scope_facts(scope)`
 return one scope whole — the scan is bounded by the primary-key prefix
 `[scope]`, and each edge is reached once because `ingest` puts both
-endpoints in the scope it was called with. A functional rewrite is
-`unlink` + `link` — two engine commits, because okm's `unlink` has no
-into-batch form (owed, ADR-0010).
+endpoints in the scope it was called with. A functional rewrite is ONE engine
+batch — okm's `unlink_into` + `link_into` plus k10r's own dynamic-segment
+entry, same `edge_id`, no window between two commits (ADR-0010, paid
+2026-10-19).
 
 ### Storage assembly
 

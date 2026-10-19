@@ -114,10 +114,10 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     refusal, the keyspace leak test, the entrance, the one-hop read),
     mem-core 34/0, clippy 0, fmt clean. Owed: the graph's retrieval
     (local embedding + weight-ordered Top-K, ADR-0003/0004) and
-    ADR-0010's steps 3–4 (LPA, binning, capsules); plus the okm-side
-    items in ADR-0010's owed list (a dictionary handle / an engine
-    fallback for the typed reads, `unlink_into`, a generated attribute
-    decode).
+    ADR-0010's steps 3–4 (LPA, binning, capsules). The okm-side items of
+    ADR-0010's owed list are all PAID (2026-10-19): the read-side load on
+    probe, the generated payload decode, and `unlink_into` (a functional
+    rewrite is now ONE batch).
 - [ ] Phase 4 — Clustered retrieval: entity-anchored / temporal / causal-chain views; progressive loading (Top-K by weight). Reads the write-time structure ADR-0010 lands (the node's community id + the community reverse index + capsules) instead of running a graph algorithm on the read path. (ADR-0005, ADR-0010)
 - [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), SKILL topological four-part nodes, Aura Actor nodes. (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.) ADR-0010 takes the incremental LOCAL form of community detection onto the write side and leaves OPEN whether that promotes a slice of Phase 5 ahead of Phase 3/4 — an open ruling, not settled.
 

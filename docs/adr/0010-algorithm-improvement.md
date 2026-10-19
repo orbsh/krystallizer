@@ -452,10 +452,12 @@ inspectable from a dashboard reading `get_stats`.
   answers typed reads with no priming — the `facts_primed` shim is deleted.
   The ENTITY side is symmetric (its kinds at 0x04/0x05, prop names at
   0x02/0x03), so the one-cache-per-call discipline retires there too.
-- **`unlink` has no into-batch form** (owed to okm): a functional rewrite is
-  `unlink` + `link`, i.e. TWO engine commits, where ADR-0002's rule wants
-  one. The window is recovered by re-ingesting, and the edge id is
-  preserved.
+- **The functional rewrite is ONE engine commit — PAID (2026-10-19).** okm's
+  `Graph::unlink_into` puts the delete set into a caller-owned batch, so a
+  rewrite is `unlink_into` + `link_into` in a single commit, which is what
+  ADR-0002's rule wants. The edge's dynamic segment is k10r's own entry (not
+  okm's), so the same batch deletes it first — a rewrite can never inherit the
+  previous assertion's props. The gap is closed, not mitigated by re-ingest.
 - **The edge's payload codec is the declaration's — PAID (2026-10-19).** The
   edge's payload is an obj (okm ADR-0017 §3) and the declaration is
   `GraphEncode`, so one declaration generates both codec directions and the

@@ -369,9 +369,11 @@ pub fn assist_search(query: &str, top_k: usize) -> AssistantContext {
   handle 直接答类型化读，不必预热——`facts_primed` 那段壳已删除。**实体侧同样
   对称**（kinds 走 0x04/0x05，props 名走 0x02/0x03），那边的"一次性 cache"
   纪律一并退役。
-- **`unlink` 没有 into-batch 形态**（欠 okm）：函数式改写是 `unlink` + `link`，
-  即**两次**引擎提交，而 ADR-0002 的规则要一次。这个窗口靠重放 ingest 恢复，
-  且边 id 保持不变。
+- **函数式改写是一个引擎提交——已付清（2026-10-19）。** okm 的
+  `Graph::unlink_into` 把删除集放进调用方自己的批，于是一次改写就是
+  `unlink_into` + `link_into` 的一个提交——正是 ADR-0002 要的。边的动态段是
+  k10r 自己的条目（不属于 okm），所以同一批里先删它：改写永远不会继承上一条断言
+  的 props。这个窗口是关掉了，不是靠重放 ingest 缓过来的。
 - **边的载荷编解码归声明所有——已付清（2026-10-19）。** 边的载荷就是一份 obj
   （okm ADR-0017 §3），声明是 `GraphEncode`，于是一份声明同时生成双向编解码与
   面条目：`FactEdge::encode_payload` / `decode_payload`，`since` /
