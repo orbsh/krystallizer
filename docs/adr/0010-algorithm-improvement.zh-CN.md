@@ -68,7 +68,7 @@ okm 规范的布局如下（ns 在落地时分配：实体 36 与事实 37 已�
   0x1 节点种类面     [kind_id u16][scope u64][node_id u64]        声明式索引
   0x1 by_name 面     [name][scope u64][node_id u64]               实体名/别名精确入口
   0x1 by_community   [community_id u64][scope u64][node_id u64]   ← 草案的 index:community:，现为声明面
-  0x4/0x5 kind 词汇表  [kind_id u16] → 种类名 ／ [种类名] → kind_id
+  0x4/0x5 谓词词汇表  [kind_id u16] → 种类名 ／ [种类名] → kind_id
                      节点种类，与 props 的字段名（0x02/0x03）分开
 
 事实 —— 边集合（ns 37），每图一个 ns（okm ADR-0017）
@@ -77,7 +77,7 @@ okm 规范的布局如下（ns 在落地时分配：实体 36 与事实 37 已�
   0x1 动态段         [edge_id u64] → 关系的开放 props + `functional` 标志
   0x1 声明字段面（每条**声明**的 #[ok_index] 一面：since / confidence / weight）
                      [字段值][edge_id u64]
-  0x4/0x5 谓词字典   [谓词名] → predicate_id ／ [predicate_id] → 谓词名
+  0x4/0x5 谓词词汇表   [谓词名] → predicate_id ／ [predicate_id] → 谓词名
   0x6 谓词索引       [predicate_id][edge_id u64]
   0x7 出边           [src NodeRef][edge_id u64]
   0x8 入边           [dst NodeRef][edge_id u64]
@@ -124,8 +124,8 @@ okm 规范的布局如下（ns 在落地时分配：实体 36 与事实 37 已�
   「Key naming」）。`since` / `updated_at` 是 payload 字段，遵 ADR-0005 自己
   的先例：可变元数据永不进键。
 - **种类是运行时数据，算法要查的三个边字段是声明字段。** 谓词通过**图自己的
-  谓词字典**分配（固定面 0x04/0x05，name → `predicate_id`，okm ADR-0017 §3）
-  ——它不再等于载荷的字段名字典（0x02/0x03）；节点种类在实体集合里走同一条规则
+  谓词词汇表**分配（固定面 0x04/0x05，name → `predicate_id`，okm ADR-0017 §3）
+  ——它不再等于载荷的字段词汇表（0x02/0x03）；节点种类在实体集合里走同一条规则
   （自己那一对 0x04/0x05，props 名留在 0x02/0x03）；而 `since` / `confidence` /
   `weight` 是 k10r 自己 schema 的声明字段，各得一个 0x1 面（okm ADR-0017
   §3）——在 okm 的设计里这两者正交。提取出来的、开放式的属性走动态段，需要
@@ -171,7 +171,7 @@ okm 规范的布局如下（ns 在落地时分配：实体 36 与事实 37 已�
 
 ```rust
 // 草案草图 —— mem-core，在一条新提取的三元组上（按 okm 形态）
-let predicate_id = kinds.id_of(predicate);   // 图谓词字典（0x04/0x05）：name → predicate_id
+let predicate_id = kinds.id_of(predicate);   // 图谓词词汇表（0x04/0x05）：name → predicate_id
 let src = NodeRef::new(&ENTITY_NS.to_be_bytes(), &subject_id.to_be_bytes());
 let dst = NodeRef::new(&ENTITY_NS.to_be_bytes(), &object_id.to_be_bytes());
 
@@ -355,14 +355,14 @@ ADR-0005 说的那样改变顺序。
   batch，单行路径上也单独落盘。它只涨不落，所以即便一个社区最后一个成员离开，
   id 也永不复用——这正是「读现存社区的最大值」会弄错的情形（上一版发号器，
   在此退役）。
-- **一个 ns 两套词汇，对上 okm 按 handle 缓存的字典**（2026-10-17 踩出来的，
+- **一个 ns 两套词汇，对上 okm 按 handle 缓存的词汇表**（2026-10-17 踩出来的，
   当天因 okm 的裁决而**退役**）：边 ns 里曾同时住着关系种类（okm 的 `Graph`
-  用长驻 `DictCache` 分配）与关系 props 的名字（k10r 分配）；两个 cache 在同一
-  本字典里分配会把同一个 id 发给两个不同的名字——帧随后以**错误的名字**读回来，
-  而且无声。okm ADR-0017 §3 把谓词字典与载荷字段名字典分开（谓词 0x04/0x05、
+  用长驻 `VocabCache` 分配）与关系 props 的名字（k10r 分配）；两个 cache 在同一
+  本词汇表里分配会把同一个 id 发给两个不同的名字——帧随后以**错误的名字**读回来，
+  而且无声。okm ADR-0017 §3 把谓词词汇表与载荷字段词汇表分开（谓词 0x04/0x05、
   字段名 0x02/0x03）之后，这个撞名结构性消失，k10r 的两条纪律——「分配一律走
   一次性 cache」「边 handle 每次调用现建」——随之退役。**读侧也已付清
-  （2026-10-19 落地）：** okm 的 `DictCache::id_get` 在探测时自加载词汇，新建
+  （2026-10-19 落地）：** okm 的 `VocabCache::id_get` 在探测时自加载词汇，新建
   handle 直接答类型化读，不必预热——`facts_primed` 那段壳已删除。**实体侧同样
   对称**（kinds 走 0x04/0x05，props 名走 0x02/0x03），那边的"一次性 cache"
   纪律一并退役。

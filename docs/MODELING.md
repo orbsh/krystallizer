@@ -159,7 +159,7 @@ Current standing:
 - Fact graph: an OKM node collection (entities) plus an edge collection
   (facts) with declared faces, per ADR-0010 §1 — NOT an
   `edge:{src}:{label}:{dst}` key layout (`EdgeTable` is a former name; the
-  layer above is `Graph<S, E: KvGraph>` + `NodeRef` + the kind dictionary,
+  layer above is `Graph<S, E: GraphEncode>` + `NodeRef` + the predicate vocabulary,
   okm ADR-0017). The weight secondary index is the edge collection's
   `weight` declared field's face (ADR-0005, ADR-0010 §1).
 
@@ -321,8 +321,8 @@ pub struct EntityRow {
   exact lookup therefore re-verifies the row's name AND the decoded key's
   scope — the price of keeping the name out of the key.
 - `name` is an ATTRIBUTE (never key material); `kind_id` allocates through
-  this collection's own KIND VOCABULARY (fixed faces 0x04/0x05, okm ADR-0017
-  §3) — separate from the 0x02/0x03 dictionary its props' names use, so no two
+  this collection's own PREDICATE VOCABULARY (fixed faces 0x04/0x05, okm ADR-0017
+  §3) — separate from the 0x02/0x03 vocabulary its props' names use, so no two
   allocators share one id space.
 - `literal_num` is a literal node's integer projection (0 otherwise): a
   declared, fixed-width, ordered field, so a numeric read later stays a range
@@ -372,7 +372,7 @@ ADR-0017 §4). The DECLARATION is the graph — `GraphEncode`: `#[ok_ns(37)]`,
 another collection is one enum variant plus its ns in `NS_VALUES`, a code
 change), the payload's codec,
 and one 0x1 face per DECLARED `#[ok_index]`. The handle builds the primary, the
-payload's dynamic entry, the predicate dictionary and the four traversal
+payload's dynamic entry, the predicate vocabulary and the four traversal
 faces.
 
 | Face | Key |
@@ -380,7 +380,7 @@ faces.
 | 0x0 primary | `[edge_id 8B BE]` → `[src NodeRef][dst NodeRef][predicate_id][obj payload]` |
 | 0x1 dynamic segment | `[edge_id 8B BE]` → the relation's open props (`functional` rides here) |
 | 0x1nnn declared index (`since` / `confidence` / `weight`) | `[field value][edge_id]` |
-| 0x4/0x5 predicate dictionary | `[predicate_id]` → name / `[predicate name]` → `predicate_id` |
+| 0x4/0x5 predicate vocabulary | `[predicate_id]` → name / `[predicate name]` → `predicate_id` |
 | 0x6 predicate index | `[predicate_id][edge_id]` |
 | 0x7 out-edges | `[src NodeRef][edge_id]` |
 | 0x8 in-edges | `[dst NodeRef][edge_id]` |
@@ -412,13 +412,13 @@ faces.
   `FactEdge::decode_payload(&body.payload)`.
 - **Dictionary discipline (two vocabularies in one ns) — RETIRED, nothing
   replaces it.** The edge ns used to hold relation kinds (okm's `Graph`,
-  long-lived `DictCache`) AND the prop names k10r allocates; two caches
-  allocating in one dictionary hand the same id to different names, and the
+  long-lived `VocabCache`) AND the prop names k10r allocates; two caches
+  allocating in one vocabulary hand the same id to different names, and the
   frame then reads back under the wrong name — silently. okm ADR-0017 §3 split
   the vocabularies (the predicate owns 0x04/0x05; the payload's field names
   keep 0x02/0x03), so the collision is structurally gone; k10r's two
   disciplines — a fresh cache per call, a handle per call — retire with it, and
-  so does the read-side priming (okm's `DictCache::id_get` loads on probe).
+  so does the read-side priming (okm's `VocabCache::id_get` loads on probe).
   The entity collection rides the same rule — kinds at 0x04/0x05, prop names at
   0x02/0x03.
 

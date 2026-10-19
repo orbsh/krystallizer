@@ -83,7 +83,8 @@ Entities — node collection (ns 36), one per graph
   0x1 node-kind face [kind_id u16][scope u64][node_id u64]        declared index
   0x1 by_name face   [name][scope u64][node_id u64]               exact name/alias entrance
   0x1 by_community   [community_id u64][scope u64][node_id u64]   ← the drafts' index:community:, now a declared face
-  0x4/0x5 kind vocabulary [kind_id u16] → kind name ／ [kind name] → kind_id
+  0x4/0x5 predicate vocabulary [kind_id u16] → kind name ／ [kind name] → kind_id
+                     (the pair is okm's; an entity's kind rides it like a graph's predicate)
                      node kinds, separate from the props' field names (0x02/0x03)
 
 Facts — edge collection (ns 37), one ns per graph (okm ADR-0017)
@@ -151,8 +152,8 @@ Five points where this differs from the drafts, and why:
   precedent that mutable metadata never enters the key.
 - **The kinds are runtime data; the three algorithm-queried edge fields are
   declared.** Predicates allocate through the GRAPH's own predicate
-  dictionary (fixed faces 0x04/0x05, name → `predicate_id`, okm ADR-0017
-  §3); they are no longer the payload's field-name dictionary (0x02/0x03).
+  vocabulary (fixed faces 0x04/0x05, name → `predicate_id`, okm ADR-0017
+  §3); they are no longer the payload's field-name vocabulary (0x02/0x03).
   Node kinds ride the same rule in the entity collection — its own vocabulary
   pair at 0x04/0x05, with the props' names staying in 0x02/0x03.
   `since` / `confidence` /
@@ -441,17 +442,17 @@ node; the demo page still colours by node kind.
   grows, so an id is never reused even when a community's last member leaves —
   which is the case "the maximum of the communities that exist" gets wrong
   (the previous issuer, retired here).
-- **Two vocabularies in one ns vs. okm's per-handle dictionary cache** (found
+- **Two vocabularies in one ns vs. okm's per-handle vocabulary cache** (found
   the hard way 2026-10-17; RETIRED the same day by an okm ruling): the edge ns
   used to hold BOTH relation kinds (allocated by okm's `Graph` through its
-  long-lived `DictCache`) and the relation props' names (k10r's). Two caches
-  allocating in one dictionary hand out the same id for different names — the
+  long-lived `VocabCache`) and the relation props' names (k10r's). Two caches
+  allocating in one vocabulary hand out the same id for different names — the
   frame then reads back under the WRONG name, silently. okm ADR-0017 §3 gave
-  the predicate its OWN dictionary (0x04/0x05; the payload's field names keep
+  the predicate its OWN vocabulary (0x04/0x05; the payload's field names keep
   0x02/0x03), so the collision is structurally gone and k10r's two
   disciplines — "allocate through a FRESH cache", "build the edge handle PER
   CALL" — RETIRE with it. **The read side is paid too (LANDED 2026-10-19):**
-  okm's `DictCache::id_get` loads the vocabulary on probe, so a fresh handle
+  okm's `VocabCache::id_get` loads the vocabulary on probe, so a fresh handle
   answers typed reads with no priming — the `facts_primed` shim is deleted.
   The ENTITY side is symmetric (its kinds at 0x04/0x05, prop names at
   0x02/0x03), so the one-cache-per-call discipline retires there too.

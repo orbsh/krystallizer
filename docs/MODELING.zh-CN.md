@@ -134,7 +134,7 @@ okm 的纪律：查询只走声明过的路径——没有通用全表扫描的�
   id 序，供解析与关联挑选，由图谱检索取代——ADR-0003/0018）。
 - Fact graph：OKM 节点 collection（entities）+ 边 collection（facts）带声明面，
   见 ADR-0010 §1——不是 `edge:{src}:{label}:{dst}` 那种键布局（`EdgeTable` 是
-  旧名：上面那层是 `Graph<S, E: KvGraph>` + `NodeRef` + kind 字典，okm
+  旧名：上面那层是 `Graph<S, E: GraphEncode>` + `NodeRef` + 谓词词汇表，okm
   ADR-0017）。weight 二级索引 = 边 collection 的 `weight` 声明字段的面
   （ADR-0005、ADR-0010 §1）。
 
@@ -282,8 +282,8 @@ pub struct EntityRow {
 - **文本优先（text-first）形态**：`name` 变长且排在索引字段末位，所以按
   `alpha` 前缀扫描也会扫到 `alphabet`。精确查找因此要同时核验行里的 name
   与解出的 key 的 scope——这是把名字留在键之外要付的价。
-- `name` 是**属性**（永不进键）；`kind_id` 走本集合自己的 **kind 词汇表**（固定
-  面 0x04/0x05，okm ADR-0017 §3）——与它的 props 名所用的 0x02/0x03 字典分开，
+- `name` 是**属性**（永不进键）；`kind_id` 走本集合自己的 **谓词词汇表**（固定
+  面 0x04/0x05，okm ADR-0017 §3）——与它的 props 名所用的 0x02/0x03 词汇表分开，
   于是没有两个分配者共享同一个 id 空间。
 - `literal_num` 是字面量节点的整数投影（其余为 0）：声明的、定宽的、有序的字
   段，于是将来的数值读仍然是对某个面做 range scan，而不是向量距离的猜测。
@@ -318,14 +318,14 @@ pub struct EntityRow {
 声明**就是**这张图——`GraphEncode`：`#[ok_ns(37)]`、`#[ok_nodes(FactNodes)]`
 （成员集合——今天是 `Entities`；再加一个集合就是多一个枚举变体、`NS_VALUES` 里加一个 ns，改代码）、载荷的
 编解码、以及每条**声明**的 `#[ok_index]` 一个 0x1 面；主表、载荷的动态段条目、
-谓词字典与四个遍历面由句柄造。
+谓词词汇表与四个遍历面由句柄造。
 
 | 面 | 键 |
 |---|---|
 | 0x0 主表 | `[edge_id 8B BE]` → `[src NodeRef][dst NodeRef][predicate_id][obj 载荷]` |
 | 0x1 动态段 | `[edge_id 8B BE]` → 关系的开放 props（`functional` 标志住这里） |
 | 0x1nnn 声明索引（`since` / `confidence` / `weight`） | `[字段值][edge_id]` |
-| 0x4/0x5 谓词字典 | `[predicate_id]` → 谓词名 / `[谓词名]` → `predicate_id` |
+| 0x4/0x5 谓词词汇表 | `[predicate_id]` → 谓词名 / `[谓词名]` → `predicate_id` |
 | 0x6 谓词索引 | `[predicate_id][edge_id]` |
 | 0x7 出边 | `[src NodeRef][edge_id]` |
 | 0x8 入边 | `[dst NodeRef][edge_id]` |
@@ -350,13 +350,13 @@ pub struct EntityRow {
   由同一份声明写与读：`encode_payload` / `decode_payload`。k10r 手写的
   `from_attrs` 与那把锁测试已删；裁决输入是
   `FactEdge::decode_payload(&body.payload)`。
-- **字典纪律（一个 ns 两套词汇）——已退役，不再有替代品。** 边 ns 里曾住着关系
-  种类（由 okm 的 `Graph` 用长驻 `DictCache` 分配）**和** k10r 分配的 prop 名；
-  两个 cache 在同一本字典里分配会把同一个 id 发给两个不同的名字，帧随后以错误的
+- **词汇表纪律（一个 ns 两套词汇）——已退役，不再有替代品。** 边 ns 里曾住着关系
+  种类（由 okm 的 `Graph` 用长驻 `VocabCache` 分配）**和** k10r 分配的 prop 名；
+  两个 cache 在同一本词汇表里分配会把同一个 id 发给两个不同的名字，帧随后以错误的
   名字读回来，而且无声。okm ADR-0017 §3 把两套词汇分开（谓词占 0x04/0x05、载荷
   字段名保留 0x02/0x03）之后，这个撞名结构性消失；k10r 那两条纪律（一次性
   cache、handle 每次现建）随之退役，读侧的"预热"也不再需要（okm 的
-  `DictCache::id_get` 在探测时自加载）。实体集合走同一条规则——kinds 占
+  `VocabCache::id_get` 在探测时自加载）。实体集合走同一条规则——kinds 占
   0x04/0x05、props 名留 0x02/0x03。
 
 ### 访问面（mem-core `GraphStore`）

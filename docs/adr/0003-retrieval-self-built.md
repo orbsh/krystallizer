@@ -111,6 +111,17 @@ only complex ones (PageRank, community detection) earn a dependency.
   the LMDB reason above; a persisted HNSW only if a MEASURED latency budget
   still fails after that, and then as DERIVED state rebuilt from the rows,
   never as a second source of truth.
+  **Update 2026-10-19 — the ANN is okm-vector's, not ours.** When a measured
+  budget is exhausted, the implementation is the okm workspace's `okm-vector`:
+  an in-memory HNSW over quantized codes (int8 cosine, or product codes when
+  memory bites), fnv-sharded, one snapshot blob per shard at okm's fixed face
+  0x0B. That blob is derived state — built from the rows, written in a single
+  batch, droppable at any time — so the "never a second source of truth" line
+  holds without k10r owning a graph implementation. No arroy (the LMDB reason
+  above), no second storage engine, and no schema change here: the corpus
+  stays the entity rows' `embedding` frames. Below the threshold the
+  brute-force in-memory table remains the implementation; crossing it is a
+  measurement, not a rewrite.
 - There is no tokenizer to control, so "tokenization and scoring fully under
   our control" is no longer a trade-off claim this route makes.
 - The PG exit gate becomes an end-to-end recall comparison on a fixed query set,

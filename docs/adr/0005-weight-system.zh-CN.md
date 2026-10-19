@@ -87,7 +87,7 @@ time_decay  = days_since_last_access × 0.01
 `W:{weight}:{edge_id}` 服务 Top-K，每次权重变化写新键、删旧键（tombstone）。
 
 - 那些 delta 键错了两次：一是写在一个作废的**层**上（`edge:{src}:{label}:{dst}` 不是
-  k10r 的键形态——边的身份是 `[edge_id]`，端点与字典分配的 `predicate_id` 以 ref
+  k10r 的键形态——边的身份是 `[edge_id]`，端点与词汇表分配的 `predicate_id` 以 ref
   承载）；二是 delta 表本身对单写者毫无收益，而存储今天就是单写者。
 - 计数键也不需要旁表：计数器就是它所计的那一行的字段，所以一次 fold 是一次行重写。
 - 声明的权重面死因与上面 Top-K 那条相同：它服务整个库而不是一个 scope，而且它会

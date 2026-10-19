@@ -37,7 +37,7 @@ graph-memory 设计（wiki）已给出原子图的 KV 编码模式；剩余的 c
   集合（ns 36），事实是边集合（ns 37），边体带 `predicate_id` 与声明字段
   `since` / `confidence` / `weight`，另有种类面与遍历面。**不是**
   `edge:{src}:{label}:{dst}` 那种键布局，而 `EdgeTable` 是个旧名：上面那层
-  是 `Graph<S, E: KvGraph>` + `NodeRef` + 种类字典（okm ADR-0017）。
+  是 `Graph<S, E: GraphEncode>` + `NodeRef` + 谓词词汇表（okm ADR-0017）。
 - **追加优先，不是只追加——按表分范围。** channel 日志（ns 33）无例外地
   只追加：提取、重放、审计都读它，而一个可以被更正的日志会同时失去这三者。
   图与数据面是追加优先：节点行/边行、权重、派生索引项、code 行，在「禁止

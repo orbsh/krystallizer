@@ -44,8 +44,8 @@ macros.**
   edge collection (ns 37) carrying `predicate_id` plus the declared `since` /
   `confidence` / `weight` fields, with the kind and traversal faces. NOT an
   `edge:{src}:{label}:{dst}` key layout, and `EdgeTable` is a former name:
-  the layer above is `Graph<S, E: KvGraph>` + `NodeRef` + the kind
-  dictionary (okm ADR-0017).
+  the layer above is `Graph<S, E: GraphEncode>` + `NodeRef` + the kind
+  vocabulary (okm ADR-0017).
 - **Append-first, not append-only — scoped by table.** The channel log
   (ns 33) is append-only outright: extraction, replay and audit all read it,
   and a log that can be corrected loses all three at once. The graph and the
