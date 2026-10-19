@@ -70,6 +70,15 @@ own indexing is neither class, it is a design error (the consolidation doors
 retired on 2026-10-20 were exactly that). `docs/SEAM.md` keeps the two lists
 apart, one table each.
 
+**The two classes sit under two path prefixes**, so the class is visible in the
+URL rather than in a table: `/memories/{scope}/…` is the core memory face (the
+write, the answer, the identity entrance, the reported counter) and
+`/graph/{scope}/…` is the analysis face (the whole graph, the landing alone, one
+hop) — the session and code doors keep `/channels` and `/code`. Nothing is
+served at the old `/facts` prefix: a renamed door is a broken door, and an alias
+would let a consumer's turn keep depending on a shape the analysis face is free
+to change.
+
 **LLM orchestration belongs to gravity.** Extraction-pipeline LLM
 decisions (stage classification, out-of-domain fusion decisions,
 summarize when policy needs one) are gravity's work — k10r hands over

@@ -25,7 +25,7 @@ fold 出来的 `weight` 就住在它们旁边。一个身份、一次写——�
   （被丢弃的事实不算写）。`read_count` 是送出的 recall——只有调用方带着时钟
   （`ts_ms`）时 `recall` / `expand` 才加，因为没人盖戳的读不算读，缺失的时间戳不能
   凭空生出衰减。`tool_count` 是调用方上报的工具调用
-  （`POST /facts/{scope}/edges/{id}/touch`）：k10r 看不见内部的工具调用，用过这条
+  （`POST /memories/{scope}/edges/{id}/touch`）：k10r 看不见内部的工具调用，用过这条
   事实的消费者自己报。
 - **read_count 与 write_count 物理上保持分开**——原子事实追加模型保证读写独立，
   这正是二维四象限分类在存储层稳定的前提。

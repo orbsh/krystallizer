@@ -88,13 +88,13 @@ pub fn open_with(
         )
         .route("/code", post(put_code).get(list_code))
         .route("/code/{code_id}", get(fetch_code))
-        .route("/facts/{scope}", post(ingest_fact))
-        .route("/facts/{scope}/search", get(search_facts))
-        .route("/facts/{scope}/recall", get(recall_facts))
-        .route("/facts/{scope}/edges/{edge_id}/touch", post(touch_fact))
-        .route("/facts/{scope}/entities/{name}", get(fetch_entity))
+        .route("/memories/{scope}", post(ingest_fact))
+        .route("/graph/{scope}/search", get(search_facts))
+        .route("/memories/{scope}/recall", get(recall_facts))
+        .route("/memories/{scope}/edges/{edge_id}/touch", post(touch_fact))
+        .route("/memories/{scope}/entities/{name}", get(fetch_entity))
         .route(
-            "/facts/{scope}/entities/{node_id}/edges",
+            "/graph/{scope}/entities/{node_id}/edges",
             get(list_entity_edges),
         )
         .route("/graph/{scope}", get(fetch_graph))
@@ -448,7 +448,7 @@ impl IntoResponse for FactError {
     }
 }
 
-/// `POST /facts/{scope}` — land one fact; the body IS the 8-slot tuple.
+/// `POST /memories/{scope}` — land one fact; the body IS the 8-slot tuple.
 async fn ingest_fact(
     State(state): State<Arc<MemState>>,
     Path(scope): Path<u64>,
@@ -471,7 +471,7 @@ pub struct EntityDto {
     pub name: String,
 }
 
-/// One landing seed (`GET /facts/{scope}/search`): the node the query landed
+/// One landing seed (`GET /graph/{scope}/search`): the node the query landed
 /// on and its similarity. The caller expands from here (ADR-0003: vector
 /// landing + graph traversal); an EMPTY list is the legal "nothing landed".
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
@@ -519,7 +519,7 @@ fn default_budget() -> usize {
     20
 }
 
-/// One recall (`GET /facts/{scope}/recall`): the landing seeds, the
+/// One recall (`GET /memories/{scope}/recall`): the landing seeds, the
 /// communities they landed in, the facts the answer shows, and the rendered
 /// memory text — id-bearing lines, one block per community (ADR-0010 §5).
 ///
@@ -541,7 +541,7 @@ pub struct RecallDto {
     pub total: usize,
 }
 
-/// `GET /facts/{scope}/search?q=&k=` — vector landing over one scope's
+/// `GET /graph/{scope}/search?q=&k=` — vector landing over one scope's
 /// entities (ADR-0003). Below the landing floor the answer is an empty list,
 /// never an error; no embedding engine attached is the same empty list.
 async fn search_facts(
@@ -568,7 +568,7 @@ async fn search_facts(
         .map_err(FactError::from)
 }
 
-/// `GET /facts/{scope}/recall?q=&k=&ts_ms=` — the read shape ADR-0003
+/// `GET /memories/{scope}/recall?q=&k=&ts_ms=` — the read shape ADR-0003
 /// describes: vector landing plus ONE hop, ordered by weight (ADR-0005),
 /// returned together so the caller does not stitch two calls. An empty
 /// landing returns no seeds and no facts.
@@ -615,7 +615,7 @@ pub struct TouchFact {
     pub ts_ms: u64,
 }
 
-/// `POST /facts/{scope}/edges/{edge_id}/touch` — count one TOOL consult of
+/// `POST /memories/{scope}/edges/{edge_id}/touch` — count one TOOL consult of
 /// a fact (ADR-0005's `tool_invoke_count`, the index that outranks a plain
 /// read) and answer the fact's new view. An unknown edge, or one whose
 /// source lives in another scope, is a 404: edges carry no scope segment,
@@ -677,7 +677,7 @@ impl From<mem_core::graph::FactView> for FactViewDto {
     }
 }
 
-/// `GET /facts/{scope}/entities/{name}` — the exact name/alias entrance
+/// `GET /memories/{scope}/entities/{name}` — the exact name/alias entrance
 /// (ADR-0003: the name is an attribute, and this face is how the human
 /// identity reaches the store). An unknown name is a 404 — the caller
 /// turns it into an error value; an empty RESULT would be a different
@@ -698,7 +698,7 @@ async fn fetch_entity(
     }))
 }
 
-/// `GET /facts/{scope}/entities/{node_id}/edges` — the node's outgoing
+/// `GET /graph/{scope}/entities/{node_id}/edges` — the node's outgoing
 /// facts, endpoints resolved: one hop of the traversal, in edge-id order.
 /// An empty list is a legal answer (a node with no facts yet).
 async fn list_entity_edges(

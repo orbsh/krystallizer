@@ -338,7 +338,7 @@ pub struct EntityRow {
   L2-normalized at the source so `cosine` is an inner product. EMPTY is a
   legal row (written with no engine attached) and retrieval skips it — never
   a zero vector.
-- **Retrieval (`GraphStore::retrieve`, `GET /facts/{scope}/search?q=&k=` — the
+- **Retrieval (`GraphStore::retrieve`, `GET /graph/{scope}/search?q=&k=` — the
   ANALYSIS class: the landing alone, for inspection; the core answer is
   `recall`, below)**
   is vector landing, not a query language: embed the query, inner-product it
@@ -350,7 +350,7 @@ pub struct EntityRow {
   LRU eviction, and the scan is `Flat` (brute force) — the bucketed form is
   the documented next step, taken only when one scope's table no longer fits
   (ADR-0003's measured threshold).
-- **`GraphStore::recall` (`GET /facts/{scope}/recall?q=&k=&budget=&ts_ms=` — the
+- **`GraphStore::recall` (`GET /memories/{scope}/recall?q=&k=&budget=&ts_ms=` — the
   CORE class: the memory answer a consumer runs on)**
   is that landing plus the landed COMMUNITY: the seeds' `community_id`s are
   read as buckets (the `by_community` face for members, the traversal faces for

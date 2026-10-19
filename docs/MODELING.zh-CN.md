@@ -294,7 +294,7 @@ pub struct EntityRow {
   ingest 时于进程内计算——HTTP 客户端从不发送向量。任意长度的冷段帧（长度住在
   帧里，所以换模型换的是数据、不是 wire），源头做 L2 归一化，于是 `cosine` 就是
   一次内积。**空帧是合法行**（写入时没有挂引擎），检索侧跳过它，绝不是零向量。
-- **检索（`GraphStore::retrieve`、`GET /facts/{scope}/search?q=&k=`——**分析**类：
+- **检索（`GraphStore::retrieve`、`GET /graph/{scope}/search?q=&k=`——**分析**类：
   只有落点，供检视；核心答案是下面的 `recall`）是向量落地，
   不是查询语言**：嵌 query → 与该 scope 的**派生**内存表做内积 → 丢掉
   `LANDING_FLOOR`（0.35）以下的 → 取前 `k` 个种子 `{node_id, score, name,
@@ -302,7 +302,7 @@ pub struct EntityRow {
   KV 重建、**每次写入即失效**，所以不可能拿旧语料作答；它带字节预算与 LRU 淘汰，
   扫描形态是 `Flat`（暴力）——分桶形态是文档化的下一步，只在单个 scope 的表装不下
   时（ADR-0003 的可测阈值）才取。
-- **`GraphStore::recall`（`GET /facts/{scope}/recall?q=&k=&budget=&ts_ms=`——**核心**
+- **`GraphStore::recall`（`GET /memories/{scope}/recall?q=&k=&budget=&ts_ms=`——**核心**
   类：消费方跑在上面的记忆答案**）是落地 + 着陆到的**社区**：种子的 `community_id`
   当作桶读（成员走 `by_community` 面，两端都在社区内的事实走遍历面），按权重
   （ADR-0005）排序，受 `budget` 条事实封顶，渲染成带 id 的文本——一个表头、每节点

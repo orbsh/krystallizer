@@ -37,17 +37,17 @@ pull, fix up or write back k10r's own indexing is therefore not a door of
 either class — it is a design error, and the consolidation doors that used to
 sit here were exactly that (retired 2026-10-20).
 
-### 1a. Core API
+### 1a. Core API — `/channels`, `/memories`, `/code`
 
 | Door (HTTP) | mem-core primitive | Table (ns) | Status |
 |---|---|---|---|
 | `POST /channels/{c}/messages` | `ChannelStore::append` | messages (33) | landed |
 | `GET /channels/{c}/members/{m}/session?format=` | `channel::fetch_full` + `view::assemble` (head → checkpoint → increment) + `render::render_head` | messages + checkpoints (33/34) + the head's facts (36/37) | landed (view shape 2026-10-20; head rendered 2026-10-20) |
 | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint` | checkpoints (34) | landed |
-| `POST /facts/{scope}` | `GraphStore::ingest` (the body IS the 8-slot tuple; `scope` is the path) | entities (36) + facts (37) | landed (2026-10-17) |
-| `GET /facts/{scope}/recall?q=&k=&budget=&ts_ms=&format=` | `GraphStore::recall` (landing → the landed COMMUNITY's bucket → one representation: the rendered, id-bearing text or, under `format=struct`, the data alone; ranked by weight, capped by `budget`; no engine = an empty answer) | entities (36) + facts (37) | landed (2026-10-20) |
-| `GET /facts/{scope}/entities/{name}` | `GraphStore::entity_by_name` (the exact name/alias entrance; 404 on an unknown name) | entities (36) | landed (2026-10-17) |
-| `POST /facts/{scope}/edges/{id}/touch` | `GraphStore::touch` (a caller-reported TOOL consult: counters bump, weight folds; 404 for an unknown edge or another scope's) | facts (37) | landed (2026-10-19) |
+| `POST /memories/{scope}` | `GraphStore::ingest` (the body IS the 8-slot tuple; `scope` is the path) | entities (36) + facts (37) | landed (2026-10-17) |
+| `GET /memories/{scope}/recall?q=&k=&budget=&ts_ms=&format=` | `GraphStore::recall` (landing → the landed COMMUNITY's bucket → one representation: the rendered, id-bearing text or, under `format=struct`, the data alone; ranked by weight, capped by `budget`; no engine = an empty answer) | entities (36) + facts (37) | landed (2026-10-20) |
+| `GET /memories/{scope}/entities/{name}` | `GraphStore::entity_by_name` (the exact name/alias entrance; 404 on an unknown name) | entities (36) | landed (2026-10-17) |
+| `POST /memories/{scope}/edges/{id}/touch` | `GraphStore::touch` (a caller-reported TOOL consult: counters bump, weight folds; 404 for an unknown edge or another scope's) | facts (37) | landed (2026-10-19) |
 | `POST /code` | `CodeStore::put` | code (35) | landed |
 | `GET /code` | `CodeStore::list` (pool read: id + language + description, no source) | code (35) | landed |
 | `GET /code/{id}` | `CodeStore::get` (the whole row, source included) | code (35) | landed |
@@ -61,13 +61,13 @@ assembly (rides the session projection's head, ADR-0001/0008), task vertices +
 `task_links` edges and task instance state (the third interface surface,
 ADR-0001; gravity ADR-0003 §3/§4).
 
-### 1b. Analysis API
+### 1b. Analysis API — `/graph`
 
 | Door (HTTP) | mem-core primitive | Table (ns) | Status |
 |---|---|---|---|
 | `GET /graph/{scope}` | `GraphStore::scope_entities` + `scope_facts` (one scope as nodes + links — the renderer's bulk read; nodes carry `community_id`) | entities (36) + facts (37) | landed (2026-10-17) |
-| `GET /facts/{scope}/search?q=&k=` | `GraphStore::retrieve` (the landing ALONE: node vectors, inner product, the 0.35 floor; no engine = 200 + `[]`) — what `recall` does before it answers | entities (36) | landed (2026-10-19) |
-| `GET /facts/{scope}/entities/{node_id}/edges` | `GraphStore::out_facts` (one hop, both endpoints resolved) — inspection, and a caller's own composition starts here | facts (37) + entities (36) | landed (2026-10-17) |
+| `GET /graph/{scope}/search?q=&k=` | `GraphStore::retrieve` (the landing ALONE: node vectors, inner product, the 0.35 floor; no engine = 200 + `[]`) — what `recall` does before it answers | entities (36) | landed (2026-10-19) |
+| `GET /graph/{scope}/entities/{node_id}/edges` | `GraphStore::out_facts` (one hop, both endpoints resolved) — inspection, and a caller's own composition starts here | facts (37) + entities (36) | landed (2026-10-17) |
 | — no route | `entity` / `entity_props` / `fact` / `fact_props` / `typed_out` (the rest of the core's READ primitives) | fact graph (36/37) | core landed, no route — audit reads |
 | — no route | a scope-wide weight Top-K | facts (37) | FOLLOW-UP (Phase 4 — it needs a `[scope][weight][edge_id]` projection, ADR-0005) |
 
@@ -86,8 +86,8 @@ Every operation in this table rides a CORE door (§1a); the analysis class
 | Turn-end delta append (user + reply, one `ts_ms`, `sub` 0/1) | `MemorySurface::append_message` | `POST /channels/{c}/messages` | `ChannelStore::append` | landed |
 | Compression landing (summarize) | not wired | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint` | door landed, gravity side owed (Phase 2/2.6) |
 | Task progress (one task row per step; read with the turn-start projection, completion written at the call site) | ADR-0003 §3/§4 | read side rides `GET /channels/{c}/members/{m}/session`; the write face has no route yet | task vertices + `task_links` edges in the same graph as the facts | Declared — the third interface surface (ADR-0001; gravity Phase 2.6 |
-| `recall_memory` — long-term facts | tool face (not in code yet) | `GET /facts/{scope}/recall?q=` (landing + the landed community, rendered) beside `GET /facts/{scope}/entities/{name}` (the exact entrance) | `GraphStore::recall` / `entity_by_name` | graph doors landed (2026-10-20); the tool face is a FOLLOW-UP (gravity side) |
-| `commit_memory` — write facts | tool face | `POST /facts/{scope}` | `GraphStore::ingest(fact)` | door landed (2026-10-17); the tool itself is a FOLLOW-UP (gravity side) |
+| `recall_memory` — long-term facts | tool face (not in code yet) | `GET /memories/{scope}/recall?q=` (landing + the landed community, rendered) beside `GET /memories/{scope}/entities/{name}` (the exact entrance) | `GraphStore::recall` / `entity_by_name` | graph doors landed (2026-10-20); the tool face is a FOLLOW-UP (gravity side) |
+| `commit_memory` — write facts | tool face | `POST /memories/{scope}` | `GraphStore::ingest(fact)` | door landed (2026-10-17); the tool itself is a FOLLOW-UP (gravity side) |
 | `resolve_skills` — the selectable skill list | tool face | `GET /code` (bring-up: the pool read) | `CodeStore::list` | bring-up form landed; the skill NODE (preconditions / steps / experience / verification) is Phase 5+ deferred |
 | `invoke_skill` — plan step: fetch the code row | tool face | `GET /code/{id}` | `CodeStore::get` | landed |
 | `invoke_skill` — the call itself | plan step | **not k10r** (see §3) | — | gravity Phase 4.6 |

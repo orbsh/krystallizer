@@ -33,7 +33,7 @@ async fn ingest(
     tuple: serde_json::Value,
 ) -> reqwest::Response {
     client
-        .post(format!("{base}/facts/{scope}"))
+        .post(format!("{base}/memories/{scope}"))
         .json(&tuple)
         .send()
         .await
@@ -232,7 +232,7 @@ async fn the_graph_and_the_code_store_share_a_keyspace_without_leaking() {
 
     // Same numeric id (1) in both tables — different ns, no collision.
     let entity: EntityDto = client
-        .get(format!("{base}/facts/1/entities/galaxy_repo"))
+        .get(format!("{base}/memories/1/entities/galaxy_repo"))
         .send()
         .await
         .unwrap()
@@ -278,7 +278,7 @@ async fn the_exact_entrance_finds_a_node_and_404s_when_absent() {
     .await;
 
     let found: EntityDto = client
-        .get(format!("{base}/facts/1/entities/galaxy_repo"))
+        .get(format!("{base}/memories/1/entities/galaxy_repo"))
         .send()
         .await
         .unwrap()
@@ -296,14 +296,14 @@ async fn the_exact_entrance_finds_a_node_and_404s_when_absent() {
     );
 
     let absent = client
-        .get(format!("{base}/facts/1/entities/nothing-here"))
+        .get(format!("{base}/memories/1/entities/nothing-here"))
         .send()
         .await
         .unwrap();
     assert_eq!(absent.status(), 404);
 
     let other_scope = client
-        .get(format!("{base}/facts/2/entities/galaxy_repo"))
+        .get(format!("{base}/memories/2/entities/galaxy_repo"))
         .send()
         .await
         .unwrap();
@@ -333,7 +333,7 @@ async fn one_hop_traversal_resolves_both_ends() {
     .await;
 
     let edges: Vec<FactViewDto> = client
-        .get(format!("{base}/facts/1/entities/1/edges"))
+        .get(format!("{base}/graph/1/entities/1/edges"))
         .send()
         .await
         .unwrap()
@@ -355,7 +355,7 @@ async fn one_hop_traversal_resolves_both_ends() {
     );
 
     let none: Vec<FactViewDto> = client
-        .get(format!("{base}/facts/1/entities/999/edges"))
+        .get(format!("{base}/graph/1/entities/999/edges"))
         .send()
         .await
         .unwrap()
@@ -433,7 +433,7 @@ async fn the_visualization_door_serves_one_scope_as_nodes_and_links() {
     );
 }
 
-/// `GET /facts/{scope}/search` — vector landing (ADR-0003). The server built
+/// `GET /graph/{scope}/search` — vector landing (ADR-0003). The server built
 /// without an engine cannot embed the query, so the door answers the legal
 /// EMPTY list (200 + `[]`), never an error: "nothing landed" is a valid
 /// retrieval outcome, and the caller injects no memory. The ranked path is
@@ -445,7 +445,7 @@ async fn retrieval_door_answers_an_empty_landing_without_an_engine() {
     let client = reqwest::Client::new();
 
     let response = client
-        .get(format!("{base}/facts/1/search?q=fjall_engine"))
+        .get(format!("{base}/graph/1/search?q=fjall_engine"))
         .send()
         .await
         .unwrap();
@@ -454,7 +454,7 @@ async fn retrieval_door_answers_an_empty_landing_without_an_engine() {
     assert!(seeds.is_empty(), "no engine = nothing lands");
 }
 
-/// `GET /facts/{scope}/recall` — landing + one hop in one answer. Without an
+/// `GET /memories/{scope}/recall` — landing + one hop in one answer. Without an
 /// engine nothing lands, so the door answers empty seeds AND empty facts
 /// (200, never an error). The ranked path lives in mem-core, which owns the
 /// engine; this pins the door's shape.
@@ -463,7 +463,7 @@ async fn recall_door_answers_an_empty_landing_without_an_engine() {
     let (base, _dir) = spawn_server().await;
     let client = reqwest::Client::new();
     let response = client
-        .get(format!("{base}/facts/1/recall?q=fjall_engine"))
+        .get(format!("{base}/memories/1/recall?q=fjall_engine"))
         .send()
         .await
         .unwrap();
@@ -477,7 +477,7 @@ async fn recall_door_answers_an_empty_landing_without_an_engine() {
     );
 }
 
-/// `POST /facts/{scope}/edges/{id}/touch` — the caller reports a TOOL
+/// `POST /memories/{scope}/edges/{id}/touch` — the caller reports a TOOL
 /// consult (k10r cannot see one from inside), and the fact's new view
 /// comes back with the counter bumped and the weight re-folded. An unknown
 /// edge, or one from another scope, is a 404: the edge has no scope
@@ -500,7 +500,7 @@ async fn the_touch_door_counts_a_tool_consult_and_404s_for_a_foreign_edge() {
     assert_eq!(outcome.outcome, "linked");
 
     let touched: FactViewDto = client
-        .post(format!("{base}/facts/1/edges/1/touch"))
+        .post(format!("{base}/memories/1/edges/1/touch"))
         .json(&serde_json::json!({ "ts_ms": 2000 }))
         .send()
         .await
@@ -517,7 +517,7 @@ async fn the_touch_door_counts_a_tool_consult_and_404s_for_a_foreign_edge() {
     );
 
     let unknown = client
-        .post(format!("{base}/facts/1/edges/99/touch"))
+        .post(format!("{base}/memories/1/edges/99/touch"))
         .json(&serde_json::json!({ "ts_ms": 2000 }))
         .send()
         .await
@@ -525,7 +525,7 @@ async fn the_touch_door_counts_a_tool_consult_and_404s_for_a_foreign_edge() {
     assert_eq!(unknown.status(), 404);
 
     let foreign = client
-        .post(format!("{base}/facts/2/edges/1/touch"))
+        .post(format!("{base}/memories/2/edges/1/touch"))
         .json(&serde_json::json!({ "ts_ms": 2000 }))
         .send()
         .await
@@ -551,7 +551,7 @@ async fn recall_answers_the_rendered_memory_and_the_consolidation_doors_are_gone
     .await;
 
     let answer: serde_json::Value = client
-        .get(format!("{base}/facts/1/recall?q=alpha&k=3&budget=5"))
+        .get(format!("{base}/memories/1/recall?q=alpha&k=3&budget=5"))
         .send()
         .await
         .unwrap()
@@ -569,7 +569,9 @@ async fn recall_answers_the_rendered_memory_and_the_consolidation_doors_are_gone
 
     // The same question in the data representation: the structure, no text.
     let structured: serde_json::Value = client
-        .get(format!("{base}/facts/1/recall?q=alpha&k=3&format=struct"))
+        .get(format!(
+            "{base}/memories/1/recall?q=alpha&k=3&format=struct"
+        ))
         .send()
         .await
         .unwrap()

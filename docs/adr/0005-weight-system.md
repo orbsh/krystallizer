@@ -29,7 +29,7 @@ the row, a bump rewrites one row and everything derived from it follows.
   it only when the caller's clock rides the call (`ts_ms`), because a read
   nobody stamped is not a read and an absent timestamp must not invent
   decay. `tool_count` is a caller-reported tool consult
-  (`POST /facts/{scope}/edges/{id}/touch`): k10r cannot see a tool call from
+  (`POST /memories/{scope}/edges/{id}/touch`): k10r cannot see a tool call from
   inside, so the consumer that used the fact reports it.
 - **read_count and write_count stay physically separate** — the atomic-fact
   append model guarantees read/write independence, which is what makes the

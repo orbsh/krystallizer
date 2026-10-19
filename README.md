@@ -47,7 +47,7 @@ and [图谱化记忆](https://github.com/orbsh/wiki/blob/main/graph-memory.md):
 |---|---|
 | `mem-core` | Storage + retrieval core. Zero LLM dependency, zero transport dependency. |
 | `mem-ffi` | PyO3 bindings (maturin). |
-| `mem-server` | axum HTTP surface — the single cross-process form (ADR-0007 as revised). It serves TWO classes of door, kept apart in `docs/SEAM.md`: the CORE API a consumer runs on (session projection and appends, `POST /facts/{scope}`, `GET /facts/{scope}/recall`, the exact name entrance, `.../edges/{id}/touch`, the code store) and the ANALYSIS API for audit and visualization (the render graph `GET /graph/{scope}`, the landing alone, one hop). |
+| `mem-server` | axum HTTP surface — the single cross-process form (ADR-0007 as revised). It serves TWO classes of door, kept apart in `docs/SEAM.md`: the CORE API a consumer runs on (session projection and appends, `POST /memories/{scope}`, `GET /memories/{scope}/recall`, the exact name entrance, `.../edges/{id}/touch`, the code store) and the ANALYSIS API for audit and visualization (the render graph `GET /graph/{scope}`, the landing alone, one hop). |
 
 Storage: Fjall, with schemas declared via OKM derive macros (compile-time key
 encoding, hex stability tests).

@@ -343,7 +343,7 @@ unknown `format` value is a 400, never a silent fallback — a typo must not
 quietly change the representation.
 
 The answer is ONE door,
-`GET /facts/{scope}/recall?q=&k=&budget=&ts_ms=&format=`, returning the seeds,
+`GET /memories/{scope}/recall?q=&k=&budget=&ts_ms=&format=`, returning the seeds,
 the community ids, the shown facts and the rendered text together. There is no
 N-hop: a community IS the bounded slice, and a caller that wants a deeper walk
 composes it from `out_edges`/`in_edges`.

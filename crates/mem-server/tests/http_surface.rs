@@ -235,7 +235,7 @@ async fn session_carries_the_head_block_and_named_roles() {
 
     // The first entity scope 1 resolves takes node id 1.
     let status = client
-        .post(format!("{base}/facts/1"))
+        .post(format!("{base}/memories/1"))
         .json(&json!(["用户", "person", {}, "PREFERS", {}, "简洁", "style", {}]))
         .send()
         .await

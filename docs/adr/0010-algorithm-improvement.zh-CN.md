@@ -280,7 +280,7 @@ Append-first 的写入产出的是堆，不是秩序；秩序按每次写入在�
 三种文本形态陈述的是同一批事实，差别只在语法。`format` 值不认识就是 400，绝不
 静默退回另一种表示——拼错不该悄悄改变答案的形态。
 
-答案是**一扇门**：`GET /facts/{scope}/recall?q=&k=&budget=&ts_ms=&format=`，一次
+答案是**一扇门**：`GET /memories/{scope}/recall?q=&k=&budget=&ts_ms=&format=`，一次
 返回种子、社区 id、被展示的事实和渲染好的文本。没有 N 跳：社区**就是**那块有界
 的切片，想要更深的走法，调用方从 `out_edges`/`in_edges` 自己组合。
 

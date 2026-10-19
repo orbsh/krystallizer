@@ -87,11 +87,11 @@ only complex ones (PageRank, community detection) earn a dependency.
   outbound surface empty (ADR-0007).
 - Bring-up posture: brute-force inner product stands in for ANN below the
   measured threshold; ANN integration must not be a Phase-1 blocker.
-  **Landed 2026-10-19:** `GraphStore::retrieve` + `GET /facts/{scope}/search`
+  **Landed 2026-10-19:** `GraphStore::retrieve` + `GET /graph/{scope}/search`
   — per-scope in-memory table (loaded from the KV on first use, dropped on
   every write, byte-budgeted with LRU eviction), inner product over
   unit-length vectors, `LANDING_FLOOR` (0.35) and a legal empty landing —
-  plus the read answer (`GraphStore::recall`, `GET /facts/{scope}/recall`):
+  plus the read answer (`GraphStore::recall`, `GET /memories/{scope}/recall`):
   the seeds, the communities they landed in, and ONE representation of those
   communities' facts under a fact budget — the id-bearing text, or the data
   alone under `format=struct` (ADR-0010 §3–§5).
