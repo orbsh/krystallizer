@@ -7,10 +7,10 @@
 //! parallel edges while a functional one rewrites its incumbent IN PLACE
 //! (which proves the incumbent scan read the stored edge through the
 //! door), a structural bug is a 400 carrying the core's own reason, and
-//! the graph shares the `memory` keyspace with flat memory without either
-//! seeing the other.
+//! the graph shares the `memory` keyspace with the code store without
+//! either seeing the other.
 
-use mem_server::{EntityDto, FactViewDto, GraphDto, IngestOutcomeDto, StoreMemory};
+use mem_server::{EntityDto, FactViewDto, GraphDto, IngestOutcomeDto};
 use std::net::SocketAddr;
 use tempfile::TempDir;
 
@@ -197,24 +197,30 @@ async fn a_malformed_tuple_is_refused_with_the_reason() {
     assert_eq!(not_a_list.status(), 400);
 }
 
-/// The graph and flat memory share ONE keyspace (the `memory` tree), so
-/// the ns is the only separator: an entity's name is not a memory row and
-/// a memory's text is not a graph node.
+/// The graph and the code store share ONE keyspace (the `memory` tree),
+/// so the ns is the only separator: an entity and a piece of code can both
+/// be the "first row" of their table (id 1) without either seeing the
+/// other.
 #[tokio::test]
-async fn the_graph_and_flat_memory_share_a_keyspace_without_leaking() {
+async fn the_graph_and_the_code_store_share_a_keyspace_without_leaking() {
     let (base, _dir) = spawn_server().await;
     let client = reqwest::Client::new();
 
-    client
-        .post(format!("{base}/memory"))
-        .json(&StoreMemory {
-            user_id: 1,
-            text: "we chose Fjall".into(),
-            created_at: 1000,
-        })
+    let code: serde_json::Value = client
+        .post(format!("{base}/code"))
+        .json(&serde_json::json!({
+            "language": "nu",
+            "description": "log into a host",
+            "parameters": "{}",
+            "source": "ssh $args.host",
+        }))
         .send()
         .await
+        .unwrap()
+        .json()
+        .await
         .unwrap();
+    assert_eq!(code["code_id"], 1, "the code table's first id");
 
     ingest(
         &client,
@@ -224,28 +230,36 @@ async fn the_graph_and_flat_memory_share_a_keyspace_without_leaking() {
     )
     .await;
 
-    let hits: Vec<serde_json::Value> = client
-        .get(format!("{base}/memory/1/search?q=galaxy_repo"))
+    // Same numeric id (1) in both tables — different ns, no collision.
+    let entity: EntityDto = client
+        .get(format!("{base}/facts/1/entities/galaxy_repo"))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    assert!(
-        hits.is_empty(),
-        "the entity row does not show up in a memory search"
-    );
+    assert_eq!(entity.node_id, 1);
 
-    let still_there: Vec<serde_json::Value> = client
-        .get(format!("{base}/memory/1/search?q=Fjall"))
+    let stored: serde_json::Value = client
+        .get(format!("{base}/code/1"))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    assert_eq!(still_there.len(), 1, "the memory row survives the ingest");
+    assert_eq!(stored["source"], "ssh $args.host", "the code row survives");
+
+    let pool: Vec<serde_json::Value> = client
+        .get(format!("{base}/code"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(pool.len(), 1, "the entity is not a code row");
 }
 
 /// The exact name entrance: the human identity reaches the graph here
@@ -457,4 +471,179 @@ async fn recall_door_answers_an_empty_landing_without_an_engine() {
     let recall: serde_json::Value = response.json().await.unwrap();
     assert_eq!(recall["seeds"].as_array().unwrap().len(), 0);
     assert_eq!(recall["facts"].as_array().unwrap().len(), 0);
+}
+
+/// `POST /facts/{scope}/edges/{id}/touch` — the caller reports a TOOL
+/// consult (k10r cannot see one from inside), and the fact's new view
+/// comes back with the counter bumped and the weight re-folded. An unknown
+/// edge, or one from another scope, is a 404: the edge has no scope
+/// segment, its endpoints do.
+#[tokio::test]
+async fn the_touch_door_counts_a_tool_consult_and_404s_for_a_foreign_edge() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    let outcome: IngestOutcomeDto = ingest(
+        &client,
+        &base,
+        1,
+        tuple(r#"["user","person",{},"PREFERS",{"since":1000},"iced_americano","coffee",{}]"#),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(outcome.outcome, "linked");
+
+    let touched: FactViewDto = client
+        .post(format!("{base}/facts/1/edges/1/touch"))
+        .json(&serde_json::json!({ "ts_ms": 2000 }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(touched.tool_count, 1);
+    assert_eq!(touched.write_count, 1, "the assertion is still the one write");
+    assert_eq!(touched.last_read, 2000, "the caller's clock, verbatim");
+    assert_eq!(
+        touched.weight, 1386,
+        "ln(2)×0.5 (one write) + ln(2)×1.5 (the tool consult) — the folded value"
+    );
+
+    let unknown = client
+        .post(format!("{base}/facts/1/edges/99/touch"))
+        .json(&serde_json::json!({ "ts_ms": 2000 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), 404);
+
+    let foreign = client
+        .post(format!("{base}/facts/2/edges/1/touch"))
+        .json(&serde_json::json!({ "ts_ms": 2000 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(foreign.status(), 404, "another scope's edge is not ours");
+}
+
+/// The consolidation pull (ADR-0010 §3–§4): the caller asks which communities
+/// are stale, reads one packet, and PUTs the summary back. The packet is the
+/// canonical 8-slot tuple list; the write-back is a point overwrite that
+/// flips the state to `done` and resets the uncompressed counter.
+#[tokio::test]
+async fn the_consolidation_pull_serves_packets_and_takes_the_summary() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    for fact in [
+        r#"["fjall_engine","system",{},"IS_A",{},"storage_engine","system",{}]"#,
+        r#"["slatedb_engine","system",{},"IS_A",{},"storage_engine","system",{}]"#,
+    ] {
+        ingest(&client, &base, 1, tuple(fact)).await;
+    }
+
+    let pending: Vec<serde_json::Value> = client
+        .get(format!("{base}/facts/1/communities?state=pending"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1, "one community, one pending capsule");
+    let community = pending[0]["community_id"].as_u64().unwrap();
+    assert_eq!(pending[0]["member_count"], 3);
+    assert_eq!(pending[0]["uncompressed"], 2);
+
+    let bucket: serde_json::Value = client
+        .get(format!("{base}/facts/1/communities/{community}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(bucket["members"].as_array().unwrap().len(), 3);
+    assert_eq!(bucket["facts"].as_array().unwrap().len(), 2);
+    assert_eq!(bucket["community"]["state"], 0);
+
+    let packet: serde_json::Value = client
+        .get(format!("{base}/facts/1/communities/{community}/packet"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let facts = packet["facts"].as_array().unwrap();
+    assert_eq!(facts.len(), 2);
+    for line in facts {
+        let tuple: Vec<serde_json::Value> =
+            serde_json::from_str(line.as_str().unwrap()).unwrap();
+        assert_eq!(tuple.len(), 8, "the packet line is the canonical tuple");
+        assert_eq!(tuple[3], "IS_A");
+    }
+
+    let written: serde_json::Value = client
+        .put(format!("{base}/facts/1/communities/{community}"))
+        .json(&serde_json::json!({
+            "title": "存储引擎",
+            "summary": "两个引擎同属存储引擎。",
+            "ts_ms": 4242,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(written["state"], 1, "the summary lands as done");
+    assert_eq!(written["uncompressed"], 0);
+    assert_eq!(written["updated_at"], 4242);
+
+    let no_pending: Vec<serde_json::Value> = client
+        .get(format!("{base}/facts/1/communities?state=pending"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(no_pending.is_empty());
+    let done: Vec<serde_json::Value> = client
+        .get(format!("{base}/facts/1/communities?state=done"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(done.len(), 1);
+    assert_eq!(done[0]["title"], "存储引擎");
+
+    // Unknown community: both the read and the write-back are 404.
+    let missing = client
+        .get(format!("{base}/facts/1/communities/999"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 404);
+    let missing_put = client
+        .put(format!("{base}/facts/1/communities/999"))
+        .json(&serde_json::json!({ "title": "t", "summary": "s", "ts_ms": 1 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing_put.status(), 404);
+
+    // A filter nobody understands is a 400, not "everything".
+    let bad = client
+        .get(format!("{base}/facts/1/communities?state=stale"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 400);
 }

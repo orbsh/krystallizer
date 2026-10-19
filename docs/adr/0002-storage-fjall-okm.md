@@ -16,8 +16,9 @@ taxes, and plugin version coupling (pgvector / pg_search) — for a dataset
 that is a per-user corpus in the tens of thousands of records.
 
 The graph-memory design (wiki) already specifies the KV encoding pattern
-for the atomic-fact graph; the remaining flat-memory, channel-log and task
-tables are CRUD-shaped and map directly.
+for the atomic-fact graph; the remaining channel-log and task tables are
+CRUD-shaped and map directly. (Flat memory did too, and was withdrawn once
+the graph became the carrier — 2026-10-19.)
 
 ## Decision
 
@@ -71,7 +72,7 @@ macros.**
   `session_checkpoints`, `tasks`, `task_items`).
 - **Import**: through the normal write API only — no second write channel
   (same discipline as OKM's parquet restore path).
-- **Legacy flat memories stay flat.** They have no triple structure; forcing
+- **Legacy flat memories stay flat — and the table they imported into is gone (2026-10-19); the import target is the migration's call.** They have no triple structure; forcing
   them into graph facts would fabricate relations. They load as-is into the
   flat table — the pre-graph carrier of long-term memory, which is withdrawn
   together with the graph (ADR-0001; PLAN Phase 3). What happens to imported

@@ -108,6 +108,11 @@ only complex ones (PageRank, community detection) earn a dependency.
   our control" is no longer a trade-off claim this route makes.
 - The PG exit gate becomes an end-to-end recall comparison on a fixed query set,
   not a per-branch comparison against pgvector + pdb.bm25 + RRF (PLAN 1d).
+  **Measured baseline 2026-10-19** (the PG stack is not runnable here, so the
+  fixture is what a comparison is measured against): 14 nodes × 14 queries,
+  precision@1 0.929, precision@3 1.000, lowest true-hit score 0.637 (floor
+  0.35), off-corpus query lands nothing. The floor is therefore not cutting
+  true hits — the whole point the constant exists to be checked against.
 - The `embedding` node is LOCAL (landed 2026-10-17): `base-url` / `endpoint` /
   `api-key-env` / `timeout-ms` are gone, and `model-dir` names the artifact
   directory (`config.json` / `model.safetensors` / `tokenizer.json` are found

@@ -84,9 +84,10 @@ Three kinds:
   its per-member projection. The session itself is the memory; retrieval is not
   involved, and the model never touches it.
 - **主动 (long-term)** — facts outside the context, queried by the model AS A
-  TOOL: `store` / `search` / `forget` over the fact graph (and, during the
-  transition, over flat memory — the pre-graph carrier of the same knowledge,
-  which is withdrawn with the graph; PLAN Phase 3). Retrieved context is
+  TOOL: `store` / `search` / `forget` over the fact graph. Flat memory — the
+  pre-graph carrier of the same knowledge — was withdrawn with the graph's
+  landing (2026-10-19): its table, `MemoryStore` and the `/memory` door are
+  gone, and ns 32 is free. Retrieved context is
   *injected*: alongside the session, never replacing it.
 - **Initialization (persona / style)** — graph-derived: k10r assembles it as a
   traversal from the user node and injects it at the HEAD of the context, the

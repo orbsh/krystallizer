@@ -79,7 +79,10 @@ arroy 0.6 是 LMDB（内存映射）索引，做不到「序列化进 Fjall」�
 - 没有分词器可控，因此「分词与打分全链路可控」不再是本条路线作出的换取项
   论述。
 - PG 退出闸门变成固定查询集上的端到端召回对照，不再是逐分支对 pgvector +
-  pdb.bm25 + RRF 的对照（PLAN 1d）。
+  pdb.bm25 + RRF 的对照（PLAN 1d）。**2026-10-19 实测基线**（PG 那套在本机跑不起来，
+  于是这份 fixture 就是"将来对照的基准"）：14 个节点 × 14 条查询，precision@1
+  0.929、precision@3 1.000、真实命中最低分 0.637（地板 0.35）、离题查询什么都不落地。
+  也就是说地板没有切掉真命中——这正是那个常数存在的意义：被校验。
 - `embedding` 节点是**本地**的（2026-10-17 落地）：`base-url` / `endpoint` /
   `api-key-env` / `timeout-ms` 去掉，`model-dir` 命名工件目录（`config.json` /
   `model.safetensors` / `tokenizer.json` 按固定名在目录里找），

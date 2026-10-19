@@ -99,7 +99,8 @@ name that holds it.
   carriage split.
 - mem-server is a deliverable, not a deferred shell: the channel-log
   endpoints first (append / fetch_full / append_checkpoint), then the code
-  store and the flat-memory door, grown as consumers need.
+  store, grown as consumers need; the flat-memory door landed and was then
+  withdrawn with the flat table (2026-10-19).
 - **The core's outbound network surface is empty.** The embedding model is
   built in (ADR-0003), so where this ADR originally conceded exactly one
   call there is now none: no LLM client, no transport framework, no

@@ -79,8 +79,8 @@ Rust，无 Python 层。它不是 aura 公民：不注册摊位、不被 aura sp
   k10r 自持 Fjall 目录（ADR-0002）；"磁盘上一个目录"照旧成立，不存
   在承载分流。
 - mem-server 是交付物而非预留壳：先落 channel-log 端点（append /
-  fetch_full / append_checkpoint），随后是 code 存储与 flat 记忆那扇门，
-  随消费需求增长。
+  fetch_full / append_checkpoint），随后是 code 存储，随消费需求增长；flat
+  记忆那扇门落地过，又随 flat 表一起撤除（2026-10-19）。
 - **核心的出网面是空的。** embedding 模型内置（ADR-0003），所以本文档
   当初让出的那一次调用现在并不存在：无 LLM client、无传输框架、无
   embedding API。边界是严格变窄，不是新增自由。

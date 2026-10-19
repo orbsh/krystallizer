@@ -1,10 +1,7 @@
 # ADR-0010: Algorithm Improvement — Write-Time Resolution and Automatic Cognitive Binning
 
-**Status**: Partially landed (2026-10-17: the write side's steps 1–2 — the
-entities collection (ns 36) and the facts edge collection (ns 37) plus the
-deterministic `ingest(fact)` write-time resolution path, in
-`crates/mem-core/src/graph.rs`; pending: steps 3–4 (incremental LPA,
-community binning, the capsule collection) and the read side)
+**Status**: Landed (steps 1–2 on 2026-10-17; steps 3–4 and the read side on
+2026-10-19 — see Updates)
 **Date**: 2026-10-16
 **Chinese**: [0010-algorithm-improvement.zh-CN.md](0010-algorithm-improvement.zh-CN.md)
 
@@ -255,8 +252,11 @@ Mechanics:
    `Target_Community = arg max over C of Σ_{e ∈ Edges(C)} Weight(e) × Confidence(e)`
 3. **Convergence and commit** — 3 rounds converge in the common case (the
    drafts allow 3–5). The winning `community_id` is written as a field on
-   the member node rows; the `by_community` face follows from the row, so
-   re-binning a node needs no tombstone and no second index write. The
+   the member node rows. The `by_community` face is DERIVED from the row,
+   but okm's document overwrite leaves a stale index entry dangling (the
+   entry key encodes the indexed value, so the new value lands at a new
+   key) — a re-bin therefore deletes the old face entry in the SAME batch.
+   The earlier "no tombstone" claim was wrong; landing caught it. The
    capsule row's `state` is set to `pending`. All of it rides one
    WriteBatch (ADR-0002).
 
@@ -491,3 +491,52 @@ inspectable from a dashboard reading `get_stats`.
 - **Claims carried from the drafts, not measured here:** millisecond read
   latency, ≥90% provider context-cache hit rate, "the Rust core shrinks by
   half". They are the shape's rationale and targets, not results.
+## Updates
+
+**2026-10-19 — steps 3–4 and the read side landed.**
+
+- **Binning runs inside `ingest`**, after the fact's own commit: the 2-hop
+  local subgraph is loaded through the traversal faces, LPA votes 3 rounds
+  over it (each edge's vote is `weight × confidence`, the weight being
+  ADR-0005's folded value — a fresh assertion weighs `ln(2)×0.5`, so a vote
+  never degenerates into an all-zero tie), ties go to the SMALLER community
+  id, and every node that moved is rewritten in one batch together with the
+  capsule rows. No global graph, no LLM, no transport.
+- **The seed and its issuer.** A node landing gets `community_id = one past
+  the scope's current maximum`, read from the capsule table itself: the
+  issued id always owns a row, so the watermark needs no second counter and
+  the id is never reused. (The reduce-based issuer this ADR named is the
+  same semantics without an extra row; reading it from the evidence table is
+  the smaller mechanism. The earlier draft's hash seed stays retired.)
+- **The boundary metric got one guard.** `DENSITY_MIN_VERTICES = 3`: a
+  two-node community is trivially a clique (density 1.0 after one fact), so
+  density speaks only from three members up; below that the uncompressed
+  watermark (15) is the only reason to summarize. Without the guard the very
+  first fact in a scope would mark its community pending, which is not what
+  the water line is for.
+- **The capsule collection is ns 38** (`CommunityRow`: `updated_at`,
+  `state` 0=pending/1=done, `uncompressed`, `title`, `summary`), one row per
+  community, overwritten in place on write-back — the cache semantics this
+  ADR states. A community whose last member leaves has its row deleted in
+  the same batch, so the pull never hands out an empty packet.
+- **The carrier question is closed: the caller PULLS.** k10r never calls
+  out, so the doors are `GET /facts/{scope}/communities?state=pending`
+  (listing), `GET /facts/{scope}/communities/{id}` (bucket: capsule +
+  members + internal facts), `GET /facts/{scope}/communities/{id}/packet`
+  (the canonical 8-slot tuple lines) and `PUT /facts/{scope}/communities/{id}`
+  (the summary, the state, the counter reset). The write-back is point
+  overwrite of the capsule row; an unknown community is a 404, never a new
+  row.
+- **The read side is one hop + capsules.** `recall` now also returns the
+  capsules of the seeds' communities (`Recall.communities`) — point reads,
+  no algorithm — and ranks the served facts by weight. The bucket read is
+  its own door (§5 step 3): one face scan, membership-filtered edges.
+- **The packet is the value form's own serde.** The lines are serialized
+  from the eight slots directly (okm's `DynamicValue` carries
+  `Serialize`), no intermediate JSON tree; `functional` is dropped from the
+  relation props because it is the write-time declaration, not part of the
+  fact. Bytes would render as a number array in JSON — the fact tuple comes
+  in as JSON, so no such prop exists today.
+- **The visualization's missing piece is filled.** `GET /graph/{scope}`
+  nodes carry `community_id` (§6's color cluster), so the demo no longer
+  colors by kind for lack of the field.

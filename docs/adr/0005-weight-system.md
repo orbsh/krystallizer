@@ -1,6 +1,6 @@
 # ADR-0005: Weight System — Delta Counts, Read-Write Quadrants, Tool Index
 
-**Status**: Accepted (design; implementation pending)
+**Status**: Accepted (the counting half LANDED 2026-10-19 — see Updates; the delta table waits for the multi-writer switch)
 **Date**: 2026-09-08
 **Chinese**: [0005-weight-system.zh-CN.md](0005-weight-system.zh-CN.md)
 
@@ -82,3 +82,52 @@ rarity_bonus corrects that.
   index refreshes at fold cadence, and retrieval ordering tolerates
   day-scale staleness (same eventual-consistency posture as skill boundary
   reconsolidation).
+
+## Updates
+
+**2026-10-19 — the counting half landed, in okm's terms.** The counter keys
+are the edge ROW, not a side table: `read_count` / `write_count` /
+`tool_count` / `last_read` / `last_write` are declared hot fields of
+`FactEdge` (ns 37, payload layout v2), and `weight` is the folded field
+beside them. One identity, one write.
+
+- **Who bumps what.** `write_count` is the fact's own assertion: `ingest`
+  bumps it when a fact links or wins the adjudication (a dropped fact is not
+  a write). `read_count` is a served recall — `recall`/`expand` bump it only
+  when the caller's clock rides the call (`ts_ms`), because a read nobody
+  stamped is not a read and an absent timestamp must not invent decay.
+  `tool_count` is a caller-reported tool consult
+  (`POST /facts/{scope}/edges/{id}/touch`): k10r cannot see a tool call from
+  inside, so the consumer that used the fact reports it.
+- **Fold points, not background passes.** The single-process start pays a
+  direct RMW per access — this ADR's own allowance. A touch rewrites the row
+  in one batch. The decay the gap accrued is charged AT that fold, measured
+  against the PREVIOUS access, and the same fold re-bases the clock, so it is
+  charged once rather than twice. The delta-append table stays the
+  multi-writer escape; it folds into these same fields, so switching to it
+  changes no schema — its key layout is the one thing to fix when it lands.
+- **The bucket.** The stored value is the formula in MILLI-units (`× 1000`,
+  rounded, clamped at 0): a small float needs a stable ordered integer for
+  the index, and 0.001 is finer than the per-day decay step, so the bucket
+  never reorders two facts the formula would order differently. The
+  coefficients are named constants in `mem-core/src/graph.rs` (read 1.0,
+  write 0.5, tool 1.5, rarity 1.0, decay 0.01/day, deep-water floors
+  read > 3 and write < 3). They are the formula, not deployment knobs; a
+  policy layer would be a config node, and nothing reads one yet.
+- **Ordering.** `recall` returns the seeds in similarity order and the facts
+  ranked by weight, highest first (stable, so equal weights keep the seed
+  order that pulled them in). Landing stays ADR-0003's; weight is this
+  ADR's.
+
+**The W index — corrected.** `W:{weight}:{edge_id}` is a declared-field face
+like any other, and it is deliberately NOT declared today: weight changes
+already rewrite the row, so the face would be maintained for a reader that
+does not exist. The sketch named two readers — a scope-wide top-K /
+progressive load, and the Phase-5 cold-tier range read. Neither is callable
+now, and the first is not even shaped right: edges carry no `scope` segment
+(ADR-0010 §1 — ownership rides the endpoints), so `[weight][edge_id]`
+answers "the store's heaviest edges", not "this user's heaviest facts". A
+per-scope top-K would be a projection table keyed `[scope][weight][edge_id]`,
+written on the same touch — a design item to name when the read exists, not
+a face to pre-pay for. Recall's in-memory ranking needs none of it: the set
+it ranks is already in hand.

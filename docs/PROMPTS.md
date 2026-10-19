@@ -75,8 +75,8 @@ Notes that keep this prompt honest:
   **[not in the design]**. The caller's names are `recall_memory` /
   `commit_memory` (gravity's fixed tool list, one (retrieve, act) pair per
   family); inside k10r the write door is `ingest(fact)` (deterministic, the
-  8-slot tuple) and `store` (flat memory). A tool name is never a k10r
-  function name.
+  8-slot tuple). The flat-memory `store` door is gone (2026-10-19). A tool
+  name is never a k10r function name.
 - **The model does not stamp the clock.** `ts_ms`/`sub` are the caller's
   (ADR-0008 §3). If a fact carries a date, the caller supplies it — a model
   asked for "the current ISO timestamp" invents one **[open ruling: who stamps

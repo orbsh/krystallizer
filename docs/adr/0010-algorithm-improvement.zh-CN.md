@@ -1,9 +1,6 @@
 # ADR-0010: 算法改进 —— 写时消解与自动认知分箱
 
-**状态**：部分落地（2026-10-17：写侧步骤 1–2——实体集合（ns 36）与事实边集合
-（ns 37），以及确定性的 `ingest(fact)` 写时消解路径，见
-`crates/mem-core/src/graph.rs`；未落：步骤 3–4（增量 LPA、社区分箱、胶囊集合）
-与读侧）
+**状态**：已落地（步骤 1–2 于 2026-10-17；步骤 3–4 与读侧于 2026-10-19——见「更新」）
 **日期**：2026-10-16
 **英文版**：[0010-algorithm-improvement.md](0010-algorithm-improvement.md)
 
@@ -213,8 +210,10 @@ Append-first 的写入产出的是堆，不是秩序；秩序按每次写入在�
    边权投票：
    `Target_Community = arg max over C of Σ_{e ∈ Edges(C)} Weight(e) × Confidence(e)`
 3. **收敛与提交**——常见情形 3 轮足够收敛（草案允许 3~5 轮）。胜出的
-   `community_id` 写进成员节点行的字段；`by_community` 面随行而来，所以重新
-   分箱一个节点既不需要墓碑，也不需要第二次索引写。胶囊行的 `state` 置为
+   `community_id` 写进成员节点行的字段。`by_community` 面确实由行**派生**，
+   但 okm 的文档覆盖会把旧的索引条目留在原地（条目 key 编码了被索引的值，新值
+   落在新 key 上）——所以重新分箱必须在**同一个 batch** 里删掉旧的面条目。
+   本文早先"不需要墓碑"的说法是错的，落地时被代码抓住。胶囊行的 `state` 置为
    `pending`。全部走同一个 WriteBatch（ADR-0002）。
 
 ### 3. 子图边界判定
@@ -400,3 +399,39 @@ pub fn assist_search(query: &str, top_k: usize) -> AssistantContext {
 - **照草案搬过来、本文档未实测的说法：** 毫秒级读延迟、provider 侧
   context cache ≥90% 命中率、「Rust 内核代码量缩减一半」。它们是这个形态的
   理由与目标，不是结果。
+## 更新
+
+**2026-10-19 —— 步骤 3–4 与读侧落地。**
+
+- **分箱跑在 `ingest` 里**，在事实自身提交之后：经遍历面加载 2 跳局部子图，
+  LPA 在其上投 3 轮（每条边的票是 `weight × confidence`，weight 就是 ADR-0005
+  折出来的值——一条新断言的权重是 `ln(2)×0.5`，所以投票不会退化成全零平票），
+  平票取**更小**的 community id，移动过的节点与胶囊行在同一个 batch 里重写。
+  没有全局图、没有 LLM、没有传输。
+- **种子与发放者。** 节点落地时 `community_id = 该 scope 当前最大值 + 1`，最大值
+  就是从胶囊表本身读的：发出去的 id 必然拥有一行，所以水位不需要第二个计数器，
+  id 也永不复用。（本文点名的 reduce 发放者是同一语义、少一张行；从证据表读是
+  更小的机制。草案的哈希种子保持撤销。）
+- **密度指标加了一道护栏。** `DENSITY_MIN_VERTICES = 3`：两节点社区天然是一个
+  团（一条事实后密度就是 1.0），所以密度从三个成员起才说话；低于这个数，唯一
+  的总结理由是未压缩水位（15）。没有这道护栏，一个 scope 的第一条事实就会把
+  社区标成 pending，那不是这条水位线的用途。
+- **胶囊集合是 ns 38**（`CommunityRow`：`updated_at`、`state` 0=pending/1=done、
+  `uncompressed`、`title`、`summary`），一个社区一行，回写时原地覆盖——正是本文
+  所说的缓存语义。最后一个成员离开的社区，其行在同一个 batch 里删除，所以拉取
+  门永远不会递出空包。
+- **载体问题关闭：调用方 PULL。** k10r 从不外呼，所以门是
+  `GET /facts/{scope}/communities?state=pending`（列表）、
+  `GET /facts/{scope}/communities/{id}`（桶：胶囊 + 成员 + 内部事实）、
+  `GET /facts/{scope}/communities/{id}/packet`（规范 8 元组行）与
+  `PUT /facts/{scope}/communities/{id}`（摘要、状态、计数器复位）。回写是胶囊行
+  的点覆盖；未知社区是 404，绝不新建行。
+- **读侧是一跳 + 胶囊。** `recall` 现在同时返回种子所在社区的胶囊
+  （`Recall.communities`，点读，无算法），并把送出的事实按权重排序。桶读是自己
+  的门（§5 第 3 步）：一次面扫描、按成员过滤的边。
+- **packet 用值形态自己的 serde。** 行由八个槽直接序列化（okm 的 `DynamicValue`
+  带 `Serialize`），没有中间的 JSON 树；关系 props 里去掉 `functional`，因为它是
+  写时声明、不属于事实本身。Bytes 在 JSON 里会呈数字数组——事实元组本来就是以
+  JSON 进来的，今天不存在这种 prop。
+- **可视化缺的那块补上了。** `GET /graph/{scope}` 的节点带 `community_id`
+  （§6 的配色簇），演示页不再因缺字段而按节点 kind 上色。

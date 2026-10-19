@@ -16,7 +16,8 @@ and [图谱化记忆](https://github.com/orbsh/wiki/blob/main/graph-memory.md):
 - **Memory surface** — a standing capability offered as tools, in three kinds
   (ADR-0001: 被动 / short-term (the loop's own context —
   the channel log and its projection), 主动 / long-term
-  (`store` / `search` / `forget` over flat memory and graph facts), and
+  (`store` / `search` / `forget` over the fact graph — flat memory was its
+  pre-graph form and is withdrawn), and
   initialization memory (persona / style — graph-derived, injected at the
   head of the context).
 - **Task surface** — tasks are a graph too: task vertices + `task_links`

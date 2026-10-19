@@ -25,9 +25,14 @@ primitives in `crates/mem-core/src/`.
 | `POST /code` | `CodeStore::put` | code (35) | landed |
 | `GET /code` | `CodeStore::list` (pool read: id + language + description, no source) | code (35) | landed |
 | `GET /code/{id}` | `CodeStore::get` (the whole row, source included) | code (35) | landed |
-| `POST /memory` | `MemoryStore::store` (the store assigns the id; `created_at` is the caller's; the row's vector is computed in-process by the attached engine when one is attached — the client never sends one, ADR-0003) | flat memory (32) | landed (PLAN 1e) |
-| `GET /memory/{user_id}/search?q=` | `MemoryStore::search` (one user's key range; an empty result is legal) | flat memory (32) | landed (PLAN 1e) |
-| — no route | `MemoryStore::forget` / `list` / `stats` | flat memory (32) | core landed, no endpoints |
+| ~~`POST /memory`~~ | ~~`MemoryStore::store`~~ | flat memory (32) | **withdrawn 2026-10-19** — the graph is the carrier (ADR-0001) |
+| ~~`GET /memory/{user_id}/search?q=`~~ | ~~`MemoryStore::search`~~ | flat memory (32) | **withdrawn 2026-10-19** |
+| ~~`MemoryStore::forget` / `list` / `stats`~~ | — | flat memory (32) | **withdrawn 2026-10-19** |
+| `POST /facts/{scope}/edges/{id}/touch` | `GraphStore::touch` (a caller-reported TOOL consult: counters bump, weight folds; 404 for an unknown edge or another scope's) | facts (37) | landed (2026-10-19) |
+| `GET /facts/{scope}/communities?state=` | `GraphStore::communities` (capsule listing + member count; `state=pending\|done`) | capsules (38) | landed (2026-10-19) |
+| `GET /facts/{scope}/communities/{id}` | bucket read: capsule + member nodes + the facts inside the community | capsules (38) + entities (36) | landed (2026-10-19) |
+| `GET /facts/{scope}/communities/{id}/packet` | the consolidation pull (canonical 8-slot tuple lines) | capsules (38) | landed (2026-10-19) |
+| `PUT /facts/{scope}/communities/{id}` | `GraphStore::complete_community` (summary lands, state `done`, uncompressed resets; 404 for an unknown community) | capsules (38) | landed (2026-10-19) |
 | `POST /facts/{scope}` | `GraphStore::ingest` (the body IS the 8-slot tuple; `scope` is the path) | fact graph — entities (36) + facts (37) | landed (2026-10-17) |
 | `GET /facts/{scope}/entities/{name}` | `GraphStore::entity_by_name` (the exact name/alias entrance; 404 on an unknown name) | entities (36) | landed (2026-10-17) |
 | `GET /facts/{scope}/entities/{node_id}/edges` | `GraphStore::out_facts` (one hop, both endpoints resolved) | facts (37) + entities (36) | landed (2026-10-17) |

@@ -13,8 +13,9 @@
 增加网络跳、runtime DDL 锁、SQL 解析税和插件版本耦合（pgvector /
 pg_search）——而数据量级是每用户几万条语料。
 
-graph-memory 设计（wiki）已给出原子图的 KV 编码模式；剩余的 flat 记忆、
-channel 日志、任务表都是 CRUD 形状，直接映射。
+graph-memory 设计（wiki）已给出原子图的 KV 编码模式；剩余的 channel 日志、
+任务表都是 CRUD 形状，直接映射。（flat 记忆也是，且在图成为载体后已撤除——
+2026-10-19。）
 
 ## 决策
 
@@ -58,7 +59,7 @@ channel 日志、任务表都是 CRUD 形状，直接映射。
   `session_checkpoints`、`tasks`、`task_items`）。
 - **导入**：只走正常写 API——不开第二写入通道（与 OKM parquet restore
   path 同一纪律）。
-- **遗留 flat 记忆保持 flat。** 它们没有三元组结构，强行图谱化等于
+- **遗留 flat 记忆保持 flat——而它们导入的那张表已撤（2026-10-19），导入目标由迁移决定。** 它们没有三元组结构，强行图谱化等于
   编造关系。原样载入 flat 表——那是长期记忆在图谱化之前的载体，随图一起
   撤掉（ADR-0001；PLAN Phase 3）。撤掉之后那些导入的旧行怎么处置，是一个
   迁移问题，不是 schema 问题。

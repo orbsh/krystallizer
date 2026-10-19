@@ -24,9 +24,14 @@
 | `POST /code` | `CodeStore::put` | code (35) | 已落 |
 | `GET /code` | `CodeStore::list`（池读：id + language + description，无 source） | code (35) | 已落 |
 | `GET /code/{id}` | `CodeStore::get`（整行，含 source） | code (35) | 已落 |
-| `POST /memory` | `MemoryStore::store`（id 由 store 发放；`created_at` 归调用方；挂上引擎时该行的向量由进程内引擎算好——客户端从不发向量，ADR-0003） | flat memory (32) | 已落（PLAN 1e） |
-| `GET /memory/{user_id}/search?q=` | `MemoryStore::search`（只扫该用户的键区间；空结果合法） | flat memory (32) | 已落（PLAN 1e） |
-| — 无路由 | `MemoryStore::forget` / `list` / `stats` | flat memory (32) | core 已落，无端点 |
+| ~~`POST /memory`~~ | ~~`MemoryStore::store`~~ | flat memory (32) | **2026-10-19 撤除**——载体是事实图（ADR-0001） |
+| ~~`GET /memory/{user_id}/search?q=`~~ | ~~`MemoryStore::search`~~ | flat memory (32) | **2026-10-19 撤除** |
+| ~~`MemoryStore::forget` / `list` / `stats`~~ | — | flat memory (32) | **2026-10-19 撤除** |
+| `POST /facts/{scope}/edges/{id}/touch` | `GraphStore::touch`（调用方上报的工具调用：计数加一、权重重折；未知边或别的 scope 404） | facts (37) | 已落（2026-10-19） |
+| `GET /facts/{scope}/communities?state=` | `GraphStore::communities`（胶囊列表 + 成员数；`state=pending\|done`） | capsules (38) | 已落（2026-10-19） |
+| `GET /facts/{scope}/communities/{id}` | 桶读：胶囊 + 成员节点 + 社区内部事实 | capsules (38) + entities (36) | 已落（2026-10-19） |
+| `GET /facts/{scope}/communities/{id}/packet` | 固化拉取（规范 8 元组行） | capsules (38) | 已落（2026-10-19） |
+| `PUT /facts/{scope}/communities/{id}` | `GraphStore::complete_community`（摘要落地、state 转 `done`、未压缩计数复位；未知社区 404） | capsules (38) | 已落（2026-10-19） |
 | `POST /facts/{scope}` | `GraphStore::ingest`（请求体就是 8 元组；`scope` 走路径） | 事实图——实体（36）+ 事实（37） | 已落（2026-10-17） |
 | `GET /facts/{scope}/entities/{name}` | `GraphStore::entity_by_name`（名/别名精确入口；未知名字 404） | 实体（36） | 已落（2026-10-17） |
 | `GET /facts/{scope}/entities/{node_id}/edges` | `GraphStore::out_facts`（一跳，两端都已解析） | 事实（37）+ 实体（36） | 已落（2026-10-17） |

@@ -65,7 +65,8 @@ fn entity_key_layout_is_hex_locked() {
 }
 
 /// The fact edge's payload is an ordinary obj payload: `[version u8]
-/// [hot_len u16 BE][since u64][confidence u8][weight u32]` — the derive's own
+/// [hot_len u16 BE][since u64][confidence u8][weight u32][read u32]
+/// [write u32][tool u32][last_read u64][last_write u64]` — the derive's own
 /// field order, contiguous big-endian. The round trip is what keeps the
 /// reader honest against the writer (both are the declaration's).
 #[test]
@@ -74,14 +75,28 @@ fn edge_payload_layout_is_locked() {
         since: 7,
         confidence: 200,
         weight: 3,
+        read_count: 5,
+        write_count: 2,
+        tool_count: 9,
+        last_read: 1_000,
+        last_write: 900,
     };
     let payload = edge.encode_payload();
-    assert_eq!(payload.len(), 3 + 8 + 1 + 4, "header + the three fixed fields");
-    assert_eq!(payload[0], 1, "layout version");
-    assert_eq!(&payload[1..3], &13u16.to_be_bytes(), "hot_len");
+    assert_eq!(
+        payload.len(),
+        3 + 8 + 1 + 4 + 4 + 4 + 4 + 8 + 8,
+        "header + the fixed fields"
+    );
+    assert_eq!(payload[0], 2, "layout version");
+    assert_eq!(&payload[1..3], &41u16.to_be_bytes(), "hot_len");
     assert_eq!(&payload[3..11], &7u64.to_be_bytes(), "since");
     assert_eq!(payload[11], 200, "confidence");
     assert_eq!(&payload[12..16], &3u32.to_be_bytes(), "weight");
+    assert_eq!(&payload[16..20], &5u32.to_be_bytes(), "read_count");
+    assert_eq!(&payload[20..24], &2u32.to_be_bytes(), "write_count");
+    assert_eq!(&payload[24..28], &9u32.to_be_bytes(), "tool_count");
+    assert_eq!(&payload[28..36], &1_000u64.to_be_bytes(), "last_read");
+    assert_eq!(&payload[36..44], &900u64.to_be_bytes(), "last_write");
     assert_eq!(FactEdge::decode_payload(&payload), edge);
 }
 
@@ -546,7 +561,7 @@ fn recall_lands_then_expands_one_hop() {
         .unwrap();
 
     // Landing on the head: one seed, one hop out = that head's one fact.
-    let from_head = graph.recall(1, "fjall_engine", 1).unwrap();
+    let from_head = graph.recall(1, "fjall_engine", 1, None).unwrap();
     assert_eq!(from_head.seeds.len(), 1);
     assert_eq!(from_head.seeds[0].name, "fjall_engine");
     assert_eq!(from_head.facts.len(), 1, "one hop from the head");
@@ -556,7 +571,7 @@ fn recall_lands_then_expands_one_hop() {
 
     // Landing on the TAIL: the same fact arrives through the in-direction,
     // and both heads' facts are reachable from here.
-    let from_tail = graph.recall(1, "storage_engine", 1).unwrap();
+    let from_tail = graph.recall(1, "storage_engine", 1, None).unwrap();
     assert_eq!(from_tail.seeds[0].name, "storage_engine");
     assert_eq!(
         from_tail.facts.len(),
@@ -572,6 +587,352 @@ fn recall_lands_then_expands_one_hop() {
     assert_eq!(heads, vec!["fjall_engine", "slatedb_engine"]);
 
     // An empty query is the legal "nothing landed": no seeds, no facts.
-    let nothing = graph.recall(1, "   ", 5).unwrap();
+    let nothing = graph.recall(1, "   ", 5, None).unwrap();
     assert!(nothing.seeds.is_empty() && nothing.facts.is_empty());
+}
+
+// ---- the weight system (ADR-0005) -----------------------------------
+
+/// One assertion is one write: the edge lands with `write_count = 1`, the
+/// caller's `since` as its clock, and the formula folded to the index's
+/// bucket — `ln(2) × 0.5 = 0.3466` → 347 milli-units. No clock (absent
+/// `since`) invents no decay.
+#[test]
+fn a_landed_fact_carries_one_write_and_the_folded_weight() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap();
+    graph
+        .ingest(
+            1,
+            &tuple(
+                r#"["alpha","thing",{},"IS",{"since":1000000},"beta","thing",{}]"#,
+            ),
+        )
+        .unwrap();
+
+    let edge = graph.fact(1).unwrap().edge;
+    assert_eq!(edge.write_count, 1);
+    assert_eq!(edge.read_count, 0);
+    assert_eq!(edge.last_write, 1_000_000);
+    assert_eq!(edge.weight, 347, "ln(2) × 0.5 × 1000, rounded");
+    // The score is the formula before decay; the bucket is it times 1000.
+    assert!((edge.score() - 0.346_573_6).abs() < 1e-6);
+}
+
+/// A served recall is one read per fact, folded at the caller's clock: the
+/// weight rises by `ln(2)` and the served set is ordered by it — the fact
+/// a tool has consulted outranks one merely served.
+#[test]
+fn recall_counts_reads_and_orders_the_served_facts_by_weight() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap();
+    graph
+        .ingest(
+            1,
+            &tuple(
+                r#"["alpha","thing",{},"IS",{"since":1000},"beta","thing",{}]"#,
+            ),
+        )
+        .unwrap();
+    graph
+        .ingest(
+            1,
+            &tuple(
+                r#"["gamma","thing",{},"IS",{"since":1000},"beta","thing",{}]"#,
+            ),
+        )
+        .unwrap();
+    // No engine attached: land explicitly on the tail by its node id.
+    let (beta, beta_row) = graph.entity_by_name(1, "beta").unwrap();
+    let alpha = graph.entity_by_name(1, "alpha").unwrap().0;
+    let gamma = graph.entity_by_name(1, "gamma").unwrap().0;
+    let edge_a = graph.out_facts(1, alpha)[0].edge_id;
+    let edge_b = graph.out_facts(1, gamma)[0].edge_id;
+
+    // A boosted fact is reached and it is the one ranked first.
+    graph.touch(1, edge_b, mem_core::Touch::Tool, 2000).unwrap();
+    let seed = mem_core::Seed {
+        node_id: beta,
+        score: 1.0,
+        name: beta_row.name,
+        kind: "thing".into(),
+    };
+    let facts = graph.expand(1, &[seed], Some(3000)).unwrap();
+    assert_eq!(facts.len(), 2);
+    assert_eq!(
+        facts[0].edge_id, edge_b,
+        "the tool-consulted fact outranks the merely-served one"
+    );
+    // Both were served, so both counted one read.
+    for fact in &facts {
+        assert_eq!(fact.edge.read_count, 1);
+        assert_eq!(fact.edge.last_read, 3000);
+    }
+    // The boosted edge: tool ln(2)×1.5 + read ln(2) + write ln(2)×0.5.
+    let boosted = facts[0].edge.weight;
+    let read_once = facts[1].edge.weight;
+    assert!(
+        boosted > read_once,
+        "tool weight {boosted} vs plain read {read_once}"
+    );
+    assert_eq!(read_once, 1040, "ln(2) + ln(2)×0.5");
+    assert_eq!(boosted, 2079, "plus ln(2)×1.5 for the tool consult");
+    assert_eq!(edge_a, edge_b - 1, "the two facts are separate edges");
+}
+
+/// The deep-water quadrant (read many, write few) earns the rarity bonus:
+/// past the read floor with the write count under the ceiling, the weight
+/// jumps by a whole unit — expert knowledge is not punished for being
+/// written once.
+#[test]
+fn the_deep_water_quadrant_earns_the_rarity_bonus() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap();
+    graph
+        .ingest(
+            1,
+            &tuple(r#"["alpha","thing",{},"IS",{"since":1000},"beta","thing",{}]"#),
+        )
+        .unwrap();
+
+    let mut edge = FactEdge::default();
+    for _ in 0..4 {
+        edge = graph.touch(1, 1, mem_core::Touch::Read, 2000).unwrap().unwrap().edge;
+    }
+    assert_eq!(edge.read_count, 4);
+    assert_eq!(edge.write_count, 1);
+    // ln(5) + ln(2)×0.5 + 1.0 (bonus) = 1.6094 + 0.3466 + 1
+    assert_eq!(edge.weight, 2956);
+
+    // A second assertion keeps the bonus (write 2 is still under the
+    // ceiling); the third forfeits it.
+    for since in [5000u64, 6000] {
+        graph
+            .ingest(
+                1,
+                &tuple(&format!(
+                    r#"["alpha","thing",{{}},"IS",{{"since":{since},"functional":true}},"gamma","thing",{{}}]"#
+                )),
+            )
+            .unwrap();
+    }
+    let rewritten = graph
+        .touch(1, 1, mem_core::Touch::Read, 7000)
+        .unwrap()
+        .unwrap()
+        .edge;
+    assert_eq!(rewritten.write_count, 3);
+    assert!(rewritten.score() < edge.score(), "the bonus is gone");
+}
+
+/// Decay is charged AT THE FOLD, from the gap since the last recorded
+/// access: two idle days cost 0.02, and the fold re-bases the clock. An
+/// edge whose caller never stamped a time decays by nothing — an absent
+/// timestamp is not an old one.
+#[test]
+fn time_decay_is_charged_at_the_fold_it_elapsed_for() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap();
+    graph
+        .ingest(
+            1,
+            &tuple(
+                r#"["alpha","thing",{},"IS",{"since":1000000},"beta","thing",{}]"#,
+            ),
+        )
+        .unwrap();
+
+    let two_days = 2 * mem_core::graph::DAY_MS;
+    let edge = graph
+        .touch(1, 1, mem_core::Touch::Read, 1_000_000 + two_days)
+        .unwrap()
+        .unwrap()
+        .edge;
+    assert_eq!(edge.last_read, 1_000_000 + two_days);
+    // ln(2) + ln(2)×0.5 − 2 × 0.01 = 1.0197 → 1020.
+    assert_eq!(edge.weight, 1020);
+}
+
+/// A touch only counts for a real edge inside the named scope — edges carry
+/// no scope segment, so the check decodes the source ref (the door turns a
+/// `None` into 404).
+#[test]
+fn a_touch_answers_none_for_an_unknown_edge_or_another_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap();
+    graph
+        .ingest(
+            1,
+            &tuple(r#"["alpha","thing",{},"IS",{"since":1000},"beta","thing",{}]"#),
+        )
+        .unwrap();
+    assert!(graph
+        .touch(1, 99, mem_core::Touch::Tool, 2000)
+        .unwrap()
+        .is_none());
+    assert!(graph
+        .touch(2, 1, mem_core::Touch::Tool, 2000)
+        .unwrap()
+        .is_none());
+    assert!(graph
+        .touch(1, 1, mem_core::Touch::Tool, 2000)
+        .unwrap()
+        .is_some());
+}
+
+// ---- ADR-0010 steps 3–4: binning and capsules ------------------------
+
+/// A landed fact bins BOTH endpoints into one community: the node that
+/// moved leaves an empty seed community behind, and that capsule is dropped
+/// in the same pass (a phantom the consolidation pull would otherwise hand
+/// out empty). The membership is read through the `by_community` face.
+#[test]
+fn a_landed_fact_bins_both_endpoints_and_drops_the_orphan_capsule() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap();
+    graph
+        .ingest(
+            1,
+            &tuple(r#"["alpha","thing",{},"IS",{},"beta","thing",{}]"#),
+        )
+        .unwrap();
+
+    let (alpha, _) = graph.entity_by_name(1, "alpha").unwrap();
+    let (beta, _) = graph.entity_by_name(1, "beta").unwrap();
+    let community = graph.entity(1, alpha).unwrap().community_id;
+    assert_eq!(community, graph.entity(1, beta).unwrap().community_id);
+    assert!(community != 0, "every node is seeded with a real community");
+
+    let members = graph.community_members(1, community);
+    let ids: Vec<u64> = members.iter().map(|(node, _)| *node).collect();
+    assert_eq!(members.len(), 2);
+    assert!(ids.contains(&alpha) && ids.contains(&beta));
+
+    // The abandoned seed (the lower id, absorbed by the higher one) has no
+    // member and no capsule left.
+    let capsules = graph.communities(1);
+    assert_eq!(capsules.len(), 1, "one community, one capsule");
+    let (only, _) = capsules[0];
+    assert_eq!(only, community);
+    let (orphan, _) = graph.entity_by_name(1, "alpha").unwrap();
+    let _ = orphan;
+    assert!(graph.community_members(1, 1).is_empty(), "the stale by_community entry is gone");
+    assert!(graph.capsule(1, 1).is_none(), "the orphan capsule is deleted");
+}
+
+/// The density water line marks a community `pending` while it is worth
+/// summarizing, and the capsule write-back clears it: the summary lands on
+/// one row (a point overwrite), the uncompressed counter resets, and the
+/// next fact marks it stale again.
+#[test]
+fn a_dense_community_is_pending_until_the_summary_lands() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap();
+    for fact in [
+        r#"["alpha","thing",{},"IS",{},"beta","thing",{}]"#,
+        r#"["beta","thing",{},"IS",{},"gamma","thing",{}]"#,
+    ] {
+        graph.ingest(1, &tuple(fact)).unwrap();
+    }
+
+    let (alpha, _) = graph.entity_by_name(1, "alpha").unwrap();
+    let community = graph.entity(1, alpha).unwrap().community_id;
+    let capsule = graph.capsule(1, community).unwrap();
+    assert_eq!(capsule.state, mem_core::STATE_PENDING);
+    assert_eq!(capsule.uncompressed, 2, "both assertions await a summary");
+
+    let written = graph
+        .complete_community(1, community, "存储引擎", "两条断言把三个节点连成一簇。", 9000)
+        .unwrap();
+    assert_eq!(written.state, mem_core::STATE_DONE);
+    assert_eq!(written.uncompressed, 0);
+    assert_eq!(written.updated_at, 9000);
+    let read_back = graph.capsule(1, community).unwrap();
+    assert_eq!(read_back.title, "存储引擎");
+    assert_eq!(read_back.summary, "两条断言把三个节点连成一簇。");
+
+    // One more fact: the summary is stale again.
+    graph
+        .ingest(
+            1,
+            &tuple(r#"["gamma","thing",{},"IS",{},"alpha","thing",{}]"#),
+        )
+        .unwrap();
+    let stale = graph.capsule(1, community).unwrap();
+    assert_eq!(stale.state, mem_core::STATE_PENDING);
+    assert_eq!(stale.uncompressed, 1);
+    assert_eq!(stale.title, "存储引擎", "the last summary survives the mark");
+}
+
+/// The consolidation packet is the canonical 8-slot tuple list the
+/// summarizer prompt states — head value/type/props, relation name/props,
+/// tail value/type/props — built from the community's INTERNAL facts only.
+#[test]
+fn the_packet_is_the_canonical_eight_slot_tuple_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap();
+    graph
+        .ingest(
+            1,
+            &tuple(
+                r#"["alpha","thing",{"vcs":"gitea"},"IS",{"reason":"because"},"beta","thing",{}]"#,
+            ),
+        )
+        .unwrap();
+    let (alpha, _) = graph.entity_by_name(1, "alpha").unwrap();
+    let community = graph.entity(1, alpha).unwrap().community_id;
+
+    let packet = graph.community_packet(1, community).unwrap();
+    assert_eq!(packet.member_count, 2);
+    assert_eq!(packet.facts.len(), 1);
+    let tuple: Vec<serde_json::Value> = serde_json::from_str(&packet.facts[0]).unwrap();
+    assert_eq!(tuple.len(), 8);
+    assert_eq!(tuple[0], "alpha");
+    assert_eq!(tuple[1], "thing");
+    assert_eq!(tuple[2]["vcs"], "gitea", "head props ride the node");
+    assert_eq!(tuple[3], "IS");
+    assert_eq!(tuple[4]["reason"], "because");
+    assert_eq!(tuple[5], "beta");
+    assert_eq!(tuple[6], "thing");
+    assert_eq!(tuple[7], serde_json::json!({}));
+
+    // A community that never existed has no packet and no write-back.
+    assert!(graph.community_packet(1, 999).is_none());
+    assert!(graph.complete_community(1, 999, "t", "s", 1).is_none());
+}
+
+/// Communities are per scope: the same names in another scope form their own
+/// community, and neither scope's capsules or members leak into the other.
+#[test]
+fn communities_are_per_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap();
+    let fact = tuple(r#"["alpha","thing",{},"IS",{},"beta","thing",{}]"#);
+    graph.ingest(1, &fact).unwrap();
+    graph.ingest(2, &fact).unwrap();
+
+    let (alpha_one, _) = graph.entity_by_name(1, "alpha").unwrap();
+    let (alpha_two, _) = graph.entity_by_name(2, "alpha").unwrap();
+    let one = graph.entity(1, alpha_one).unwrap().community_id;
+    let two = graph.entity(2, alpha_two).unwrap().community_id;
+
+    // Community ids are PER SCOPE (each scope's seeds start at 1), so the
+    // two scopes may well land on the same number — what must not cross is
+    // membership. Compare node ids, never community numbers.
+    let members_one: Vec<u64> = graph
+        .community_members(1, one)
+        .into_iter()
+        .map(|(node, _)| node)
+        .collect();
+    let members_two: Vec<u64> = graph
+        .community_members(2, two)
+        .into_iter()
+        .map(|(node, _)| node)
+        .collect();
+    assert_eq!(members_one.len(), 2);
+    assert_eq!(members_two.len(), 2);
+    assert!(members_one.contains(&alpha_one) && !members_one.contains(&alpha_two));
+    assert!(members_two.contains(&alpha_two) && !members_two.contains(&alpha_one));
+    assert_eq!(graph.communities(1).len(), 1);
+    assert_eq!(graph.communities(2).len(), 1);
 }

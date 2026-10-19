@@ -36,9 +36,10 @@ Three needs fall out of the second shape that ADR-0008 does not cover:
   a multi-party channel needs an interrupt policy: a passive trigger
   with a latency budget far tighter than compression's.
 
-The current core has no profile storage at all: the flat memory table
-(`MemoryRow`) carries free text only, and no ADR assigns persona
-knowledge a home.
+At the time this was written the core had no profile storage at all: the
+flat memory table carried free text only, and no ADR assigned persona
+knowledge a home. That table is gone (2026-10-19); the graph is the home
+this ADR picks.
 
 ## Decision
 
@@ -62,9 +63,10 @@ knowledge a home.
   (ADR-0005) PER FACT: a frequently-cited preference grows heavy, a stale
   one decays. The context assembly pulls profile facts for the channel's
   current members as one traversal from the member nodes. There is no
-  `kind=profile` flat category and no profile table: flat memory is the
-  pre-graph carrier of long-term memory and goes away with the graph
-  (ADR-0001), and its text rows have no per-fact identity — updating,
+  `kind=profile` flat category and no profile table: flat memory was the
+  pre-graph carrier of long-term memory and went away with the graph's
+  landing (ADR-0001; withdrawn 2026-10-19), and its text rows had no per-fact
+  identity — updating,
   weighting and enumerating them per fact are all out of reach, where an
   edge does all three.
 

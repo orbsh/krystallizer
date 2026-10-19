@@ -38,17 +38,32 @@ naming is 被动 / 主动, with 短期 / 长期 as the content horizon:
   its per-member projection (ns 34). The loop fetches and appends; never a
   tool.
 - **主动 (long-term)** — facts outside the context, reached as a TOOL by
-  any agent. The carrier is the fact graph; flat memory (ns 32) is its
-  pre-graph form — the same knowledge held as text rows, which is why it goes
-  away when the graph lands (a text blob has no per-fact identity: it cannot be
-  updated, weighted or enumerated per fact). Raw content never needed it — the
+  any agent. The carrier is the fact graph; flat memory (ns 32) WAS its
+  pre-graph form — the same knowledge held as text rows, which is why it went
+  away when the graph landed (a text blob has no per-fact identity: it cannot
+  be updated, weighted or enumerated per fact). Withdrawn 2026-10-19. Raw content never needed it — the
   channel log (ns 33) already holds every message.
 - **初始化 (persona / style)** — graph-derived: a traversal from the user
   node, delivered at the head of the projection. No ns assigned yet.
 
+## Fact-graph additions (2026-10-19)
+
+- `EntityRow` gained `community_id` (declared hot, `#[ok_default(0)]`;
+  payload layout v2) and its `by_community` face
+  (`[community_id][scope][node_id]`) — the bucket read is a face scan, never
+  a table filter (ADR-0010 §2).
+- `FactEdge` carries the weight system's inputs (`read_count`, `write_count`,
+  `tool_count`, `last_read`, `last_write`; layout v2). `weight` is the folded
+  formula in milli-units. Its three declared faces (`by_since` /
+  `by_confidence` / `by_weight`) are NOT declared: nothing scans them, and
+  every touch would maintain them for no reader (ADR-0005's Updates).
+- `CommunityRow` (ns 38): `[scope][community_id]` → `updated_at`, `state`
+  (0 pending / 1 done), `uncompressed`, `title`, `summary`. One row per
+  community, overwritten in place — a cache, not a log.
+
 ## Flat memory (ns 32)
 
-Implemented (Phase 1a) — the pre-graph carrier of extracted long-term memory, withdrawn when the fact graph lands (ADR-0001's "flat memory, then the graph"; PLAN Phase 3). Declared in `crates/mem-core/src/memory.rs`.
+**WITHDRAWN 2026-10-19** — the graph landed and took the carrier with it (ADR-0001's "flat memory, then the graph"; PLAN Phase 3): the table, `MemoryStore` and the `/memory` door are deleted, and ns 32 is free. The schema below is kept as the historical record of the pre-graph form — legacy rows are a migration question (ADR-0002's PG import), not a live table.
 
 ### Key: `MemoryKey` (`KeyEncode`)
 

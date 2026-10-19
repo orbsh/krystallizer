@@ -9,8 +9,8 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     - Engine half LANDED 2026-10-17: `mem-core/src/embedding.rs` (`Embedder`: candle BERT, WordPiece tokenize → BERT → CLS pooling → L2 normalize), config `embedding { model-dir … }` + `KRYSTALLIZER_MODEL_DIR` override, model = BAAI/bge-small-zh-v1.5 (512-dim, artifact under `~/.local/share/krystallizer/models/`, not in the repo). Gates: mem-core 8/0 (embedding 3 — a missing artifact names the file it could not read; a Chinese sentence embeds to 512 unit-length floats; related text beats unrelated — the two inference tests skip when the machine has no artifact, so the default gate stays runnable anywhere), clippy 0, fmt clean.
     - Frame half LANDED 2026-10-17: `MemoryRow.embedding: Vector<f32>` (cold frame, ANY length — no `#[ok_len]` contract, because a model swap changes the data rather than the wire); `MemoryStore::store(…, embedding: &[f32])` states the vector and `get()` reads a row back; the SHELL embeds at the door — a `mem_core::Embedder` rides `mem-server`'s state (`open_with(path, Some(engine))`), while `open()` = no engine and rows then land with an empty frame. Gates: mem-core 8/0 lib + 6/0 smoke (a row's vector round-trips through a reopen, including a 512-wide one; an empty frame is not a zero vector), mem-server 5/0 memory_surface (an engine-attached door still round-trips), clippy 0, fmt clean. The mem-ffi binding passes an empty slice — it attaches no engine.
     - Owed: the per-user in-memory vector table + brute-force Top-K (1c), reading rows through `get` / a bulk vector read. Note: no door returns a row's VECTOR (2 KB per hit is what the code store's own pool-read rule refuses), so the vector's contents are asserted in mem-core and the door's test asserts that embedding does not change the surface.
-  - [x] 1c. In-memory vector search LANDED (2026-10-19, on the GRAPH's nodes — the graph is the successor of flat memory): the entity row carries `embedding: Vector<f32>` (empty is legal → skipped), `GraphStore::retrieve(scope, q, k)` loads the scope's table from the KV on first use, scans it by inner product, drops everything under `LANDING_FLOOR` (0.35) and returns top-k seeds; the table is derived state (dropped on every write) and byte-budgeted with LRU eviction. Door: `GET /facts/{scope}/search?q=&k=` (empty landing = 200 + `[]`). Gates: mem-core 15/0 for the graph suite (3 retrieval — exact-name lands at score 1.0, the table follows writes, no engine lands nothing), mem-server facts 9/0. Followed the same day by the ONE-HOP expansion: `GraphStore::recall` + `GET /facts/{scope}/recall` (seeds + every fact touching them in either direction, deduped by edge id; an empty landing returns both empty). Gates: mem-core graph 16/0, mem-server facts 10/0. Still owed inside this item: the weight-ordered ranking (ADR-0005's weight system is Phase 5) and deeper-than-one-hop walks (the caller composes them); ANN stays re-opened only on a measured threshold (ADR-0003).
-  - [ ] 1d. PG exit gate: end-to-end recall comparison on a fixed query set (landing confidence floor + a legal "nothing landed" outcome)
+  - [x] 1c. In-memory vector search LANDED (2026-10-19, on the GRAPH's nodes — the graph is the successor of flat memory): the entity row carries `embedding: Vector<f32>` (empty is legal → skipped), `GraphStore::retrieve(scope, q, k)` loads the scope's table from the KV on first use, scans it by inner product, drops everything under `LANDING_FLOOR` (0.35) and returns top-k seeds; the table is derived state (dropped on every write) and byte-budgeted with LRU eviction. Door: `GET /facts/{scope}/search?q=&k=` (empty landing = 200 + `[]`). Gates: mem-core 15/0 for the graph suite (3 retrieval — exact-name lands at score 1.0, the table follows writes, no engine lands nothing), mem-server facts 9/0. Followed the same day by the ONE-HOP expansion: `GraphStore::recall` + `GET /facts/{scope}/recall` (seeds + every fact touching them in either direction, deduped by edge id; an empty landing returns both empty). Gates: mem-core graph 16/0, mem-server facts 10/0. Still owed inside this item: the weight-ordered ranking (ADR-0005's weight system is Phase 5 — PAID 2026-10-19, see 3b) and deeper-than-one-hop walks (the caller composes them); ANN stays re-opened only on a measured threshold (ADR-0003).
+  - [x] 1d. Recall gate LANDED (2026-10-19) as a MEASURED BASELINE, not the PG comparison: `crates/mem-core/tests/recall_gate.rs` builds a 14-node corpus (k10r's own vocabulary) + a fixed 14-query set, each query naming the node it must reach, and prints/asserts the numbers — **precision@1 = 13/14 (0.929), precision@3 = 14/14 (1.000), lowest true-hit score 0.637 against the 0.35 floor, and the off-corpus query ("今天北京天气怎么样，要不要带伞") lands nothing**. The one p@1 miss is "记忆图谱" → `用户记忆` (0.680) over `事实图谱` (0.661) — two memory concepts, not a failure of landing. The gate asserts p@1 ≥ 0.85, p@3 ≥ 0.95, every true hit above the floor, and the empty landing; it skips when the machine has no model artifact. Still owed: the comparison against the legacy pgvector + pdb.bm25 + RRF stack — that stack is not runnable here, so the fixture above is what a future comparison is measured against.
   - [x] 1e. HTTP face for the 主动面 LANDED (2026-10-16): `POST /memory` (`MemoryStore::store` — the store assigns the id, the caller's `created_at` rides the request) and `GET /memory/{user_id}/search?q=` (`MemoryStore::search` — one user's key range; an empty result is legal). `forget` / `list` / `stats` still have no route. This is the tool face gravity and other agents read and write through (ADR-0001; the graph's door (`ingest(fact)`) is Phase 3. Gates: mem-server 12/0 (4 in `tests/memory_surface.rs` — round trip, user-scoped scan, legal empty result, flat memory + code sharing one keyspace without leaking into each other), mem-core 22/0 untouched, clippy 0, fmt clean. Transitional: this door is withdrawn together with the table when the fact graph lands (Phase 3).
 - [ ] Phase 2 — Channel log & agent projection: messages / members /
   cursors / checkpoints (per member) tables with gravity-assigned
@@ -120,6 +120,53 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     ADR-0010's owed list are all PAID (2026-10-19): the read-side load on
     probe, the generated payload decode, and `unlink_into` (a functional
     rewrite is now ONE batch).
+
+  - [x] 3b. Weight system LANDED 2026-10-19 (ADR-0005): the counters ride the
+    edge row (`read_count` / `write_count` / `tool_count` / `last_read` /
+    `last_write`, payload layout v2) and `weight` is the folded formula in
+    milli-units. Writers: `ingest` bumps `Write` (link or rewrite, never a
+    drop); `recall`/`expand` bump `Read` only when the caller's `ts_ms` rides
+    the call (no clock = served but not counted, and no invented decay); and
+    `POST /facts/{scope}/edges/{id}/touch` bumps `Tool` (404 for an unknown
+    edge or another scope's). Decay is charged at the fold against the
+    PREVIOUS access, then the same fold re-bases the clock. `recall` returns
+    the served facts ordered by weight (stable; seeds keep similarity order).
+    The three declared faces (`by_since` / `by_confidence` / `by_weight`) were
+    REMOVED: nothing scans them, and every touch would maintain them for no
+    reader — ADR-0005's Updates records the verdict (a per-scope top-K would
+    be a `[scope][weight][edge_id]` projection, not a face). Gates: mem-core
+    graph 25/0 (5 weight tests), mem-server facts 12/0, clippy 0. Still owed:
+    the delta-append table (multi-writer only) and the top-K read itself.
+  - [x] 3c. Steps 3–4 LANDED 2026-10-19 (ADR-0010): `EntityRow.community_id`
+    + the `by_community` face; incremental LPA inside `ingest` (2-hop
+    subgraph, 3 rounds, vote = `weight × confidence`, ties to the smaller
+    community, one batch for every moved node and capsule); capsule
+    collection ns 38 (`updated_at` / `state` / `uncompressed` / `title` /
+    `summary`, one row per community, overwritten in place); the density
+    water line with a `DENSITY_MIN_VERTICES = 3` guard (a two-node community
+    is trivially density 1.0); the uncompressed watermark (15); the orphan
+    capsule deleted when a community's last member leaves. Doors — the caller
+    PULLS (k10r never calls out): `GET /facts/{scope}/communities?state=`,
+    `GET .../communities/{id}` (bucket: capsule + members + internal facts),
+    `GET .../{id}/packet` (canonical 8-slot lines) and `PUT .../{id}` (the
+    summary lands, `done`, counter reset; 404 on an unknown community). Read
+    side: `recall` carries the seeds' capsules and ranks by weight;
+    `GET /graph/{scope}` nodes carry `community_id`. Two real bugs the tests
+    caught and fixed: the seed watermark did not advance (every node of one
+    ingest got the same id) and a new node's capsule creation overwrote a live
+    community's uncompressed counter. Gates: mem-core graph 25/0, mem-server
+    facts 12/0, clippy 0. Still owed: the per-scope top-K read and the
+    caller-side summarizer (gravity's).
+  - [x] 3d. Flat memory (ns 32) and its HTTP door WITHDRAWN 2026-10-19: the
+    table and `MemoryStore` are deleted, `POST /memory` and
+    `GET /memory/{user_id}/search` are gone, and `mem-ffi` now binds
+    `GraphStore` (ingest / retrieve / recall / entity) instead of the removed
+    store. The keyspace-sharing test moved to graph + code (different ns, same
+    tree, both take id 1 without colliding). Docs swept: ADR-0001's carrier
+    line, MODELING's flat section (kept as the historical schema, marked
+    withdrawn), SEAM's endpoint table, README. Legacy flat rows stay a
+    migration question (ADR-0002's PG import), not a schema one. Gates:
+    mem-core 47/0 across its suites, mem-server 20/0, clippy 0.
 - [ ] Phase 4 — Clustered retrieval: entity-anchored / temporal / causal-chain views; progressive loading (Top-K by weight). Reads the write-time structure ADR-0010 lands (the node's community id + the community reverse index + capsules) instead of running a graph algorithm on the read path. (ADR-0005, ADR-0010)
 - [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), SKILL topological four-part nodes, Aura Actor nodes. (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.) ADR-0010 takes the incremental LOCAL form of community detection onto the write side and leaves OPEN whether that promotes a slice of Phase 5 ahead of Phase 3/4 — an open ruling, not settled.
 

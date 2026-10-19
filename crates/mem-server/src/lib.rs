@@ -4,7 +4,7 @@
 //! second access mode).
 //!
 //! Endpoints mirror `ChannelStore`'s primitives (channel log),
-//! `CodeStore`'s (the code store) and `MemoryStore`'s (flat memory)
+//! `CodeStore`'s (the code store) and `GraphStore`'s (the fact graph)
 //! exactly; wire types restate the stores' rows for serde (the core
 //! stays wire-free).
 //! Ordering discipline carries over: the CALLER owns the clock —
@@ -21,7 +21,6 @@ use axum::{
 use mem_core::channel::{ChannelStore, MessageKey, MessageRow, SessionView};
 use mem_core::code::{CodeRow, CodeStore};
 use mem_core::graph::{FactTuple, GraphStore, IngestError, IngestOutcome};
-use mem_core::memory::MemoryStore;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,29 +32,22 @@ use std::sync::Arc;
 /// of adding a sync layer to the core.
 pub struct MemState {
     store: tokio::sync::Mutex<ChannelStore>,
-    /// The code group — the `memory` keyspace, shared with flat memory
-    /// (different ns).
+    /// The code group — the `memory` keyspace, shared with the fact
+    /// graph (different ns).
     code: tokio::sync::Mutex<CodeStore>,
-    /// The flat-memory group — the `memory` keyspace, shared with the
-    /// code group (different ns). This is the memory family's tool face:
-    /// `commit_memory` stores here, `recall_memory` searches here.
-    memory: tokio::sync::Mutex<MemoryStore>,
     /// The fact graph (ns 36 entities / 37 facts) — the `memory`
     /// keyspace. The active memory add lands here (ADR-0008: the facts
     /// come from the model's own add, the caller routes the tuple to
-    /// `ingest(fact)`).
+    /// `ingest(fact)`). The built-in embedding engine (ADR-0003) is
+    /// attached to the graph in `open_with`, so node vectors are computed
+    /// in-process at ingest and the client never sends one; a server
+    /// opened without an engine lands empty vector frames instead (a legal
+    /// row, which is what the storage tests take).
     graph: tokio::sync::Mutex<GraphStore>,
-    /// The built-in embedding engine (ADR-0003), loaded once per process
-    /// and shared: the memory door embeds a row's text in-process before
-    /// it lands, so the client never sends a vector. `None` = no engine
-    /// attached, and rows then land with an empty vector frame (a legal
-    /// row, which is what the storage tests take); a serving process
-    /// attaches one through `open_with`.
-    embedder: Option<Arc<mem_core::Embedder>>,
 }
 
 /// Open the database at `path` and build the router WITHOUT an embedding
-/// engine — memory rows then carry no vector. This is the shape the
+/// engine — nodes then carry no vector. This is the shape the
 /// storage-level tests use; a serving deployment wants `open_with`.
 pub fn open(path: PathBuf) -> Result<Router, fjall::Error> {
     open_with(path, None)
@@ -82,9 +74,7 @@ pub fn open_with(
     let state = Arc::new(MemState {
         store: tokio::sync::Mutex::new(stores.channels),
         code: tokio::sync::Mutex::new(stores.code),
-        memory: tokio::sync::Mutex::new(stores.memory),
         graph: tokio::sync::Mutex::new(graph),
-        embedder,
     });
     Ok(Router::new()
         .route("/channels/{channel_id}/messages", post(append_message))
@@ -98,11 +88,19 @@ pub fn open_with(
         )
         .route("/code", post(put_code).get(list_code))
         .route("/code/{code_id}", get(fetch_code))
-        .route("/memory", post(store_memory))
-        .route("/memory/{user_id}/search", get(search_memory))
         .route("/facts/{scope}", post(ingest_fact))
         .route("/facts/{scope}/search", get(search_facts))
         .route("/facts/{scope}/recall", get(recall_facts))
+        .route("/facts/{scope}/edges/{edge_id}/touch", post(touch_fact))
+        .route("/facts/{scope}/communities", get(list_communities))
+        .route(
+            "/facts/{scope}/communities/{community_id}",
+            get(fetch_community).put(complete_community),
+        )
+        .route(
+            "/facts/{scope}/communities/{community_id}/packet",
+            get(fetch_community_packet),
+        )
         .route("/facts/{scope}/entities/{name}", get(fetch_entity))
         .route(
             "/facts/{scope}/entities/{node_id}/edges",
@@ -343,84 +341,6 @@ async fn list_code(State(state): State<Arc<MemState>>) -> Json<Vec<CodeCandidate
     )
 }
 
-// ---- flat memory (ns 32) --------------------------------------------
-//
-// The memory family's tool face (ADR-0001: the standing
-// capability, offered as tools — `commit_memory` / `recall_memory`). One
-// endpoint per core primitive, nothing added: the store assigns the id,
-// and the CALLER owns the clock — `created_at` rides the request, the
-// same rule the channel log carries (ADR-0008 §3); the server never
-// stamps a time.
-
-/// Request body of `POST /memory` — `MemoryStore::store`'s parameters.
-#[derive(Deserialize, Serialize)]
-pub struct StoreMemory {
-    pub user_id: u64,
-    pub text: String,
-    /// The caller's clock, never the server's (ADR-0008 §3).
-    pub created_at: u64,
-}
-
-/// The assigned identity, returned by `POST /memory` (the caller's record).
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
-pub struct MemoryIdDto {
-    pub memory_id: u64,
-}
-
-/// One search hit: identity plus the stored text.
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
-pub struct MemoryHitDto {
-    pub memory_id: u64,
-    pub text: String,
-}
-
-/// Query string of the search door: `?q=`.
-#[derive(Deserialize)]
-pub struct MemorySearchQuery {
-    pub q: String,
-}
-
-/// `POST /memory` — store one flat memory; the store assigns the id.
-///
-/// The row's vector is computed HERE, in-process, by the attached engine
-/// (ADR-0003: the client states nothing about embedding). No engine
-/// attached = an empty vector frame, which is a legal row rather than a
-/// zero vector.
-async fn store_memory(
-    State(state): State<Arc<MemState>>,
-    Json(body): Json<StoreMemory>,
-) -> Result<Json<MemoryIdDto>, EngineError> {
-    let vector = match &state.embedder {
-        Some(engine) => engine
-            .embed(&body.text)
-            .map_err(|e| EngineError(e.to_string()))?,
-        None => Vec::new(),
-    };
-    let mut memory = state.memory.lock().await;
-    Ok(Json(MemoryIdDto {
-        memory_id: memory.store(body.user_id, &body.text, body.created_at, &vector),
-    }))
-}
-
-/// `GET /memory/{user_id}/search?q=` — the user's rows containing `q`, in
-/// key order. One user's range is scanned, never the whole table. An empty
-/// query and "no match" are both an empty list, which is a legal answer
-/// (the caller injects nothing) rather than an error.
-async fn search_memory(
-    State(state): State<Arc<MemState>>,
-    Path(user_id): Path<u64>,
-    Query(query): Query<MemorySearchQuery>,
-) -> Json<Vec<MemoryHitDto>> {
-    let memory = state.memory.lock().await;
-    Json(
-        memory
-            .search(user_id, &query.q)
-            .into_iter()
-            .map(|(memory_id, text)| MemoryHitDto { memory_id, text })
-            .collect(),
-    )
-}
-
 // ---- the fact graph (ns 36 entities / 37 facts) ----------------------
 //
 // The active memory add's door: the model emits a fact in-turn and the
@@ -526,15 +446,30 @@ pub struct FactSearchQuery {
     pub k: usize,
 }
 
+/// The recall door's query: the landing query, the seed count, and the
+/// CALLER's clock (`ts_ms`). A clock that rides the call makes every served
+/// fact count as one read and re-folds its weight; absent, the answer is
+/// served but nothing is counted (ADR-0005 / ADR-0008 §3 — k10r never
+/// stamps a time of its own).
+#[derive(Deserialize)]
+pub struct RecallQuery {
+    pub q: String,
+    #[serde(default = "default_seed_count")]
+    pub k: usize,
+    pub ts_ms: Option<u64>,
+}
+
 fn default_seed_count() -> usize {
     10
 }
 
-/// One recall (`GET /facts/{scope}/recall`): the landing seeds and the facts
-/// one hop out of them, in one answer.
+/// One recall (`GET /facts/{scope}/recall`): the landing seeds, the capsules
+/// of their communities (ADR-0010 §5's layer-3 context), and the facts one
+/// hop out of them, in one answer.
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct RecallDto {
     pub seeds: Vec<SeedDto>,
+    pub communities: Vec<CommunityDto>,
     pub facts: Vec<FactViewDto>,
 }
 
@@ -565,17 +500,18 @@ async fn search_facts(
         .map_err(FactError::from)
 }
 
-/// `GET /facts/{scope}/recall?q=&k=` — the read shape ADR-0003 describes:
-/// vector landing plus ONE hop, returned together so the caller does not
-/// stitch two calls. An empty landing returns no seeds and no facts.
+/// `GET /facts/{scope}/recall?q=&k=&ts_ms=` — the read shape ADR-0003
+/// describes: vector landing plus ONE hop, ordered by weight (ADR-0005),
+/// returned together so the caller does not stitch two calls. An empty
+/// landing returns no seeds and no facts.
 async fn recall_facts(
     State(state): State<Arc<MemState>>,
     Path(scope): Path<u64>,
-    Query(query): Query<FactSearchQuery>,
+    Query(query): Query<RecallQuery>,
 ) -> Result<Json<RecallDto>, FactError> {
     let mut graph = state.graph.lock().await;
     graph
-        .recall(scope, &query.q, query.k)
+        .recall(scope, &query.q, query.k, query.ts_ms)
         .map(|recall| {
             Json(RecallDto {
                 seeds: recall
@@ -588,10 +524,36 @@ async fn recall_facts(
                         kind: s.kind,
                     })
                     .collect(),
+                communities: recall.communities.into_iter().map(CommunityDto::from).collect(),
                 facts: recall.facts.into_iter().map(FactViewDto::from).collect(),
             })
         })
         .map_err(FactError::from)
+}
+
+/// Body of the tool-touch door: the CALLER's clock (ms). k10r cannot see a
+/// tool call from inside, so the consumer that used the fact reports it.
+#[derive(Deserialize, Serialize)]
+pub struct TouchFact {
+    pub ts_ms: u64,
+}
+
+/// `POST /facts/{scope}/edges/{edge_id}/touch` — count one TOOL consult of
+/// a fact (ADR-0005's `tool_invoke_count`, the index that outranks a plain
+/// read) and answer the fact's new view. An unknown edge, or one whose
+/// source lives in another scope, is a 404: edges carry no scope segment,
+/// their endpoints do.
+async fn touch_fact(
+    State(state): State<Arc<MemState>>,
+    Path((scope, edge_id)): Path<(u64, u64)>,
+    Json(body): Json<TouchFact>,
+) -> axum::response::Response {
+    let mut graph = state.graph.lock().await;
+    match graph.touch(scope, edge_id, mem_core::Touch::Tool, body.ts_ms) {
+        Ok(Some(view)) => Json(FactViewDto::from(view)).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => FactError::from(e).into_response(),
+    }
 }
 
 /// One fact with both endpoints resolved (what a renderer or a recall
@@ -604,7 +566,13 @@ pub struct FactViewDto {
     pub dst: EntityDto,
     pub since: u64,
     pub confidence: u8,
+    /// The folded weight (ADR-0005, milli-units) and its inputs.
     pub weight: u32,
+    pub read_count: u32,
+    pub write_count: u32,
+    pub tool_count: u32,
+    pub last_read: u64,
+    pub last_write: u64,
 }
 
 impl From<mem_core::graph::FactView> for FactViewDto {
@@ -623,6 +591,11 @@ impl From<mem_core::graph::FactView> for FactViewDto {
             since: v.edge.since,
             confidence: v.edge.confidence,
             weight: v.edge.weight,
+            read_count: v.edge.read_count,
+            write_count: v.edge.write_count,
+            tool_count: v.edge.tool_count,
+            last_read: v.edge.last_read,
+            last_write: v.edge.last_write,
         }
     }
 }
@@ -665,6 +638,222 @@ async fn list_entity_edges(
     )
 }
 
+// ---- community capsules (ADR-0010 steps 3–4) ------------------------
+//
+// The write side's output, pulled by the caller: k10r holds no LLM and never
+// calls out, so consolidation is a PULL — the caller lists the communities
+// that are stale, reads one community's packet (canonical 8-slot tuples),
+// summarizes it elsewhere, and PUTs the summary back. Every read here is a
+// declared access method (the capsule row, the by_community face).
+
+/// One community's capsule (ADR-0010 §4) as a wire shape.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct CommunityDto {
+    pub community_id: u64,
+    /// `0` = pending (the summary is stale), `1` = done.
+    pub state: u8,
+    pub updated_at: u64,
+    /// Assertions landed since the last summary.
+    pub uncompressed: u32,
+    pub title: String,
+    pub summary: String,
+}
+
+impl From<(u64, mem_core::graph::CommunityRow)> for CommunityDto {
+    fn from((community_id, row): (u64, mem_core::graph::CommunityRow)) -> Self {
+        Self {
+            community_id,
+            state: row.state,
+            updated_at: row.updated_at,
+            uncompressed: row.uncompressed,
+            title: row.title,
+            summary: row.summary,
+        }
+    }
+}
+
+impl From<mem_core::Capsule> for CommunityDto {
+    fn from(capsule: mem_core::Capsule) -> Self {
+        Self {
+            community_id: capsule.community_id,
+            state: capsule.state,
+            updated_at: capsule.updated_at,
+            uncompressed: capsule.uncompressed,
+            title: capsule.title,
+            summary: capsule.summary,
+        }
+    }
+}
+
+/// One entry of the listing: the capsule plus the size the caller judges the
+/// price of summarizing by.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct CommunityEntryDto {
+    #[serde(flatten)]
+    pub community: CommunityDto,
+    pub member_count: u32,
+}
+
+/// One community read whole: the capsule, its member nodes, and the facts
+/// INSIDE it (both endpoints members). This is ADR-0010 §5's bucket read —
+/// one point get plus one face scan, no graph algorithm.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct CommunityBucketDto {
+    pub community: CommunityDto,
+    pub members: Vec<EntityDto>,
+    pub facts: Vec<FactViewDto>,
+}
+
+/// One consolidation packet (ADR-0010 §3–§4): the community's internal facts
+/// as canonical 8-slot tuples, one JSON array per line — the summarizer
+/// prompt's input, verbatim.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct PacketDto {
+    pub community_id: u64,
+    pub state: u8,
+    pub uncompressed: u32,
+    pub member_count: u32,
+    pub updated_at: u64,
+    pub title: String,
+    pub summary: String,
+    pub facts: Vec<String>,
+}
+
+/// The listing's filter: `?state=pending|done` (absent = every community).
+#[derive(Deserialize)]
+pub struct CommunitiesQuery {
+    pub state: Option<String>,
+}
+
+/// The write-back body: the summary the caller's model produced, and the
+/// caller's clock (ADR-0008 §3).
+#[derive(Deserialize, Serialize)]
+pub struct CompleteCommunity {
+    pub title: String,
+    pub summary: String,
+    pub ts_ms: u64,
+}
+
+fn bad_request(message: String) -> axum::response::Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "error": message })),
+    )
+        .into_response()
+}
+
+/// `GET /facts/{scope}/communities?state=` — every capsule of one scope, with
+/// its member count. A filter the caller does not recognize is a 400, never a
+/// silent "everything".
+async fn list_communities(
+    State(state): State<Arc<MemState>>,
+    Path(scope): Path<u64>,
+    Query(query): Query<CommunitiesQuery>,
+) -> axum::response::Response {
+    let wanted = match query.state.as_deref() {
+        None => None,
+        Some("pending") => Some(mem_core::STATE_PENDING),
+        Some("done") => Some(mem_core::STATE_DONE),
+        Some(other) => {
+            return bad_request(format!(
+                "unknown state filter `{other}` (expected `pending` or `done`)"
+            ));
+        }
+    };
+    let mut graph = state.graph.lock().await;
+    let rows = graph.communities(scope);
+    let mut out = Vec::with_capacity(rows.len());
+    for (community_id, row) in rows {
+        if let Some(state) = wanted {
+            if row.state != state {
+                continue;
+            }
+        }
+        let member_count = graph.community_members(scope, community_id).len() as u32;
+        out.push(CommunityEntryDto {
+            community: CommunityDto::from((community_id, row)),
+            member_count,
+        });
+    }
+    Json(out).into_response()
+}
+
+/// `GET /facts/{scope}/communities/{id}` — the bucket read.
+async fn fetch_community(
+    State(state): State<Arc<MemState>>,
+    Path((scope, community_id)): Path<(u64, u64)>,
+) -> axum::response::Response {
+    let mut graph = state.graph.lock().await;
+    let Some(row) = graph.capsule(scope, community_id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let mut members = Vec::new();
+    for (node_id, node) in graph.community_members(scope, community_id) {
+        let kind = graph.entity_kind(node.kind_id).unwrap_or_default();
+        members.push(EntityDto {
+            node_id,
+            kind,
+            literal_num: node.literal_num,
+            name: node.name,
+        });
+    }
+    let facts = graph
+        .community_facts(scope, community_id)
+        .into_iter()
+        .map(FactViewDto::from)
+        .collect();
+    Json(CommunityBucketDto {
+        community: CommunityDto::from((community_id, row)),
+        members,
+        facts,
+    })
+    .into_response()
+}
+
+/// `GET /facts/{scope}/communities/{id}/packet` — the consolidation pull.
+async fn fetch_community_packet(
+    State(state): State<Arc<MemState>>,
+    Path((scope, community_id)): Path<(u64, u64)>,
+) -> axum::response::Response {
+    let mut graph = state.graph.lock().await;
+    match graph.community_packet(scope, community_id) {
+        Some(packet) => Json(PacketDto {
+            community_id: packet.community_id,
+            state: packet.state,
+            uncompressed: packet.uncompressed,
+            member_count: packet.member_count,
+            updated_at: packet.updated_at,
+            title: packet.title,
+            summary: packet.summary,
+            facts: packet.facts,
+        })
+        .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// `PUT /facts/{scope}/communities/{id}` — the summary lands on the capsule
+/// row (a point overwrite), the state becomes `done`, and the uncompressed
+/// counter resets. An unknown community is a 404: a summary of something
+/// that never existed does not create it.
+async fn complete_community(
+    State(state): State<Arc<MemState>>,
+    Path((scope, community_id)): Path<(u64, u64)>,
+    Json(body): Json<CompleteCommunity>,
+) -> axum::response::Response {
+    let mut graph = state.graph.lock().await;
+    match graph.complete_community(
+        scope,
+        community_id,
+        &body.title,
+        &body.summary,
+        body.ts_ms,
+    ) {
+        Some(row) => Json(CommunityDto::from((community_id, row))).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 // ---- the graph's bulk read face (a renderer's door) ------------------
 //
 // One scope's graph in the shape a force-graph client consumes (nodes +
@@ -682,6 +871,9 @@ pub struct GraphNodeDto {
     pub name: String,
     pub kind: String,
     pub literal_num: i64,
+    /// The node's community (ADR-0010 §2) — the color cluster, and the
+    /// reason the binning is inspectable at all.
+    pub community_id: u64,
 }
 
 /// One link: a fact, with `source` / `target` as node ids (what the client
@@ -716,6 +908,7 @@ async fn fetch_graph(State(state): State<Arc<MemState>>, Path(scope): Path<u64>)
             kind: graph.entity_kind(row.kind_id).unwrap_or_default(),
             literal_num: row.literal_num,
             name: row.name,
+            community_id: row.community_id,
         })
         .collect();
     let links: Vec<GraphLinkDto> = graph
@@ -734,9 +927,11 @@ async fn fetch_graph(State(state): State<Arc<MemState>>, Path(scope): Path<u64>)
     Json(GraphDto { nodes, links })
 }
 
-/// Errors the shell itself can produce (the stores' primitives
-/// are infallible; only engine-level failures bubble). Message passed
-/// through verbatim — the original error text never stops here.
+/// The engine's own failures on a door. `FactError` covers the graph's
+/// structural (400) and storage (500) cases; this type is the general
+/// shell error and is kept for doors that have nothing more specific to
+/// say — message passed through verbatim, the original error text never
+/// stops here.
 #[derive(Serialize)]
 pub struct EngineError(pub String);
 

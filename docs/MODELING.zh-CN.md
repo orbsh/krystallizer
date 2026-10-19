@@ -35,15 +35,28 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
 - **被动（短期）**——当前上下文：channel 日志（ns 33）+ 每成员投影
   （ns 34）。循环自己取、自己追加，从不作为工具。
 - **主动（长期）**——不在上下文里的事实，以**工具**形式到达，任何 agent 都能
-  用。载体是 fact graph；flat 记忆（ns 32）是它在图谱化之前的形态——同一份知识以
-  文本行存放，所以图落地时它一并撤掉（文本块没有逐条身份：按条更新、加权、枚举都
-  做不了）。原始内容从来不需要它——channel 日志（ns 33）已经收了每一条消息。
+  用。载体是 fact graph；flat 记忆（ns 32）**曾经**是它在图谱化之前的形态——同一份
+  知识以文本行存放，所以图落地时它一并撤掉了（文本块没有逐条身份：按条更新、加权、
+  枚举都做不了）。2026-10-19 撤除。原始内容从来不需要它——channel 日志（ns 33）已经收了每一条消息。
 - **初始化（人设 / 风格）**——图派生：从用户节点出发遍历组装，投到
   投影头部。尚未分配 ns。
 
+## 事实图新增（2026-10-19）
+
+- `EntityRow` 增加 `community_id`（声明热字段，`#[ok_default(0)]`；payload 布局 v2）
+  及其 `by_community` 面（`[community_id][scope][node_id]`）——桶读是一次面扫描，
+  不是全表过滤（ADR-0010 §2）。
+- `FactEdge` 携带权重系统的输入（`read_count`、`write_count`、`tool_count`、
+  `last_read`、`last_write`；布局 v2）。`weight` 是折出来的毫单位公式值。原声明的
+  三个面（`by_since` / `by_confidence` / `by_weight`）**不再声明**：没有读者扫它们，
+  而每次 touch 都要为不存在的读者维护（ADR-0005 的「更新」）。
+- `CommunityRow`（ns 38）：`[scope][community_id]` → `updated_at`、`state`
+  （0 pending / 1 done）、`uncompressed`、`title`、`summary`。一个社区一行、原地
+  覆盖——是缓存，不是日志。
+
 ## Flat memory（ns 32）
 
-已实现（Phase 1a）——抽取出的长期记忆在图谱化之前的载体，图落地时撤掉（ADR-0001 的「flat memory, then the graph」；PLAN Phase 3）。声明在 `crates/mem-core/src/memory.rs`。
+**2026-10-19 撤除**——图落地，载体随之退场（ADR-0001 的「flat memory, then the graph」；PLAN Phase 3）：表、`MemoryStore` 与 `/memory` 门都已删除，ns 32 空出。下面的 schema 作为图谱化之前形态的历史记录保留——存量行是迁移问题（ADR-0002 的 PG 导入），不是活表。
 
 ### Key：`MemoryKey`（`KeyEncode`）
 

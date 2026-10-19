@@ -11,7 +11,6 @@ pub mod code;
 pub mod config;
 pub mod embedding;
 pub mod graph;
-pub mod memory;
 pub mod service;
 
 /// The service's two keyspaces — one Fjall database (one directory, one
@@ -21,10 +20,10 @@ pub mod service;
 /// takes the highest write rate in the store, so its compaction never
 /// drags the other tables along.
 ///
-/// `memory` holds everything else — flat memory, code, and later the fact
-/// graph and the skills. Those tables are discriminated by ns, per okm's
-/// rule (one entity class = one ns; different table types sharing a
-/// keyspace do not conflict).
+/// `memory` holds everything else — code, the fact graph, and later the
+/// skills. Those tables are discriminated by ns, per okm's rule (one
+/// entity class = one ns; different table types sharing a keyspace do not
+/// conflict).
 pub const KEYSPACE_CHANNEL: &str = "channel";
 pub const KEYSPACE_MEMORY: &str = "memory";
 
@@ -36,8 +35,10 @@ pub use code::{CodeKey, CodeRow, CodeStore};
 pub use config::{ConfigError, EmbeddingConfig, KrystallizerConfig};
 pub use embedding::{EmbedError, Embedder};
 pub use graph::{
-    EntityKey, EntityRow, FactBody, FactEdge, FactTuple, GraphStore, IngestError, IngestOutcome,
-    Relation, Recall, Seed, Term, ENTITY_NS, FACT_NS, FUNCTIONAL_PROP, LANDING_FLOOR, LITERAL_KIND,
+    Capsule, CommunityKey, CommunityPacket, CommunityRow, EntityKey, EntityRow, FactBody, FactEdge,
+    FactTuple, GraphStore, IngestError, IngestOutcome, Recall, Relation, Seed, Term, Touch,
+    COMMUNITY_NS, DENSITY_MIN_VERTICES, DENSITY_THRESHOLD, ENTITY_NS, FACT_NS, FUNCTIONAL_PROP, LANDING_FLOOR,
+    LITERAL_KIND, LPA_RADIUS, LPA_ROUNDS, STATE_DONE, STATE_PENDING, UNCOMPRESSED_WATERMARK,
+    WEIGHT_SCALE,
 };
-pub use memory::{MemoryKey, MemoryRow, MemoryStats, MemoryStore};
 pub use service::{open_service, ServiceStores};
