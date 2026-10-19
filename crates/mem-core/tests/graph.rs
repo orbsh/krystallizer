@@ -520,3 +520,58 @@ fn retrieval_without_an_engine_lands_nothing() {
     let (node_id, _) = graph.entity_by_name(1, "alpha").unwrap();
     assert!(graph.entity(1, node_id).unwrap().embedding.is_empty());
 }
+
+/// Landing + one hop (ADR-0003's read shape): the seeds come from vector
+/// landing, the facts from BOTH directions around them, deduplicated. A query
+/// landing on the tail of a fact still reaches that fact — proof the in-edge
+/// side is walked, not just the out side.
+#[test]
+fn recall_lands_then_expands_one_hop() {
+    let Some(engine) = local_embedder() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap().with_embedder(engine);
+    graph
+        .ingest(
+            1,
+            &tuple(r#"["fjall_engine","system",{},"IS_A",{},"storage_engine","system",{}]"#),
+        )
+        .unwrap();
+    graph
+        .ingest(
+            1,
+            &tuple(r#"["slatedb_engine","system",{},"IS_A",{},"storage_engine","system",{}]"#),
+        )
+        .unwrap();
+
+    // Landing on the head: one seed, one hop out = that head's one fact.
+    let from_head = graph.recall(1, "fjall_engine", 1).unwrap();
+    assert_eq!(from_head.seeds.len(), 1);
+    assert_eq!(from_head.seeds[0].name, "fjall_engine");
+    assert_eq!(from_head.facts.len(), 1, "one hop from the head");
+    assert_eq!(from_head.facts[0].kind, "IS_A");
+    assert_eq!(from_head.facts[0].src.name, "fjall_engine");
+    assert_eq!(from_head.facts[0].dst.name, "storage_engine");
+
+    // Landing on the TAIL: the same fact arrives through the in-direction,
+    // and both heads' facts are reachable from here.
+    let from_tail = graph.recall(1, "storage_engine", 1).unwrap();
+    assert_eq!(from_tail.seeds[0].name, "storage_engine");
+    assert_eq!(
+        from_tail.facts.len(),
+        2,
+        "both facts point AT the tail; dedupe keeps each once"
+    );
+    let mut heads: Vec<&str> = from_tail
+        .facts
+        .iter()
+        .map(|f| f.src.name.as_str())
+        .collect();
+    heads.sort();
+    assert_eq!(heads, vec!["fjall_engine", "slatedb_engine"]);
+
+    // An empty query is the legal "nothing landed": no seeds, no facts.
+    let nothing = graph.recall(1, "   ", 5).unwrap();
+    assert!(nothing.seeds.is_empty() && nothing.facts.is_empty());
+}

@@ -102,6 +102,7 @@ pub fn open_with(
         .route("/memory/{user_id}/search", get(search_memory))
         .route("/facts/{scope}", post(ingest_fact))
         .route("/facts/{scope}/search", get(search_facts))
+        .route("/facts/{scope}/recall", get(recall_facts))
         .route("/facts/{scope}/entities/{name}", get(fetch_entity))
         .route(
             "/facts/{scope}/entities/{node_id}/edges",
@@ -529,6 +530,14 @@ fn default_seed_count() -> usize {
     10
 }
 
+/// One recall (`GET /facts/{scope}/recall`): the landing seeds and the facts
+/// one hop out of them, in one answer.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct RecallDto {
+    pub seeds: Vec<SeedDto>,
+    pub facts: Vec<FactViewDto>,
+}
+
 /// `GET /facts/{scope}/search?q=&k=` — vector landing over one scope's
 /// entities (ADR-0003). Below the landing floor the answer is an empty list,
 /// never an error; no embedding engine attached is the same empty list.
@@ -552,6 +561,35 @@ async fn search_facts(
                     })
                     .collect(),
             )
+        })
+        .map_err(FactError::from)
+}
+
+/// `GET /facts/{scope}/recall?q=&k=` — the read shape ADR-0003 describes:
+/// vector landing plus ONE hop, returned together so the caller does not
+/// stitch two calls. An empty landing returns no seeds and no facts.
+async fn recall_facts(
+    State(state): State<Arc<MemState>>,
+    Path(scope): Path<u64>,
+    Query(query): Query<FactSearchQuery>,
+) -> Result<Json<RecallDto>, FactError> {
+    let mut graph = state.graph.lock().await;
+    graph
+        .recall(scope, &query.q, query.k)
+        .map(|recall| {
+            Json(RecallDto {
+                seeds: recall
+                    .seeds
+                    .into_iter()
+                    .map(|s| SeedDto {
+                        node_id: s.node_id,
+                        score: s.score,
+                        name: s.name,
+                        kind: s.kind,
+                    })
+                    .collect(),
+                facts: recall.facts.into_iter().map(FactViewDto::from).collect(),
+            })
         })
         .map_err(FactError::from)
 }

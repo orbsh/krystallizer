@@ -439,3 +439,22 @@ async fn retrieval_door_answers_an_empty_landing_without_an_engine() {
     let seeds: Vec<serde_json::Value> = response.json().await.unwrap();
     assert!(seeds.is_empty(), "no engine = nothing lands");
 }
+
+/// `GET /facts/{scope}/recall` — landing + one hop in one answer. Without an
+/// engine nothing lands, so the door answers empty seeds AND empty facts
+/// (200, never an error). The ranked path lives in mem-core, which owns the
+/// engine; this pins the door's shape.
+#[tokio::test]
+async fn recall_door_answers_an_empty_landing_without_an_engine() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("{base}/facts/1/recall?q=fjall_engine"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let recall: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(recall["seeds"].as_array().unwrap().len(), 0);
+    assert_eq!(recall["facts"].as_array().unwrap().len(), 0);
+}

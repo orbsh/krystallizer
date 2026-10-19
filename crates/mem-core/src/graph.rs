@@ -53,7 +53,7 @@ use okm_core::{
     Collection, Document, DocumentEncode, EdgeHead, FjallStore, Graph, GraphEncode, KeyEncode,
     MemBatch, NodeRef, NodeSet, Vector, VectorElem, VirtualStorage, PRIMARY_SLOT, write_slot,
 };
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 /// Entity node collection (ADR-0010 §1's ns 36 — allocated at landing,
@@ -342,6 +342,18 @@ pub struct Seed {
     pub score: f32,
     pub name: String,
     pub kind: String,
+}
+
+/// What one recall returns (ADR-0003: "vector landing + graph traversal"): the
+/// landing seeds, then every fact one hop out of them — both directions,
+/// deduplicated by edge id (a fact between two seeds appears once). Order is
+/// the seeds' own order, so the caller sees which seed pulled a fact in; the
+/// weight-ordered ranking inside that order is ADR-0005's, and each fact
+/// carries its declared `weight` (0 until that system writes it).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Recall {
+    pub seeds: Vec<Seed>,
+    pub facts: Vec<FactView>,
 }
 
 /// The landing confidence floor (ADR-0003): below it nothing landed, and an
@@ -687,6 +699,32 @@ impl GraphStore {
             .collect())
     }
 
+    /// Landing + one hop (ADR-0003's read shape: "vector landing + graph
+    /// traversal"): the seeds, then every fact touching them in EITHER
+    /// direction, deduplicated by edge id — a fact between two seeds appears
+    /// once, under the first seed that reached it. One hop is the whole
+    /// traversal today: deeper walks are the caller's composition over
+    /// `out_edges`/`in_edges`, and the weight-ordered ranking inside the set
+    /// waits for ADR-0005's writer (the facts carry `weight`, 0 until then).
+    pub fn recall(&mut self, scope: u64, query: &str, k: usize) -> Result<Recall, IngestError> {
+        let seeds = self.retrieve(scope, query, k)?;
+        let mut seen = HashSet::new();
+        let mut facts = Vec::new();
+        for seed in &seeds {
+            let mut ids = self.out_edges(scope, seed.node_id);
+            ids.extend(self.in_edges(scope, seed.node_id));
+            for edge_id in ids {
+                if !seen.insert(edge_id) {
+                    continue;
+                }
+                if let Some(view) = self.fact_view(edge_id) {
+                    facts.push(view);
+                }
+            }
+        }
+        Ok(Recall { seeds, facts })
+    }
+
     /// Build (or refresh the LRU position of) one scope's table. Rows written
     /// without an engine carry an EMPTY frame and are skipped by construction.
     fn load_vector_table(&mut self, scope: u64) {
@@ -732,6 +770,13 @@ impl GraphStore {
     /// Outgoing edge ids of one node (the traversal currency).
     pub fn out_edges(&mut self, scope: u64, node_id: u64) -> Vec<u64> {
         self.facts().out_edges(&self.node_ref(scope, node_id))
+    }
+
+    /// Incoming edge ids of one node — the in-direction mirror of
+    /// [`out_edges`](Self::out_edges). Both directions matter to a landing:
+    /// a seed is useful through the facts pointing AT it as well.
+    pub fn in_edges(&mut self, scope: u64, node_id: u64) -> Vec<u64> {
+        self.facts().in_edges(&self.node_ref(scope, node_id))
     }
 
     /// Outgoing edge ids of one predicate out of one node — the 0x09 face,
