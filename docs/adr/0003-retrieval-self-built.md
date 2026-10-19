@@ -87,7 +87,10 @@ only complex ones (PageRank, community detection) earn a dependency.
   **Landed 2026-10-19:** `GraphStore::retrieve` + `GET /facts/{scope}/search`
   — per-scope in-memory table (loaded from the KV on first use, dropped on
   every write, byte-budgeted with LRU eviction), inner product over
-  unit-length vectors, `LANDING_FLOOR` (0.35) and a legal empty landing.
+  unit-length vectors, `LANDING_FLOOR` (0.35) and a legal empty landing —
+  plus the one-hop expansion (`GraphStore::recall`,
+  `GET /facts/{scope}/recall`): seeds and every fact touching them in either
+  direction, deduplicated by edge id. Weight-ordered ranking is ADR-0005's.
 - **The three costs, and the shape past the threshold (2026-10-19).** A scan
   strategy pays in compute, memory or I/O, and the choice is a MEASURED one:
   an in-memory table pays memory (~2 KB/vector) and scans in O(N·d) — at

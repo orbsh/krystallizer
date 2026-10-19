@@ -64,7 +64,9 @@ arroy 0.6 是 LMDB（内存映射）索引，做不到「序列化进 Fjall」�
 - bring-up 姿态：实测阈值以下用暴力内积顶替 ANN；ANN 集成不阻塞 Phase 1。
   **2026-10-19 落地：** `GraphStore::retrieve` + `GET /facts/{scope}/search`——
   每 scope 的内存表（首次使用时从 KV 载入、每次写入即失效、带字节预算与 LRU 淘汰），
-  对单位长度向量做内积，`LANDING_FLOOR`（0.35）与"合法空落地"。
+  对单位长度向量做内积，`LANDING_FLOOR`（0.35）与"合法空落地"——外加一跳扩展
+  （`GraphStore::recall`、`GET /facts/{scope}/recall`）：种子，加上两个方向上碰到
+  它们的每条事实，按 edge id 去重。按权重的排序归 ADR-0005。
 - **三笔代价，以及越过阈值后的形态（2026-10-19）。** 扫描策略只能从算力、内存、
   I/O 里挑一笔付，而且必须是**实测**决定：内存表付内存（~2 KB/向量）、扫 O(N·d)
   ——10⁴ 条是亚毫秒，10⁵ 条在 AVX2 下约 6 ms；IVF 付训练与"重训即重写全部桶键"，

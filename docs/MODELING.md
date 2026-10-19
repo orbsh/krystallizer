@@ -324,6 +324,13 @@ pub struct EntityRow {
   LRU eviction, and the scan is `Flat` (brute force) — the bucketed form is
   the documented next step, taken only when one scope's table no longer fits
   (ADR-0003's measured threshold).
+- **`GraphStore::recall` (`GET /facts/{scope}/recall`)** is that landing plus
+  ONE hop: the seeds, then every fact touching them in EITHER direction,
+  deduplicated by edge id (a fact between two seeds appears once, under the
+  first seed that reached it), returned together so the caller stitches
+  nothing. Deeper walks are the caller's composition over `out_edges` /
+  `in_edges`; the weight-ordered ranking inside the set waits for ADR-0005's
+  writer (each fact carries its declared `weight`, 0 until then).
 - **`community_id` and its `by_community` face are NOT declared yet.**
   They belong to ADR-0010's steps 3–4 (the incremental LPA + binning), and
   nothing reads them today: a field with no writer and a face with no
