@@ -529,121 +529,51 @@ async fn the_touch_door_counts_a_tool_consult_and_404s_for_a_foreign_edge() {
     assert_eq!(foreign.status(), 404, "another scope's edge is not ours");
 }
 
-/// The consolidation pull (ADR-0010 §3–§4): the caller asks which communities
-/// are stale, reads one packet, and PUTs the summary back. The packet is the
-/// canonical 8-slot tuple list; the write-back is a point overwrite that
-/// flips the state to `done` and resets the uncompressed counter.
+/// The read door's contract: the query lands, the answer is the landed
+/// community's facts plus the RENDERED, id-bearing text — and when nothing
+/// can land (no embedding engine attached here), that is a legal EMPTY
+/// answer, never an error. The rendered text itself is locked in mem-core's
+/// graph suite, which needs the model artifact.
 #[tokio::test]
-async fn the_consolidation_pull_serves_packets_and_takes_the_summary() {
+async fn recall_answers_the_rendered_memory_and_the_consolidation_doors_are_gone() {
     let (base, _dir) = spawn_server().await;
     let client = reqwest::Client::new();
+    ingest(
+        &client,
+        &base,
+        1,
+        tuple(r#"["alpha","thing",{},"IS",{},"beta","thing",{}]"#),
+    )
+    .await;
 
-    for fact in [
-        r#"["fjall_engine","system",{},"IS_A",{},"storage_engine","system",{}]"#,
-        r#"["slatedb_engine","system",{},"IS_A",{},"storage_engine","system",{}]"#,
+    let answer: serde_json::Value = client
+        .get(format!("{base}/facts/1/recall?q=alpha&k=3&budget=5"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(answer["seeds"].as_array().unwrap().len(), 0);
+    assert_eq!(answer["facts"].as_array().unwrap().len(), 0);
+    assert_eq!(answer["text"], "", "nothing landed: no text at all");
+    assert_eq!(answer["shown"], 0);
+    assert_eq!(answer["total"], 0);
+
+    // The consolidation machinery retired with the capsules: the pull doors
+    // answer 404 because they no longer exist (ADR-0010 §5 — the read side
+    // renders the community, nothing summarizes it).
+    for suffix in [
+        "/facts/1/communities",
+        "/facts/1/communities/1",
+        "/facts/1/communities/1/packet",
     ] {
-        ingest(&client, &base, 1, tuple(fact)).await;
+        let status = client
+            .get(format!("{base}{suffix}"))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, 404, "{suffix} is not a door any more");
     }
-
-    let pending: Vec<serde_json::Value> = client
-        .get(format!("{base}/facts/1/communities?state=pending"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(pending.len(), 1, "one community, one pending capsule");
-    let community = pending[0]["community_id"].as_u64().unwrap();
-    assert_eq!(pending[0]["member_count"], 3);
-    assert_eq!(pending[0]["uncompressed"], 2);
-
-    let bucket: serde_json::Value = client
-        .get(format!("{base}/facts/1/communities/{community}"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(bucket["members"].as_array().unwrap().len(), 3);
-    assert_eq!(bucket["facts"].as_array().unwrap().len(), 2);
-    assert_eq!(bucket["community"]["state"], 0);
-
-    let packet: serde_json::Value = client
-        .get(format!("{base}/facts/1/communities/{community}/packet"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let facts = packet["facts"].as_array().unwrap();
-    assert_eq!(facts.len(), 2);
-    for line in facts {
-        let tuple: Vec<serde_json::Value> =
-            serde_json::from_str(line.as_str().unwrap()).unwrap();
-        assert_eq!(tuple.len(), 8, "the packet line is the canonical tuple");
-        assert_eq!(tuple[3], "IS_A");
-    }
-
-    let written: serde_json::Value = client
-        .put(format!("{base}/facts/1/communities/{community}"))
-        .json(&serde_json::json!({
-            "title": "存储引擎",
-            "summary": "两个引擎同属存储引擎。",
-            "ts_ms": 4242,
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(written["state"], 1, "the summary lands as done");
-    assert_eq!(written["uncompressed"], 0);
-    assert_eq!(written["updated_at"], 4242);
-
-    let no_pending: Vec<serde_json::Value> = client
-        .get(format!("{base}/facts/1/communities?state=pending"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert!(no_pending.is_empty());
-    let done: Vec<serde_json::Value> = client
-        .get(format!("{base}/facts/1/communities?state=done"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(done.len(), 1);
-    assert_eq!(done[0]["title"], "存储引擎");
-
-    // Unknown community: both the read and the write-back are 404.
-    let missing = client
-        .get(format!("{base}/facts/1/communities/999"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(missing.status(), 404);
-    let missing_put = client
-        .put(format!("{base}/facts/1/communities/999"))
-        .json(&serde_json::json!({ "title": "t", "summary": "s", "ts_ms": 1 }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(missing_put.status(), 404);
-
-    // A filter nobody understands is a 400, not "everything".
-    let bad = client
-        .get(format!("{base}/facts/1/communities?state=stale"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(bad.status(), 400);
 }

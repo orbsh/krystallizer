@@ -103,8 +103,13 @@ async fn append_fetch_checkpoint_flow() {
     // Key order == time order (BE layout), no server-side sort.
     assert_eq!(session["increment"][0]["key"]["ts_ms"], 1000);
     assert_eq!(session["increment"][1]["key"]["ts_ms"], 1001);
-    assert_eq!(session["increment"][0]["row"]["content"], "hi");
-    assert_eq!(session["increment"][1]["row"]["role"], role::ASSISTANT);
+    assert_eq!(session["increment"][0]["content"], "hi");
+    assert_eq!(session["increment"][1]["role"], "assistant");
+    assert_eq!(
+        session["head"].as_array().unwrap().len(),
+        0,
+        "no facts in the scope yet: an empty head, never an error"
+    );
 
     // Advance the checkpoint past the user's message; the increment
     // keeps only strictly-after entries and the summary rides along.
@@ -167,7 +172,7 @@ async fn channels_are_isolated() {
             .unwrap();
         let inc = session["increment"].as_array().unwrap();
         assert_eq!(inc.len(), 1, "channel {ch} sees only its own entry");
-        assert_eq!(inc[0]["row"]["content"], format!("ch{ch}"));
+        assert_eq!(inc[0]["content"], format!("ch{ch}"));
     }
 }
 
@@ -206,4 +211,59 @@ async fn member_checkpoints_are_independent() {
         .unwrap();
     assert_eq!(s2["coverage_ts"], 0);
     assert_eq!(s2["increment"].as_array().unwrap().len(), 1);
+}
+
+/// Phase 2.5 over the wire: the projection carries the HEAD block (the
+/// user node's incident facts, weight-descending) ahead of the checkpoint
+/// and the increment, and the increment's role arrives as the LLM role
+/// name rather than the stored code.
+///
+/// The user node is node 1 of scope 1 today (`DEFAULT_USER_NODE`), and the
+/// door passes both defaults — so a fact whose head resolves first in
+/// scope 1 is exactly what the head block must show.
+#[tokio::test]
+async fn session_carries_the_head_block_and_named_roles() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    // The first entity scope 1 resolves takes node id 1.
+    let status = client
+        .post(format!("{base}/facts/1"))
+        .json(&json!(["用户", "person", {}, "PREFERS", {}, "简洁", "style", {}]))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, reqwest::StatusCode::OK);
+
+    client
+        .post(format!("{base}/channels/7/messages"))
+        .json(&json!({"ts_ms": 1000, "sub": 0, "role": role::USER, "kind": 0, "content": "hi"}))
+        .send()
+        .await
+        .unwrap();
+
+    let session: serde_json::Value = client
+        .get(format!("{base}/channels/7/members/1/session"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let head = session["head"].as_array().unwrap();
+    assert_eq!(head.len(), 1, "the user node's one fact");
+    assert_eq!(head[0]["kind"], "PREFERS");
+    assert_eq!(head[0]["src"]["name"], "用户");
+    assert_eq!(head[0]["dst"]["name"], "简洁");
+    assert_eq!(head[0]["src"]["node_id"], 1, "the default user node");
+
+    assert_eq!(session["increment"][0]["role"], "user");
+    assert_eq!(session["increment"][0]["kind"], 0);
+    assert_eq!(session["increment"][0]["content"], "hi");
+    assert_eq!(
+        session["increment"][0]["key"]["channel_id"], 7,
+        "the key still rides every entry (a delta record is written from it)"
+    );
 }

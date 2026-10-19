@@ -12,6 +12,7 @@ pub mod config;
 pub mod embedding;
 pub mod graph;
 pub mod service;
+pub mod view;
 
 /// The service's two keyspaces — one Fjall database (one directory, one
 /// lock file) holds both.
@@ -35,10 +36,12 @@ pub use code::{CodeKey, CodeRow, CodeStore};
 pub use config::{ConfigError, EmbeddingConfig, KrystallizerConfig};
 pub use embedding::{EmbedError, Embedder};
 pub use graph::{
-    Capsule, CommunityKey, CommunityPacket, CommunityRow, EntityKey, EntityRow, FactBody, FactEdge,
+    CommunitySeqKey, CommunitySeqRow, CommunitySlice, EntityKey, EntityRow, FactBody, FactEdge,
     FactTuple, GraphStore, IngestError, IngestOutcome, Recall, Relation, Seed, Term, Touch,
-    COMMUNITY_NS, DENSITY_MIN_VERTICES, DENSITY_THRESHOLD, ENTITY_NS, FACT_NS, FUNCTIONAL_PROP, LANDING_FLOOR,
-    LITERAL_KIND, LPA_RADIUS, LPA_ROUNDS, STATE_DONE, STATE_PENDING, UNCOMPRESSED_WATERMARK,
-    WEIGHT_SCALE,
+    COMMUNITY_NS, ENTITY_NS, FACT_NS, FUNCTIONAL_PROP, LANDING_FLOOR, LITERAL_KIND, LPA_RADIUS,
+    LPA_ROUNDS, WEIGHT_SCALE,
 };
 pub use service::{open_service, ServiceStores};
+pub use view::{
+    assemble, render_memory, role_name, Projection, DEFAULT_SCOPE, DEFAULT_USER_NODE,
+};

@@ -61,7 +61,7 @@ use okm_core::{
     Collection, Document, DocumentEncode, EdgeHead, FjallStore, Graph, GraphEncode, KeyEncode,
     MemBatch, NodeRef, NodeSet, Vector, VectorElem, VirtualStorage, PRIMARY_SLOT, write_slot,
 };
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 /// Entity node collection (ADR-0010 §1's ns 36 — allocated at landing,
@@ -304,98 +304,37 @@ impl NodeSet for FactNodes {
     const NS_VALUES: &'static [u16] = &[ENTITY_NS];
 }
 
-// ---- ADR-0010 steps 3–4: binning and capsules ------------------------
+// ---- ADR-0010 steps 3–4: binning, and the community id's issuer ------
 
-/// The capsule collection (ADR-0010 §4): one row per community — a cache
-/// of the community's latest semantic summary. Its own ns, next free after
-/// the facts' 37.
+/// The community sequence collection: ONE row per scope, holding the last
+/// community id issued. It takes the ns the capsule table had (38) — the
+/// table is gone, the ns is not spent.
 pub const COMMUNITY_NS: u16 = 38;
 /// How many propagation rounds one LPA pass runs (ADR-0010 §2: "3 rounds
 /// converge in the common case"; the cap keeps a pass bounded).
 pub const LPA_ROUNDS: usize = 3;
 /// The neighbourhood radius the local subgraph is loaded at, in hops.
 pub const LPA_RADIUS: usize = 2;
-/// A community is worth summarizing when its internal density crosses this
-/// (ADR-0010 §3's density water line: `2|E| / (|V|(|V|-1))`).
-pub const DENSITY_THRESHOLD: f64 = 0.35;
-/// …but the density reads only once the community has this many members: a
-/// two-node community is trivially a clique (density 1.0 after one fact),
-/// and a "summary" of one assertion is not what the water line is for.
-/// Below it, the uncompressed watermark is the only reason to summarize.
-pub const DENSITY_MIN_VERTICES: usize = 3;
-/// …or when this many assertions have landed in it since the last
-/// consolidation (ADR-0010 §3's uncompressed-fact watermark).
-pub const UNCOMPRESSED_WATERMARK: u32 = 15;
-/// Capsule states: `PENDING` = the summary is stale, the caller may pull
-/// the packet; `DONE` = the summary is current.
-pub const STATE_PENDING: u8 = 0;
-pub const STATE_DONE: u8 = 1;
 
-/// Capsule identity: `[scope][community_id]`. Per-scope, like every other
-/// row of this corpus: community ids are issued per scope, so two users'
-/// corpora never share one.
+/// The community sequence key: `[scope]`.
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 #[ok_ns(38)]
-pub struct CommunityKey {
+pub struct CommunitySeqKey {
     pub scope: u64,
-    pub community_id: u64,
 }
 
-/// One community's capsule (ADR-0010 §4): the summary the read side injects
-/// without running an algorithm, plus the write side's bookkeeping —
-/// `uncompressed` counts assertions that landed since the last summary, and
-/// `state` says whether that summary is stale.
+/// The scope's community high water: the last id issued, never lowered.
 ///
-/// The overwrite IS the design: a capsule is a cache, the latest summary is
-/// the only one worth reading, and the history is what the facts already
-/// are. One row per community keeps the key count bounded by the number of
-/// communities instead of growing per re-summarization.
+/// It is a COUNTER row, not "the maximum of the communities that exist":
+/// a community's last member can leave, so an issuer reading live data
+/// would hand that id out again after a restart — two different
+/// communities sharing one id. Single writer, monotonic, never reused.
 #[derive(DocumentEncode, Clone, PartialEq, Debug, Default)]
-#[ok_ref(CommunityKey)]
+#[ok_ref(CommunitySeqKey)]
 #[ok_ns(38)]
-pub struct CommunityRow {
-    /// The caller's clock of the last write to this row (ms).
+pub struct CommunitySeqRow {
     #[ok_default(0)]
-    pub updated_at: u64,
-    /// `STATE_PENDING` / `STATE_DONE`.
-    #[ok_default(0)]
-    pub state: u8,
-    /// Assertions landed since the last consolidation (the watermark's
-    /// input); reset by the write-back.
-    #[ok_default(0)]
-    pub uncompressed: u32,
-    pub title: String,
-    pub summary: String,
-}
-
-/// What one consolidation pull returns for one community (ADR-0010 §4):
-/// the packet is the canonical 8-slot tuples of the community's internal
-/// facts, one JSON array per line — exactly the form the summarizer prompt
-/// states, so nothing restates the tuple.
-#[derive(Clone, Debug, PartialEq)]
-pub struct CommunityPacket {
-    pub community_id: u64,
-    pub state: u8,
-    pub uncompressed: u32,
-    pub member_count: u32,
-    pub updated_at: u64,
-    pub title: String,
-    pub summary: String,
-    pub facts: Vec<String>,
-}
-
-/// One community as a recall hands it back: the layer-3 context the caller
-/// injects at the prompt head without a second round trip (ADR-0010 §5).
-#[derive(Clone, Debug, PartialEq)]
-pub struct Capsule {
-    pub community_id: u64,
-    pub state: u8,
-    pub updated_at: u64,
-    /// Assertions landed since the last summary (the write side's watermark
-    /// input); the caller may use it to judge how stale the text is.
-    pub uncompressed: u32,
-    pub title: String,
-    pub summary: String,
+    pub high_water: u64,
 }
 
 /// One end of a fact: a value, its type label, and its props (the
@@ -577,10 +516,29 @@ pub struct Seed {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Recall {
     pub seeds: Vec<Seed>,
-    /// The capsules of the communities the seeds belong to (ADR-0010 §5
-    /// step 2): the layer-3 summary the caller injects at the prompt head,
-    /// read as point gets — the read path runs no graph algorithm.
-    pub communities: Vec<Capsule>,
+    /// The communities the seeds landed in, seed order, deduplicated. The
+    /// community is k10r's internal slicing, not a consumer-facing unit —
+    /// it rides the answer so an audit read can name the same slice.
+    pub communities: Vec<u64>,
+    /// The facts the answer shows: weight-descending, trimmed to the budget.
+    pub facts: Vec<FactView>,
+    /// The rendered memory answer: one block per community, every node and
+    /// edge line carrying its id so the caller can point at a line.
+    pub text: String,
+    /// Facts shown vs facts the landed communities hold (the header's
+    /// elision accounting).
+    pub shown: usize,
+    pub total: usize,
+}
+
+/// One community's slice of an answer: the facts the read side renders, the
+/// community's size, and how many facts it holds in total (the budget's
+/// denominator).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CommunitySlice {
+    pub community: u64,
+    pub members: usize,
+    pub total: usize,
     pub facts: Vec<FactView>,
 }
 
@@ -933,40 +891,112 @@ impl GraphStore {
             .collect())
     }
 
-    /// Landing + one hop (ADR-0003's read shape: "vector landing + graph
-    /// traversal"): the seeds, then every fact touching them in EITHER
-    /// direction, deduplicated by edge id — a fact between two seeds appears
-    /// once. One hop is the whole traversal today: deeper walks are the
-    /// caller's composition over `out_edges`/`in_edges`.
+    /// Landing + the landed COMMUNITY (ADR-0010 §5): the query lands, the
+    /// seeds' communities are read as buckets (the `by_community` face plus
+    /// the facts whose endpoints are both members), and the answer is those
+    /// facts rendered as id-bearing text. There is no traversal policy and
+    /// no N-hop: a community is a bounded slice by construction, and
+    /// `budget` (a MAX FACT COUNT, 0 = no limit) keeps the answer at a few
+    /// hundred tokens — dropping the lowest-weight facts, never a half line.
     ///
     /// `ts_ms` is the CALLER's clock (ADR-0008 §3). When it rides the call,
-    /// every served fact counts as one read and its weight is re-folded
-    /// (ADR-0005's direct-RMW start); the served set is then ordered by
-    /// that weight, highest first. Without a clock the answer is identical
-    /// except that nothing is counted — a read nobody stamped is not a
-    /// read, and an absent timestamp never invents decay.
+    /// every fact the answer SHOWS counts as one read and its weight is
+    /// re-folded (ADR-0005); the shown set is re-ordered by the new weight.
+    /// Without a clock the answer is identical except that nothing is
+    /// counted — a read nobody stamped is not a read.
     pub fn recall(
         &mut self,
         scope: u64,
         query: &str,
         k: usize,
         ts_ms: Option<u64>,
+        budget: usize,
     ) -> Result<Recall, IngestError> {
         let seeds = self.retrieve(scope, query, k)?;
-        let communities = self.capsules_of(scope, &seeds);
-        let facts = self.expand(scope, &seeds, ts_ms)?;
+        let mut communities: Vec<u64> = Vec::new();
+        for seed in &seeds {
+            if let Some(row) = self.entity(scope, seed.node_id) {
+                if row.community_id != 0 && !communities.contains(&row.community_id) {
+                    communities.push(row.community_id);
+                }
+            }
+        }
+
+        // One bucket per community, weight-descending inside each, every edge
+        // once (the same edge is reachable from both endpoints).
+        let mut seen = HashSet::new();
+        let mut slices: Vec<CommunitySlice> = Vec::new();
+        for &community in &communities {
+            let members = self.community_members(scope, community).len();
+            let mut facts: Vec<FactView> = self
+                .community_facts(scope, community)
+                .into_iter()
+                .filter(|view| seen.insert(view.edge_id))
+                .collect();
+            facts.sort_by(|a, b| {
+                b.edge
+                    .weight
+                    .cmp(&a.edge.weight)
+                    .then_with(|| a.edge_id.cmp(&b.edge_id))
+            });
+            slices.push(CommunitySlice {
+                community,
+                members,
+                total: facts.len(),
+                facts,
+            });
+        }
+        let total: usize = slices.iter().map(|s| s.total).sum();
+
+        // The budget is spent in seed order: the first landed community is
+        // the one the query is most about.
+        let mut room = budget;
+        for slice in &mut slices {
+            if budget != 0 && slice.facts.len() > room {
+                slice.facts.truncate(room);
+            }
+            room = room.saturating_sub(slice.facts.len());
+        }
+
+        // Count what is actually shown, then order by the folded weight.
+        if let Some(now) = ts_ms {
+            for slice in &mut slices {
+                for view in &mut slice.facts {
+                    if let Some(served) = self.bump_view(view.edge_id, Touch::Read, now)? {
+                        *view = served;
+                    }
+                }
+                slice.facts.sort_by(|a, b| {
+                    b.edge
+                        .weight
+                        .cmp(&a.edge.weight)
+                        .then_with(|| a.edge_id.cmp(&b.edge_id))
+                });
+            }
+        }
+
+        let shown: usize = slices.iter().map(|s| s.facts.len()).sum();
+        let facts: Vec<FactView> = slices
+            .iter()
+            .flat_map(|slice| slice.facts.iter().cloned())
+            .collect();
+        let text = crate::view::render_memory(&slices);
         Ok(Recall {
             seeds,
             communities,
             facts,
+            text,
+            shown,
+            total,
         })
     }
 
-    /// Landing's other half, on its own: every fact one hop out of the
+    /// A caller's own expansion primitive: every fact one hop out of the
     /// given seeds, both directions, deduplicated by edge id, ordered by
-    /// weight (ADR-0005). A caller that landed by another entrance (the
-    /// exact name face) or that composes a deeper walk starts here instead
-    /// of re-landing; `ts_ms` behaves exactly as in [`recall`](Self::recall).
+    /// weight (ADR-0005). [`recall`](Self::recall) does NOT use it — the read
+    /// surface is the landed community — but a caller that landed by another
+    /// entrance (the exact name face) or that composes a deeper walk starts
+    /// here; `ts_ms` behaves exactly as in `recall`.
     pub fn expand(
         &mut self,
         scope: u64,
@@ -1210,7 +1240,7 @@ impl GraphStore {
                     self.store
                         .commit_batch(batch)
                         .map_err(|e| IngestError::Storage(e.to_string()))?;
-                    self.bin(scope, &[src, dst], since)?;
+                    self.bin(scope, &[src, dst])?;
                     return Ok(IngestOutcome::Rewritten { edge_id: incumbent });
                 }
                 return Ok(IngestOutcome::Dropped { edge_id: incumbent });
@@ -1225,7 +1255,7 @@ impl GraphStore {
         let edge_id = self.next_edge;
         self.next_edge += 1;
         self.write_edge(edge_id, &edge, scope, src, dst, &fact.rel.name, &props)?;
-        self.bin(scope, &[src, dst], since)?;
+        self.bin(scope, &[src, dst])?;
         Ok(IngestOutcome::Linked { edge_id })
     }
 
@@ -1265,19 +1295,9 @@ impl GraphStore {
         };
         let key = EntityKey { scope, node_id };
         self.entities.put(&key, &row);
-        // A fresh community's capsule row: the seed id always names a real
-        // row, so the listing sees the community before its first summary
-        // (state = pending, nothing summarized yet). Only when absent — an
-        // overwrite would reset a live community's uncompressed counter.
-        if self.capsule(scope, community_id).is_none() {
-            self.capsules().put(
-                &CommunityKey {
-                    scope,
-                    community_id,
-                },
-                &CommunityRow::default(),
-            );
-        }
+        // The seeded id is durable before anything can read it back: one
+        // small row, written through rather than batched.
+        self.persist_community_seq(scope);
         // The scope's in-memory vector table is derived state: drop it rather
         // than maintain it row by row (it reloads on the next retrieval).
         self.tables.forget(scope);
@@ -1441,35 +1461,35 @@ fn decode_props(
 // ---- ADR-0010 steps 3–4: the write-side binning pass and the read side
 
 impl GraphStore {
-    /// The capsule collection's handle (reads only; the batched writes build
-    /// their keys directly, since the row declares no faces).
-    fn capsules(&self) -> Collection<FjallStore, CommunityKey, CommunityRow> {
-        <CommunityRow as Document>::collection(self.store.clone())
+    /// The sequence row's handle.
+    fn seq(&self) -> Collection<FjallStore, CommunitySeqKey, CommunitySeqRow> {
+        <CommunitySeqRow as Document>::collection(self.store.clone())
     }
 
-    /// The next community id of one scope: one past the scope's current
-    /// maximum. The capsule table IS the evidence (every issued id owns a
-    /// row), so this is the HighWater semantics without a second counter
-    /// row to keep in sync — single writer, never reused.
+    /// The next community id of one scope.
+    ///
+    /// The sequence row is the source of truth and it only ever grows, so an
+    /// id is never reused — not even when a community's last member leaves,
+    /// which is what reading "the maximum that exists" would get wrong. The
+    /// in-memory copy is a cache; [`persist_community_seq`](Self::persist_community_seq)
+    /// (or the batch variant) makes it durable.
+    ///
+    /// A corpus written before the sequence row existed is bootstrapped from
+    /// the highest community id any of its nodes carries, so the first
+    /// post-upgrade ingest cannot collide with a live bin.
     fn next_community_id(&mut self, scope: u64) -> u64 {
         if !self.next_community.contains_key(&scope) {
-            let mut prefix = Vec::with_capacity(3 + 8);
-        prefix.extend_from_slice(CommunityRow::NS_PREFIX);
-        write_slot(&mut prefix, PRIMARY_SLOT);
-            prefix.extend_from_slice(&scope.to_be_bytes());
-            let max = self
-                .store
-                .scan_suffix(&prefix)
-                .iter()
-                .filter_map(|sfx| {
-                    if sfx.len() < 8 {
-                        return None;
-                    }
-                    Some(u64::from_be_bytes(sfx[..8].try_into().ok()?))
-                })
+            let stored = self
+                .seq()
+                .get(&CommunitySeqKey { scope })
+                .map_or(0, |row| row.high_water);
+            let live = self
+                .scope_entities(scope)
+                .into_iter()
+                .map(|(_, row)| row.community_id)
                 .max()
                 .unwrap_or(0);
-            self.next_community.insert(scope, max + 1);
+            self.next_community.insert(scope, stored.max(live) + 1);
         }
         // Issuing ADVANCES the watermark — a cached "next" that did not move
         // hands the same id to every node landed after it, which silently
@@ -1478,6 +1498,37 @@ impl GraphStore {
         let id = *next;
         *next = id.saturating_add(1);
         id
+    }
+
+    /// Flush the scope's issued high water on its own (the single-row write
+    /// path: a node landing before any batch exists).
+    fn persist_community_seq(&self, scope: u64) {
+        let Some(next) = self.next_community.get(&scope) else {
+            return;
+        };
+        self.seq().put(
+            &CommunitySeqKey { scope },
+            &CommunitySeqRow {
+                high_water: next.saturating_sub(1),
+            },
+        );
+    }
+
+    /// The same flush into a caller-owned batch, so the ids and the rows
+    /// that carry them commit together.
+    fn write_community_seq_into(&self, batch: &mut MemBatch, scope: u64) {
+        let Some(next) = self.next_community.get(&scope) else {
+            return;
+        };
+        let key = CommunitySeqKey { scope };
+        let mut pkey = Vec::with_capacity(3 + 8);
+        pkey.extend_from_slice(CommunitySeqRow::NS_PREFIX);
+        write_slot(&mut pkey, PRIMARY_SLOT);
+        pkey.extend_from_slice(&key.encode());
+        let row = CommunitySeqRow {
+            high_water: next.saturating_sub(1),
+        };
+        batch.put(pkey, row.encode_payload());
     }
 
     /// The entity primary key `[ns 2B][0x00][scope][node_id]`.
@@ -1520,27 +1571,16 @@ impl GraphStore {
         }
     }
 
-    /// The capsule key `[ns 2B][0x00][scope][community_id]`.
-    fn community_pkey(&self, scope: u64, community_id: u64) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(3 + 16);
-        buf.extend_from_slice(CommunityRow::NS_PREFIX);
-        write_slot(&mut buf, PRIMARY_SLOT);
-        buf.extend_from_slice(&scope.to_be_bytes());
-        buf.extend_from_slice(&community_id.to_be_bytes());
-        buf
-    }
-
-    /// ADR-0010 §2–§4's background pass, run after a fact lands: load the
-    /// 2-hop neighbourhood, run incremental LPA over it, write the winning
-    /// community on every node that moved, and update the capsules of the
-    /// communities the fact joined (the uncompressed counter, the density
-    /// trigger, the `pending` mark). One engine batch covers the whole
-    /// pass.
+    /// ADR-0010 §2's binning pass, run after a fact lands: load the 2-hop
+    /// neighbourhood, run incremental LPA over it, and write the winning
+    /// community on every node that moved. One engine batch covers the pass
+    /// (the sequence row included). Nothing here is a summary — the read
+    /// side renders the community when it is read (ADR-0010 §5).
     ///
     /// No LLM, no transport, no global graph: the vote is local and the
     /// weights are ADR-0005's — a fresh assertion weighs `ln(2)×0.5`, so a
     /// vote never degenerates to an all-zero tie.
-    fn bin(&mut self, scope: u64, touched: &[u64], now: u64) -> Result<(), IngestError> {
+    fn bin(&mut self, scope: u64, touched: &[u64]) -> Result<(), IngestError> {
         let local = self.local_subgraph(scope, touched)?;
         if local.is_empty() {
             return Ok(());
@@ -1635,56 +1675,10 @@ impl GraphStore {
             }
         }
 
-        // A capsule whose last member just left is dropped in the same
-        // batch: the seed's row would otherwise be a phantom that the
-        // consolidation pull hands out empty. The face scan sees the
-        // PRE-batch state, so the nodes this pass moved are subtracted from
-        // it rather than looked up.
-        let moved: HashSet<u64> = ids
-            .iter()
-            .filter(|node| local[*node].community_id != assign[*node])
-            .copied()
-            .collect();
-        let still_used: HashSet<u64> = assign.values().copied().collect();
-        for row in local.values() {
-            let abandoned = row.community_id;
-            if abandoned == 0 || still_used.contains(&abandoned) {
-                continue;
-            }
-            let remaining = self
-                .community_members(scope, abandoned)
-                .into_iter()
-                .filter(|(member, _)| !moved.contains(member))
-                .count();
-            if remaining == 0 {
-                batch.del(&self.community_pkey(scope, abandoned));
-            }
-        }
-
-        // The communities THIS fact joined (the endpoints' final homes) get
-        // the uncompressed increment and the density check; the endpoints
-        // may have landed in one community, so dedupe.
-        let mut joined: BTreeSet<u64> = BTreeSet::new();
-        for node in touched {
-            if let Some(community) = assign.get(node) {
-                joined.insert(*community);
-            }
-        }
-        for community in joined {
-            let mut row = self.capsule(scope, community).unwrap_or_default();
-            row.uncompressed = row.uncompressed.saturating_add(1);
-            let (vertices, edges) = self.community_size(scope, community);
-            let density = if vertices < DENSITY_MIN_VERTICES {
-                0.0
-            } else {
-                2.0 * edges as f64 / (vertices as f64 * (vertices as f64 - 1.0))
-            };
-            if density >= DENSITY_THRESHOLD || row.uncompressed >= UNCOMPRESSED_WATERMARK {
-                row.state = STATE_PENDING;
-            }
-            row.updated_at = now;
-            batch.put(self.community_pkey(scope, community), row.encode_payload());
-        }
+        // The ids this pass issued must be durable WITH the rows that use
+        // them: the sequence row rides the same batch, so a restart can
+        // never hand the same id to another community.
+        self.write_community_seq_into(&mut batch, scope);
         self.store
             .commit_batch(batch)
             .map_err(|e| IngestError::Storage(e.to_string()))
@@ -1735,62 +1729,6 @@ impl GraphStore {
         Ok(local)
     }
 
-    /// One community's size, `(|V|, |E|)` over its internal edges — the
-    /// density water line's two numbers (ADR-0010 §3). A vertex set of one
-    /// has no internal edge to speak of, so callers treat it as density 0.
-    fn community_size(&mut self, scope: u64, community: u64) -> (usize, usize) {
-        let members: HashSet<u64> = self
-            .community_members(scope, community)
-            .into_iter()
-            .map(|(node, _)| node)
-            .collect();
-        let mut edges = 0usize;
-        for &node in &members {
-            for edge_id in self.out_edges(scope, node) {
-                if let Some(body) = self.facts().get_edge(edge_id) {
-                    let dst = EntityKey::decode(&body.dst.pkey).node_id;
-                    if members.contains(&dst) {
-                        edges += 1;
-                    }
-                }
-            }
-        }
-        (members.len(), edges)
-    }
-
-    /// Every capsule of one scope, community-id order — the write-side
-    /// dashboard's and the consolidation pull's listing.
-    pub fn communities(&mut self, scope: u64) -> Vec<(u64, CommunityRow)> {
-        let mut prefix = Vec::with_capacity(3 + 8);
-        prefix.extend_from_slice(CommunityRow::NS_PREFIX);
-        write_slot(&mut prefix, PRIMARY_SLOT);
-        prefix.extend_from_slice(&scope.to_be_bytes());
-        let table = self.capsules();
-        self.store
-            .scan_suffix(&prefix)
-            .iter()
-            .filter_map(|sfx| {
-                if sfx.len() < 8 {
-                    return None;
-                }
-                let community = u64::from_be_bytes(sfx[..8].try_into().ok()?);
-                let row = table.get(&CommunityKey {
-                    scope,
-                    community_id: community,
-                })?;
-                Some((community, row))
-            })
-            .collect()
-    }
-
-    /// One capsule, if the community exists.
-    pub fn capsule(&mut self, scope: u64, community: u64) -> Option<CommunityRow> {
-        self.capsules().get(&CommunityKey {
-            scope,
-            community_id: community,
-        })
-    }
-
     /// The community's members (the `by_community` face — the drafts'
     /// `index:community:`, now a declared access method). The row's own
     /// `community_id` is re-checked: the face entry is derived, and a
@@ -1807,128 +1745,22 @@ impl GraphStore {
     }
 
     /// The facts INSIDE one community (both endpoints members), endpoints
-    /// resolved — the bucket read of ADR-0010 §5 step 3.
+    /// resolved, each edge once — the read side's bucket (ADR-0010 §5).
     pub fn community_facts(&mut self, scope: u64, community: u64) -> Vec<FactView> {
-        let members: Vec<u64> = self
+        let in_community: HashSet<u64> = self
             .community_members(scope, community)
             .into_iter()
             .map(|(node, _)| node)
             .collect();
-        let in_community: HashSet<u64> = members.into_iter().collect();
+        let mut seen = HashSet::new();
         let mut facts = Vec::new();
         for &node in &in_community {
             for view in self.out_facts(scope, node) {
-                if in_community.contains(&view.dst.node_id) {
+                if in_community.contains(&view.dst.node_id) && seen.insert(view.edge_id) {
                     facts.push(view);
                 }
             }
         }
         facts
-    }
-
-    /// One community's consolidation packet (ADR-0010 §3's export, §4's
-    /// input): the internal facts sliced into the canonical 8-slot tuples,
-    /// one JSON array per line. The packet is the CALLER's to summarize —
-    /// k10r holds no LLM and never calls out (ADR-0007).
-    pub fn community_packet(&mut self, scope: u64, community: u64) -> Option<CommunityPacket> {
-        let row = self.capsule(scope, community)?;
-        let facts = self.community_facts(scope, community);
-        let members = self.community_members(scope, community).len() as u32;
-        let mut lines = Vec::with_capacity(facts.len());
-        for fact in &facts {
-            let head_props = self.entity_props(scope, fact.src.node_id).unwrap_or_default();
-            let tail_props = self.entity_props(scope, fact.dst.node_id).unwrap_or_default();
-            let rel_props: BTreeMap<String, DynamicValue> = self
-                .fact_props(fact.edge_id)
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|(k, _)| k.as_str() != FUNCTIONAL_PROP)
-                .collect();
-            // The tuple IS the line: serde writes the eight slots
-            // positionally and the props ride the value form's own serde —
-            // no intermediate value tree, no hand-written conversion.
-            let tuple = (
-                fact.src.name.as_str(),
-                fact.src.kind.as_str(),
-                &head_props,
-                fact.kind.as_str(),
-                &rel_props,
-                fact.dst.name.as_str(),
-                fact.dst.kind.as_str(),
-                &tail_props,
-            );
-            // These shapes cannot fail to serialize (string keys, no custom
-            // impls); if one ever did, no packet beats a half packet.
-            lines.push(serde_json::to_string(&tuple).ok()?);
-        }
-        Some(CommunityPacket {
-            community_id: community,
-            state: row.state,
-            uncompressed: row.uncompressed,
-            member_count: members,
-            updated_at: row.updated_at,
-            title: row.title,
-            summary: row.summary,
-            facts: lines,
-        })
-    }
-
-    /// The consolidation write-back (ADR-0010 §4): a POINT overwrite of the
-    /// capsule row — the latest summary replaces the previous one, the
-    /// uncompressed counter resets, and the state becomes `done`. An absent
-    /// community answers `None` (the door's 404): a summary of a community
-    /// that never existed is a caller bug, not a new community.
-    pub fn complete_community(
-        &mut self,
-        scope: u64,
-        community: u64,
-        title: &str,
-        summary: &str,
-        ts_ms: u64,
-    ) -> Option<CommunityRow> {
-        self.capsule(scope, community)?;
-        let row = CommunityRow {
-            updated_at: ts_ms,
-            state: STATE_DONE,
-            uncompressed: 0,
-            title: title.to_string(),
-            summary: summary.to_string(),
-        };
-        self.capsules().put(
-            &CommunityKey {
-                scope,
-                community_id: community,
-            },
-            &row,
-        );
-        Some(row)
-    }
-
-    /// The capsules of the communities these nodes belong to, deduped —
-    /// the layer-3 context a recall injects (ADR-0010 §5 step 2: one point
-    /// read per community, no algorithm on the read path).
-    fn capsules_of(&mut self, scope: u64, seeds: &[Seed]) -> Vec<Capsule> {
-        let mut communities: BTreeSet<u64> = BTreeSet::new();
-        for seed in seeds {
-            if let Some(row) = self.entity(scope, seed.node_id) {
-                if row.community_id != 0 {
-                    communities.insert(row.community_id);
-                }
-            }
-        }
-        communities
-            .into_iter()
-            .filter_map(|community| {
-                let row = self.capsule(scope, community)?;
-                Some(Capsule {
-                    community_id: community,
-                    state: row.state,
-                    updated_at: row.updated_at,
-                    uncompressed: row.uncompressed,
-                    title: row.title,
-                    summary: row.summary,
-                })
-            })
-            .collect()
     }
 }

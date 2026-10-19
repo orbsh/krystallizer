@@ -63,19 +63,23 @@ impl PyGraphStore {
             .map_err(|e| PyRuntimeError::new_err(format!("retrieve failed: {e}")))
     }
 
-    /// Landing plus one hop: `(seeds, facts)` where a fact row is
-    /// `(edge_id, kind, src_name, dst_name, weight)`.
+    /// Landing plus the landed community: `(seeds, facts, text)` — a fact row
+    /// is `(edge_id, kind, src_name, dst_name, weight)`, and `text` is the
+    /// rendered, id-bearing memory answer (ADR-0010 §5). `budget` caps the
+    /// fact lines; 0 lifts the cap.
     fn recall(
         &mut self,
         scope: u64,
         query: &str,
         k: usize,
+        budget: usize,
     ) -> PyResult<(
         Vec<(u64, f32, String, String)>,
         Vec<(u64, String, String, String, u32)>,
+        String,
     )> {
         self.inner
-            .recall(scope, query, k, None)
+            .recall(scope, query, k, None, budget)
             .map(|recall| {
                 (
                     recall
@@ -88,6 +92,7 @@ impl PyGraphStore {
                         .into_iter()
                         .map(|f| (f.edge_id, f.kind, f.src.name, f.dst.name, f.edge.weight))
                         .collect(),
+                    recall.text,
                 )
             })
             .map_err(|e| PyRuntimeError::new_err(format!("recall failed: {e}")))

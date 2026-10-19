@@ -18,7 +18,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use mem_core::channel::{ChannelStore, MessageKey, MessageRow, SessionView};
+use mem_core::channel::{ChannelStore, MessageKey};
 use mem_core::code::{CodeRow, CodeStore};
 use mem_core::graph::{FactTuple, GraphStore, IngestError, IngestOutcome};
 use serde::{Deserialize, Serialize};
@@ -92,15 +92,6 @@ pub fn open_with(
         .route("/facts/{scope}/search", get(search_facts))
         .route("/facts/{scope}/recall", get(recall_facts))
         .route("/facts/{scope}/edges/{edge_id}/touch", post(touch_fact))
-        .route("/facts/{scope}/communities", get(list_communities))
-        .route(
-            "/facts/{scope}/communities/{community_id}",
-            get(fetch_community).put(complete_community),
-        )
-        .route(
-            "/facts/{scope}/communities/{community_id}/packet",
-            get(fetch_community_packet),
-        )
         .route("/facts/{scope}/entities/{name}", get(fetch_entity))
         .route(
             "/facts/{scope}/entities/{node_id}/edges",
@@ -159,50 +150,47 @@ impl From<MessageKey> for MessageKeyDto {
     }
 }
 
-/// One increment entry: the message and the key it lives under.
+/// One increment entry: the message, the key it lives under, and the LLM
+/// role name the view layer assigned it (ADR-0008 §2 — the mapping from
+/// the stored code is k10r's, not the caller's).
 #[derive(Serialize)]
 pub struct IncrementEntry {
     pub key: MessageKeyDto,
-    pub row: MessageRowDto,
-}
-
-/// Wire restatement of `MessageRow` (the core's row has no serde).
-#[derive(Serialize)]
-pub struct MessageRowDto {
-    pub role: u8,
+    /// `user` / `assistant` / `tool` / `system`; null for a code the store
+    /// never polices (a writer's bug, surfaced rather than guessed at).
+    pub role: Option<String>,
     pub kind: u8,
     pub content: String,
 }
 
-impl From<MessageRow> for MessageRowDto {
-    fn from(r: MessageRow) -> Self {
-        Self {
-            role: r.role,
-            kind: r.kind,
-            content: r.content,
-        }
-    }
-}
-
-/// Wire shape of `SessionView` (checkpoint + increment).
+/// Wire shape of the assembled projection (ADR-0008 §2): head first, then
+/// the compression point, then the increment. Structure, not a rendered
+/// prompt — the caller renders it (ADR-0006 §1).
 #[derive(Serialize)]
 pub struct SessionDto {
+    /// Initialization memory (ADR-0001): the facts touching the user
+    /// node, weight-descending. Empty when the node has no facts yet.
+    pub head: Vec<FactViewDto>,
     pub coverage_ts: u64,
     pub summary: Option<String>,
     pub increment: Vec<IncrementEntry>,
 }
 
-impl From<SessionView> for SessionDto {
-    fn from(v: SessionView) -> Self {
+impl From<mem_core::view::Projection> for SessionDto {
+    fn from(p: mem_core::view::Projection) -> Self {
         Self {
-            coverage_ts: v.coverage_ts,
-            summary: v.summary,
-            increment: v
+            head: p.head.into_iter().map(FactViewDto::from).collect(),
+            coverage_ts: p.view.coverage_ts,
+            summary: p.view.summary,
+            increment: p
+                .view
                 .increment
                 .into_iter()
                 .map(|(key, row)| IncrementEntry {
                     key: key.into(),
-                    row: row.into(),
+                    role: mem_core::view::role_name(row.role).map(str::to_string),
+                    kind: row.kind,
+                    content: row.content,
                 })
                 .collect(),
         }
@@ -210,14 +198,27 @@ impl From<SessionView> for SessionDto {
 }
 
 /// `GET /channels/{id}/members/{member}/session` — the projection read:
-/// latest checkpoint + the log increment strictly after its coverage
-/// point (the store's `fetch_full`, unchanged).
+/// the head (initialization memory) + the latest checkpoint + the log
+/// increment strictly after its coverage point, assembled in that order
+/// by `mem_core::view::assemble`.
+///
+/// The graph and the channel locks are taken in ONE order (channel, then
+/// graph) — both are needed to answer this door.
 async fn fetch_session(
     State(state): State<Arc<MemState>>,
     Path((channel_id, member_id)): Path<(u64, u64)>,
 ) -> Json<SessionDto> {
-    let store = state.store.lock().await;
-    Json(store.fetch_full(channel_id, member_id).into())
+    let channels = state.store.lock().await;
+    let mut graph = state.graph.lock().await;
+    let projection = mem_core::view::assemble(
+        &channels,
+        &mut graph,
+        channel_id,
+        member_id,
+        mem_core::view::DEFAULT_SCOPE,
+        mem_core::view::DEFAULT_USER_NODE,
+    );
+    Json(projection.into())
 }
 
 /// Request body of `POST .../checkpoint` — `append_checkpoint`'s
@@ -457,20 +458,33 @@ pub struct RecallQuery {
     #[serde(default = "default_seed_count")]
     pub k: usize,
     pub ts_ms: Option<u64>,
+    /// MAX FACTS in the answer (ADR-0010 §5's read budget). The default
+    /// keeps the rendered text at a few hundred tokens; `budget=0` lifts it.
+    #[serde(default = "default_budget")]
+    pub budget: usize,
 }
 
 fn default_seed_count() -> usize {
     10
 }
 
-/// One recall (`GET /facts/{scope}/recall`): the landing seeds, the capsules
-/// of their communities (ADR-0010 §5's layer-3 context), and the facts one
-/// hop out of them, in one answer.
+/// The read side's default budget: ~20 fact lines, the few-hundred-token
+/// answer ADR-0010 §5 asks for (a fact line is ~15 tokens).
+fn default_budget() -> usize {
+    20
+}
+
+/// One recall (`GET /facts/{scope}/recall`): the landing seeds, the
+/// communities they landed in, the facts the answer shows, and the rendered
+/// memory text — id-bearing lines, one block per community (ADR-0010 §5).
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct RecallDto {
     pub seeds: Vec<SeedDto>,
-    pub communities: Vec<CommunityDto>,
+    pub communities: Vec<u64>,
     pub facts: Vec<FactViewDto>,
+    pub text: String,
+    pub shown: usize,
+    pub total: usize,
 }
 
 /// `GET /facts/{scope}/search?q=&k=` — vector landing over one scope's
@@ -511,7 +525,7 @@ async fn recall_facts(
 ) -> Result<Json<RecallDto>, FactError> {
     let mut graph = state.graph.lock().await;
     graph
-        .recall(scope, &query.q, query.k, query.ts_ms)
+        .recall(scope, &query.q, query.k, query.ts_ms, query.budget)
         .map(|recall| {
             Json(RecallDto {
                 seeds: recall
@@ -524,8 +538,11 @@ async fn recall_facts(
                         kind: s.kind,
                     })
                     .collect(),
-                communities: recall.communities.into_iter().map(CommunityDto::from).collect(),
+                communities: recall.communities,
                 facts: recall.facts.into_iter().map(FactViewDto::from).collect(),
+                text: recall.text,
+                shown: recall.shown,
+                total: recall.total,
             })
         })
         .map_err(FactError::from)
@@ -637,231 +654,6 @@ async fn list_entity_edges(
             .collect(),
     )
 }
-
-// ---- community capsules (ADR-0010 steps 3–4) ------------------------
-//
-// The write side's output, pulled by the caller: k10r holds no LLM and never
-// calls out, so consolidation is a PULL — the caller lists the communities
-// that are stale, reads one community's packet (canonical 8-slot tuples),
-// summarizes it elsewhere, and PUTs the summary back. Every read here is a
-// declared access method (the capsule row, the by_community face).
-
-/// One community's capsule (ADR-0010 §4) as a wire shape.
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
-pub struct CommunityDto {
-    pub community_id: u64,
-    /// `0` = pending (the summary is stale), `1` = done.
-    pub state: u8,
-    pub updated_at: u64,
-    /// Assertions landed since the last summary.
-    pub uncompressed: u32,
-    pub title: String,
-    pub summary: String,
-}
-
-impl From<(u64, mem_core::graph::CommunityRow)> for CommunityDto {
-    fn from((community_id, row): (u64, mem_core::graph::CommunityRow)) -> Self {
-        Self {
-            community_id,
-            state: row.state,
-            updated_at: row.updated_at,
-            uncompressed: row.uncompressed,
-            title: row.title,
-            summary: row.summary,
-        }
-    }
-}
-
-impl From<mem_core::Capsule> for CommunityDto {
-    fn from(capsule: mem_core::Capsule) -> Self {
-        Self {
-            community_id: capsule.community_id,
-            state: capsule.state,
-            updated_at: capsule.updated_at,
-            uncompressed: capsule.uncompressed,
-            title: capsule.title,
-            summary: capsule.summary,
-        }
-    }
-}
-
-/// One entry of the listing: the capsule plus the size the caller judges the
-/// price of summarizing by.
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
-pub struct CommunityEntryDto {
-    #[serde(flatten)]
-    pub community: CommunityDto,
-    pub member_count: u32,
-}
-
-/// One community read whole: the capsule, its member nodes, and the facts
-/// INSIDE it (both endpoints members). This is ADR-0010 §5's bucket read —
-/// one point get plus one face scan, no graph algorithm.
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
-pub struct CommunityBucketDto {
-    pub community: CommunityDto,
-    pub members: Vec<EntityDto>,
-    pub facts: Vec<FactViewDto>,
-}
-
-/// One consolidation packet (ADR-0010 §3–§4): the community's internal facts
-/// as canonical 8-slot tuples, one JSON array per line — the summarizer
-/// prompt's input, verbatim.
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
-pub struct PacketDto {
-    pub community_id: u64,
-    pub state: u8,
-    pub uncompressed: u32,
-    pub member_count: u32,
-    pub updated_at: u64,
-    pub title: String,
-    pub summary: String,
-    pub facts: Vec<String>,
-}
-
-/// The listing's filter: `?state=pending|done` (absent = every community).
-#[derive(Deserialize)]
-pub struct CommunitiesQuery {
-    pub state: Option<String>,
-}
-
-/// The write-back body: the summary the caller's model produced, and the
-/// caller's clock (ADR-0008 §3).
-#[derive(Deserialize, Serialize)]
-pub struct CompleteCommunity {
-    pub title: String,
-    pub summary: String,
-    pub ts_ms: u64,
-}
-
-fn bad_request(message: String) -> axum::response::Response {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(serde_json::json!({ "error": message })),
-    )
-        .into_response()
-}
-
-/// `GET /facts/{scope}/communities?state=` — every capsule of one scope, with
-/// its member count. A filter the caller does not recognize is a 400, never a
-/// silent "everything".
-async fn list_communities(
-    State(state): State<Arc<MemState>>,
-    Path(scope): Path<u64>,
-    Query(query): Query<CommunitiesQuery>,
-) -> axum::response::Response {
-    let wanted = match query.state.as_deref() {
-        None => None,
-        Some("pending") => Some(mem_core::STATE_PENDING),
-        Some("done") => Some(mem_core::STATE_DONE),
-        Some(other) => {
-            return bad_request(format!(
-                "unknown state filter `{other}` (expected `pending` or `done`)"
-            ));
-        }
-    };
-    let mut graph = state.graph.lock().await;
-    let rows = graph.communities(scope);
-    let mut out = Vec::with_capacity(rows.len());
-    for (community_id, row) in rows {
-        if let Some(state) = wanted {
-            if row.state != state {
-                continue;
-            }
-        }
-        let member_count = graph.community_members(scope, community_id).len() as u32;
-        out.push(CommunityEntryDto {
-            community: CommunityDto::from((community_id, row)),
-            member_count,
-        });
-    }
-    Json(out).into_response()
-}
-
-/// `GET /facts/{scope}/communities/{id}` — the bucket read.
-async fn fetch_community(
-    State(state): State<Arc<MemState>>,
-    Path((scope, community_id)): Path<(u64, u64)>,
-) -> axum::response::Response {
-    let mut graph = state.graph.lock().await;
-    let Some(row) = graph.capsule(scope, community_id) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let mut members = Vec::new();
-    for (node_id, node) in graph.community_members(scope, community_id) {
-        let kind = graph.entity_kind(node.kind_id).unwrap_or_default();
-        members.push(EntityDto {
-            node_id,
-            kind,
-            literal_num: node.literal_num,
-            name: node.name,
-        });
-    }
-    let facts = graph
-        .community_facts(scope, community_id)
-        .into_iter()
-        .map(FactViewDto::from)
-        .collect();
-    Json(CommunityBucketDto {
-        community: CommunityDto::from((community_id, row)),
-        members,
-        facts,
-    })
-    .into_response()
-}
-
-/// `GET /facts/{scope}/communities/{id}/packet` — the consolidation pull.
-async fn fetch_community_packet(
-    State(state): State<Arc<MemState>>,
-    Path((scope, community_id)): Path<(u64, u64)>,
-) -> axum::response::Response {
-    let mut graph = state.graph.lock().await;
-    match graph.community_packet(scope, community_id) {
-        Some(packet) => Json(PacketDto {
-            community_id: packet.community_id,
-            state: packet.state,
-            uncompressed: packet.uncompressed,
-            member_count: packet.member_count,
-            updated_at: packet.updated_at,
-            title: packet.title,
-            summary: packet.summary,
-            facts: packet.facts,
-        })
-        .into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
-}
-
-/// `PUT /facts/{scope}/communities/{id}` — the summary lands on the capsule
-/// row (a point overwrite), the state becomes `done`, and the uncompressed
-/// counter resets. An unknown community is a 404: a summary of something
-/// that never existed does not create it.
-async fn complete_community(
-    State(state): State<Arc<MemState>>,
-    Path((scope, community_id)): Path<(u64, u64)>,
-    Json(body): Json<CompleteCommunity>,
-) -> axum::response::Response {
-    let mut graph = state.graph.lock().await;
-    match graph.complete_community(
-        scope,
-        community_id,
-        &body.title,
-        &body.summary,
-        body.ts_ms,
-    ) {
-        Some(row) => Json(CommunityDto::from((community_id, row))).into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
-}
-
-// ---- the graph's bulk read face (a renderer's door) ------------------
-//
-// One scope's graph in the shape a force-graph client consumes (nodes +
-// links), so `docs/kg-demo-3d.html` reads the real graph instead of
-// hand-written packets (PLAN's Deferred gate: a bulk read over the same
-// HTTP boundary, read-only, no new mechanism). Each node carries its
-// community id (ADR-0010 §6's color cluster); there is no paging yet — the
-// gate's whole-table-vs-paged question stays open until a corpus needs it.
 
 /// One node of a rendered graph.
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]

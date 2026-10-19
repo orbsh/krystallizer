@@ -536,59 +536,53 @@ fn retrieval_without_an_engine_lands_nothing() {
     assert!(graph.entity(1, node_id).unwrap().embedding.is_empty());
 }
 
-/// Landing + one hop (ADR-0003's read shape): the seeds come from vector
-/// landing, the facts from BOTH directions around them, deduplicated. A query
-/// landing on the tail of a fact still reaches that fact — proof the in-edge
-/// side is walked, not just the out side.
+/// The read shape (ADR-0010 §5): the query lands, the answer is the landed
+/// COMMUNITY's facts rendered as id-bearing text. A query landing on the
+/// tail reaches the same answer as one landing on a head — the community is
+/// the unit, not a hop count.
 #[test]
-fn recall_lands_then_expands_one_hop() {
+fn recall_returns_the_landed_community_as_text() {
     let Some(engine) = local_embedder() else {
         return;
     };
     let dir = tempfile::tempdir().unwrap();
     let mut graph = GraphStore::open(dir.path()).unwrap().with_embedder(engine);
-    graph
-        .ingest(
-            1,
-            &tuple(r#"["fjall_engine","system",{},"IS_A",{},"storage_engine","system",{}]"#),
-        )
-        .unwrap();
-    graph
-        .ingest(
-            1,
-            &tuple(r#"["slatedb_engine","system",{},"IS_A",{},"storage_engine","system",{}]"#),
-        )
-        .unwrap();
+    for fact in [
+        r#"["fjall_engine","system",{},"IS_A",{},"storage_engine","system",{}]"#,
+        r#"["slatedb_engine","system",{},"IS_A",{},"storage_engine","system",{}]"#,
+    ] {
+        graph.ingest(1, &tuple(fact)).unwrap();
+    }
 
-    // Landing on the head: one seed, one hop out = that head's one fact.
-    let from_head = graph.recall(1, "fjall_engine", 1, None).unwrap();
-    assert_eq!(from_head.seeds.len(), 1);
-    assert_eq!(from_head.seeds[0].name, "fjall_engine");
-    assert_eq!(from_head.facts.len(), 1, "one hop from the head");
-    assert_eq!(from_head.facts[0].kind, "IS_A");
-    assert_eq!(from_head.facts[0].src.name, "fjall_engine");
-    assert_eq!(from_head.facts[0].dst.name, "storage_engine");
+    for query in ["fjall_engine", "storage_engine"] {
+        let recall = graph.recall(1, query, 1, None, 0).unwrap();
+        assert_eq!(recall.seeds.len(), 1, "one seed for `{query}`");
+        assert_eq!(recall.communities.len(), 1, "both names share one community");
+        assert_eq!(recall.facts.len(), 2, "the community's two facts");
+        assert_eq!((recall.shown, recall.total), (2, 2));
 
-    // Landing on the TAIL: the same fact arrives through the in-direction,
-    // and both heads' facts are reachable from here.
-    let from_tail = graph.recall(1, "storage_engine", 1, None).unwrap();
-    assert_eq!(from_tail.seeds[0].name, "storage_engine");
-    assert_eq!(
-        from_tail.facts.len(),
-        2,
-        "both facts point AT the tail; dedupe keeps each once"
-    );
-    let mut heads: Vec<&str> = from_tail
-        .facts
-        .iter()
-        .map(|f| f.src.name.as_str())
-        .collect();
-    heads.sort();
-    assert_eq!(heads, vec!["fjall_engine", "slatedb_engine"]);
+        // Every line that names something carries the id it points at: the
+        // ids ARE the answer's handles.
+        let text = &recall.text;
+        assert!(text.contains("community c"), "{text}");
+        for fact in &recall.facts {
+            assert!(
+                text.contains(&format!("e{} ", fact.edge_id)),
+                "the edge line carries its id: {text}"
+            );
+            assert!(
+                text.contains(&format!("n{} {}", fact.src.node_id, fact.src.name)),
+                "the node line carries its id: {text}"
+            );
+        }
+    }
 
-    // An empty query is the legal "nothing landed": no seeds, no facts.
-    let nothing = graph.recall(1, "   ", 5, None).unwrap();
+    // An empty query is the legal "nothing landed": no seeds, no facts, no
+    // text — never an error.
+    let nothing = graph.recall(1, "   ", 5, None, 0).unwrap();
     assert!(nothing.seeds.is_empty() && nothing.facts.is_empty());
+    assert!(nothing.text.is_empty());
+    assert_eq!((nothing.shown, nothing.total), (0, 0));
 }
 
 // ---- the weight system (ADR-0005) -----------------------------------
@@ -780,14 +774,13 @@ fn a_touch_answers_none_for_an_unknown_edge_or_another_scope() {
         .is_some());
 }
 
-// ---- ADR-0010 steps 3–4: binning and capsules ------------------------
+// ---- ADR-0010 steps 3–4: binning, the read budget, the id issuer ----
 
 /// A landed fact bins BOTH endpoints into one community: the node that
-/// moved leaves an empty seed community behind, and that capsule is dropped
-/// in the same pass (a phantom the consolidation pull would otherwise hand
-/// out empty). The membership is read through the `by_community` face.
+/// moved leaves its seed community behind, and membership is read through
+/// the `by_community` face.
 #[test]
-fn a_landed_fact_bins_both_endpoints_and_drops_the_orphan_capsule() {
+fn a_landed_fact_bins_both_endpoints() {
     let dir = tempfile::tempdir().unwrap();
     let mut graph = GraphStore::open(dir.path()).unwrap();
     graph
@@ -809,100 +802,93 @@ fn a_landed_fact_bins_both_endpoints_and_drops_the_orphan_capsule() {
     assert!(ids.contains(&alpha) && ids.contains(&beta));
 
     // The abandoned seed (the lower id, absorbed by the higher one) has no
-    // member and no capsule left.
-    let capsules = graph.communities(1);
-    assert_eq!(capsules.len(), 1, "one community, one capsule");
-    let (only, _) = capsules[0];
-    assert_eq!(only, community);
+    // member left under it.
     let (orphan, _) = graph.entity_by_name(1, "alpha").unwrap();
     let _ = orphan;
-    assert!(graph.community_members(1, 1).is_empty(), "the stale by_community entry is gone");
-    assert!(graph.capsule(1, 1).is_none(), "the orphan capsule is deleted");
+    assert!(
+        graph.community_members(1, 1).is_empty(),
+        "the stale by_community entry is gone"
+    );
 }
 
-/// The density water line marks a community `pending` while it is worth
-/// summarizing, and the capsule write-back clears it: the summary lands on
-/// one row (a point overwrite), the uncompressed counter resets, and the
-/// next fact marks it stale again.
+/// The answer's size is a BUDGET on fact lines (ADR-0010 §5: a few hundred
+/// tokens), and the header states what the budget elided — never a half
+/// line, never a silent truncation.
 #[test]
-fn a_dense_community_is_pending_until_the_summary_lands() {
+fn the_answer_is_budgeted_and_states_the_elision() {
+    let Some(engine) = local_embedder() else {
+        return;
+    };
     let dir = tempfile::tempdir().unwrap();
-    let mut graph = GraphStore::open(dir.path()).unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap().with_embedder(engine);
+    // A triangle: three facts, one community.
     for fact in [
         r#"["alpha","thing",{},"IS",{},"beta","thing",{}]"#,
         r#"["beta","thing",{},"IS",{},"gamma","thing",{}]"#,
+        r#"["gamma","thing",{},"IS",{},"alpha","thing",{}]"#,
     ] {
         graph.ingest(1, &tuple(fact)).unwrap();
     }
 
-    let (alpha, _) = graph.entity_by_name(1, "alpha").unwrap();
-    let community = graph.entity(1, alpha).unwrap().community_id;
-    let capsule = graph.capsule(1, community).unwrap();
-    assert_eq!(capsule.state, mem_core::STATE_PENDING);
-    assert_eq!(capsule.uncompressed, 2, "both assertions await a summary");
+    let capped = graph.recall(1, "alpha", 1, None, 2).unwrap();
+    assert_eq!(capped.shown, 2, "the budget caps the shown facts");
+    assert_eq!(capped.total, 3, "the community still holds all three");
+    assert_eq!(capped.facts.len(), 2);
+    assert!(
+        capped.text.contains("showing 2"),
+        "the header states the elision: {}",
+        capped.text
+    );
 
-    let written = graph
-        .complete_community(1, community, "存储引擎", "两条断言把三个节点连成一簇。", 9000)
-        .unwrap();
-    assert_eq!(written.state, mem_core::STATE_DONE);
-    assert_eq!(written.uncompressed, 0);
-    assert_eq!(written.updated_at, 9000);
-    let read_back = graph.capsule(1, community).unwrap();
-    assert_eq!(read_back.title, "存储引擎");
-    assert_eq!(read_back.summary, "两条断言把三个节点连成一簇。");
-
-    // One more fact: the summary is stale again.
-    graph
-        .ingest(
-            1,
-            &tuple(r#"["gamma","thing",{},"IS",{},"alpha","thing",{}]"#),
-        )
-        .unwrap();
-    let stale = graph.capsule(1, community).unwrap();
-    assert_eq!(stale.state, mem_core::STATE_PENDING);
-    assert_eq!(stale.uncompressed, 1);
-    assert_eq!(stale.title, "存储引擎", "the last summary survives the mark");
+    // The elided lines are the LOWEST-weight ones, and lifting the budget
+    // shows the rest: the same corpus answers the same way.
+    let full = graph.recall(1, "alpha", 1, None, 0).unwrap();
+    assert_eq!(full.shown, 3);
+    assert_eq!(full.total, 3);
+    assert!(!full.text.contains("showing"));
+    for fact in &capped.facts {
+        assert!(
+            full.facts.iter().any(|f| f.edge_id == fact.edge_id),
+            "the capped answer is a prefix of the full one"
+        );
+    }
 }
 
-/// The consolidation packet is the canonical 8-slot tuple list the
-/// summarizer prompt states — head value/type/props, relation name/props,
-/// tail value/type/props — built from the community's INTERNAL facts only.
+/// Community ids come from a sequence row, so they only ever grow: a reopen
+/// never hands out an id that was already issued (the previous issuer read
+/// the maximum off live rows, which a departed community would lower).
 #[test]
-fn the_packet_is_the_canonical_eight_slot_tuple_list() {
+fn community_ids_are_never_reused_across_a_reopen() {
     let dir = tempfile::tempdir().unwrap();
+    let first = {
+        let mut graph = GraphStore::open(dir.path()).unwrap();
+        graph
+            .ingest(
+                1,
+                &tuple(r#"["alpha","thing",{},"IS",{},"beta","thing",{}]"#),
+            )
+            .unwrap();
+        let (alpha, _) = graph.entity_by_name(1, "alpha").unwrap();
+        graph.entity(1, alpha).unwrap().community_id
+    };
+
     let mut graph = GraphStore::open(dir.path()).unwrap();
     graph
         .ingest(
             1,
-            &tuple(
-                r#"["alpha","thing",{"vcs":"gitea"},"IS",{"reason":"because"},"beta","thing",{}]"#,
-            ),
+            &tuple(r#"["gamma","thing",{},"IS",{},"delta","thing",{}]"#),
         )
         .unwrap();
-    let (alpha, _) = graph.entity_by_name(1, "alpha").unwrap();
-    let community = graph.entity(1, alpha).unwrap().community_id;
-
-    let packet = graph.community_packet(1, community).unwrap();
-    assert_eq!(packet.member_count, 2);
-    assert_eq!(packet.facts.len(), 1);
-    let tuple: Vec<serde_json::Value> = serde_json::from_str(&packet.facts[0]).unwrap();
-    assert_eq!(tuple.len(), 8);
-    assert_eq!(tuple[0], "alpha");
-    assert_eq!(tuple[1], "thing");
-    assert_eq!(tuple[2]["vcs"], "gitea", "head props ride the node");
-    assert_eq!(tuple[3], "IS");
-    assert_eq!(tuple[4]["reason"], "because");
-    assert_eq!(tuple[5], "beta");
-    assert_eq!(tuple[6], "thing");
-    assert_eq!(tuple[7], serde_json::json!({}));
-
-    // A community that never existed has no packet and no write-back.
-    assert!(graph.community_packet(1, 999).is_none());
-    assert!(graph.complete_community(1, 999, "t", "s", 1).is_none());
+    let (gamma, _) = graph.entity_by_name(1, "gamma").unwrap();
+    let later = graph.entity(1, gamma).unwrap().community_id;
+    assert!(
+        later > first,
+        "the sequence survives the reopen: {later} > {first}"
+    );
 }
 
 /// Communities are per scope: the same names in another scope form their own
-/// community, and neither scope's capsules or members leak into the other.
+/// community, and neither scope's members leak into the other.
 #[test]
 fn communities_are_per_scope() {
     let dir = tempfile::tempdir().unwrap();
@@ -916,9 +902,6 @@ fn communities_are_per_scope() {
     let one = graph.entity(1, alpha_one).unwrap().community_id;
     let two = graph.entity(2, alpha_two).unwrap().community_id;
 
-    // Community ids are PER SCOPE (each scope's seeds start at 1), so the
-    // two scopes may well land on the same number — what must not cross is
-    // membership. Compare node ids, never community numbers.
     let members_one: Vec<u64> = graph
         .community_members(1, one)
         .into_iter()
@@ -933,6 +916,4 @@ fn communities_are_per_scope() {
     assert_eq!(members_two.len(), 2);
     assert!(members_one.contains(&alpha_one) && !members_one.contains(&alpha_two));
     assert!(members_two.contains(&alpha_two) && !members_two.contains(&alpha_one));
-    assert_eq!(graph.communities(1).len(), 1);
-    assert_eq!(graph.communities(2).len(), 1);
 }
