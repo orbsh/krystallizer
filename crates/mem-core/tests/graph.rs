@@ -186,7 +186,7 @@ fn functional_relation_rewrites_the_incumbent() {
     let mut graph = GraphStore::open(dir.path()).unwrap();
 
     let first = tuple(
-        r#"["k10r_core","system",{},"STORAGE_ENGINE",{"functional":true,"since":100},"fjall_engine","system",{}]"#,
+        r#"["k10r_core","system",{},"STORAGE_ENGINE",{"functional":true,"since":100,"reason":"stale"},"fjall_engine","system",{}]"#,
     );
     let second = tuple(
         r#"["k10r_core","system",{},"STORAGE_ENGINE",{"functional":true,"since":200},"slatedb_engine","system",{}]"#,
@@ -222,6 +222,22 @@ fn functional_relation_rewrites_the_incumbent() {
     // rewrite.
     let (fjall_id, _) = graph.entity_by_name(1, "fjall_engine").unwrap();
     assert!(graph.typed_out(1, fjall_id, "STORAGE_ENGINE").is_empty());
+
+    // The rewrite is ONE batch (unlink_into + link_into), and the dynamic
+    // segment is k10r's entry: the old assertion's props must not survive
+    // into the new one.
+    let props = graph.fact_props(edge_id).expect("the assertion's own record");
+    assert!(
+        props.get("reason").is_none(),
+        "the old assertion's prop does not survive the rewrite"
+    );
+    assert_eq!(
+        props.get("functional"),
+        Some(&DynamicValue::Bool(true)),
+        "the new assertion's own declaration is what the entry holds"
+    );
+    assert_eq!(graph.fact(edge_id).unwrap().edge.since, 200);
+    assert_eq!(graph.out_edges(1, core_id), vec![edge_id], "one edge, one commit");
 }
 
 /// The loser of the adjudication is DROPPED: an older, less confident fact

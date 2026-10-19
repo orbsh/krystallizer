@@ -594,14 +594,27 @@ impl GraphStore {
                 let old = FactEdge::decode_payload(&body.payload);
                 if edge.since > old.since || edge.confidence >= old.confidence {
                     // Rewrite in place: same edge_id, new endpoints and
-                    // attributes. Unlink then link — two engine commits,
-                    // because okm's `unlink` has no into-batch form (the
-                    // atomicity gap is recorded in ADR-0010's owed list;
-                    // a crash between them is recovered by re-ingesting).
+                    // attributes, in ONE engine batch (okm's `unlink_into` +
+                    // `link_into` — ADR-0010's owed item, paid 2026-10-19).
+                    // The old props entry is deleted in the same batch, so a
+                    // rewrite with no props leaves none behind.
+                    let mut batch = MemBatch::default();
                     self.facts()
-                        .unlink(incumbent)
+                        .unlink_into(&mut batch, incumbent)
                         .map_err(IngestError::Storage)?;
-                    self.write_edge(incumbent, &edge, scope, src, dst, &fact.rel.name, &props)?;
+                    self.write_edge_into(
+                        &mut batch,
+                        incumbent,
+                        &edge,
+                        scope,
+                        src,
+                        dst,
+                        &fact.rel.name,
+                        &props,
+                    )?;
+                    self.store
+                        .commit_batch(batch)
+                        .map_err(|e| IngestError::Storage(e.to_string()))?;
                     return Ok(IngestOutcome::Rewritten { edge_id: incumbent });
                 }
                 return Ok(IngestOutcome::Dropped { edge_id: incumbent });
@@ -668,16 +681,38 @@ impl GraphStore {
         kind: &str,
         props: &BTreeMap<String, DynamicValue>,
     ) -> Result<(), IngestError> {
+        let mut batch = MemBatch::default();
+        self.write_edge_into(&mut batch, edge_id, edge, scope, src, dst, kind, props)?;
+        self.store
+            .commit_batch(batch)
+            .map_err(|e| IngestError::Storage(e.to_string()))
+    }
+
+    /// The edge's full write set into an externally owned batch — the
+    /// cross-collection atomic path, and the rewrite's write half.
+    fn write_edge_into(
+        &mut self,
+        batch: &mut MemBatch,
+        edge_id: u64,
+        edge: &FactEdge,
+        scope: u64,
+        src: u64,
+        dst: u64,
+        kind: &str,
+        props: &BTreeMap<String, DynamicValue>,
+    ) -> Result<(), IngestError> {
         let head = EdgeHead {
             src: self.node_ref(scope, src),
             dst: self.node_ref(scope, dst),
             predicate: kind.to_string(),
         };
-        let mut batch = MemBatch::default();
         let mut facts = self.facts();
         facts
-            .link_into(&mut batch, &head, edge, edge_id)
+            .link_into(batch, &head, edge, edge_id)
             .map_err(IngestError::Storage)?;
+        // The dynamic segment is k10r's own entry, not okm's: delete it here
+        // so a rewrite cannot inherit the previous assertion's props.
+        batch.del(&self.fields_key(FactEdge::NS_PREFIX, &edge_id.to_be_bytes()));
         if !props.is_empty() {
             let mut body = Vec::new();
             // The prop names are FIELD names: their own vocabulary (0x02/0x03),
@@ -695,9 +730,7 @@ impl GraphStore {
                 body,
             );
         }
-        self.store
-            .commit_batch(batch)
-            .map_err(|e| IngestError::Storage(e.to_string()))
+        Ok(())
     }
 
     /// The fact's open props (its dynamic segment), when it has one.
