@@ -9,7 +9,7 @@
 use mem_core::graph::{FactTuple, GraphStore, IngestError, IngestOutcome};
 use mem_core::{EntityKey, EntityRow, FactEdge, LITERAL_KIND};
 use okm_core::obj_dynamic::DynamicValue;
-use okm_core::{Document, KeyEncode, KvGraph, NodeRef};
+use okm_core::{Document, KeyEncode, NodeRef};
 
 fn tuple(text: &str) -> FactTuple {
     FactTuple::from_json(text).expect("the tuple decodes")
@@ -64,24 +64,25 @@ fn entity_key_layout_is_hex_locked() {
     assert_eq!(&buf[8..16], &9u64.to_be_bytes(), "node_id");
 }
 
-/// The fact edge's declared attributes are `[since u64][confidence u8]
-/// [weight u32]` — the derive's own encoding order. `from_attrs` is the
-/// reader half, so this test is what keeps it honest against `attrs()`.
+/// The fact edge's payload is an ordinary obj payload: `[version u8]
+/// [hot_len u16 BE][since u64][confidence u8][weight u32]` — the derive's own
+/// field order, contiguous big-endian. The round trip is what keeps the
+/// reader honest against the writer (both are the declaration's).
 #[test]
-fn edge_attrs_layout_is_locked() {
+fn edge_payload_layout_is_locked() {
     let edge = FactEdge {
         since: 7,
         confidence: 200,
         weight: 3,
     };
-    let attrs = KvGraph::attrs(&edge);
-    assert_eq!(attrs.len(), FactEdge::ATTRS_LEN);
-    assert_eq!(&attrs[0..8], &7u64.to_be_bytes(), "since");
-    assert_eq!(attrs[8], 200, "confidence");
-    assert_eq!(&attrs[9..13], &3u32.to_be_bytes(), "weight");
-    assert_eq!(FactEdge::from_attrs(&attrs), Some(edge));
-    // A truncated payload never decodes into a plausible-looking fact.
-    assert_eq!(FactEdge::from_attrs(&attrs[..8]), None);
+    let payload = edge.encode_payload();
+    assert_eq!(payload.len(), 3 + 8 + 1 + 4, "header + the three fixed fields");
+    assert_eq!(payload[0], 1, "layout version");
+    assert_eq!(&payload[1..3], &13u16.to_be_bytes(), "hot_len");
+    assert_eq!(&payload[3..11], &7u64.to_be_bytes(), "since");
+    assert_eq!(payload[11], 200, "confidence");
+    assert_eq!(&payload[12..16], &3u32.to_be_bytes(), "weight");
+    assert_eq!(FactEdge::decode_payload(&payload), edge);
 }
 
 /// One name = one node inside one scope; the same name in another scope is

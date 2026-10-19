@@ -9,18 +9,26 @@
 //!   `[scope][node_id]` primary, `kind_id` + `literal_num` as declared
 //!   fields, `name` as the cold segment, and two declared 0x1 faces —
 //!   `by_name` (the exact name/alias entrance) and `by_kind` (the
-//!   node-kind face). A literal's numeric form is a declared FIELD, so a
-//!   numeric read stays an ordered key scan rather than vector distance;
-//!   the face over it lands with the read that scans it.
+//!   node-kind face). The kind TOKEN allocates through the collection's own
+//!   KIND vocabulary (okm's fixed faces 0x04/0x05), never through the
+//!   field-name dictionary (0x02/0x03) its props use — two id spaces, so a
+//!   token can never read back as a prop name. A literal's numeric form is a
+//!   declared FIELD, so a numeric read stays an ordered key scan rather than
+//!   vector distance; the face over it lands with the read that scans it.
 //! - **Facts** = an okm edge collection (ns 37, one ns per graph): the
-//!   edge body carries the self-describing `NodeRef` endpoints plus
-//!   `since` / `confidence` / `weight` as declared fields (ADR-0010 §1's
-//!   three algorithm-queried fields, one 0x1 face each). Endpoints need
-//!   no declaration — a `NodeRef` carries its own pkey width.
+//!   declaration is `FactEdge` (`GraphEncode`, ns 37, member set =
+//!   `FactNodes::Entities`), the edge's payload is an ordinary obj payload
+//!   carrying `since` / `confidence` / `weight` as declared fields
+//!   (ADR-0010 §1's three algorithm-queried fields, one 0x1 face each), and
+//!   the endpoints stay self-describing `NodeRef`s — a ref carries its own
+//!   pkey width, so endpoints need no declaration. The relation NAME is the
+//!   edge's PREDICATE: it allocates in the graph's own kind vocabulary
+//!   (0x04/0x05) and is listed by one prefix scan of it.
 //! - **The relation's open props** (condition / cause / strength / the
 //!   per-assertion `functional` flag) ride the edge's dynamic segment
-//!   (slot 1 of the edge's ns), built by `put_frame_named` — the
-//!   `put_fields`-style caller graph.rs's own docs anticipate.
+//!   (okm's fixed face 0x01, one entry per edge), built by
+//!   `put_frame_named`; their names allocate in the field-name dictionary
+//!   (0x02/0x03), separate from the predicate vocabulary.
 //!
 //! Write-time resolution (ADR-0010 §1): a fact whose relation declares
 //! `functional` (the caller states it per assertion — a kind's cardinality
@@ -37,11 +45,12 @@
 //! `by_community` face, which are NOT declared until something reads
 //! them) and the weight system's writer (ADR-0005, Phase 5).
 
-use okm_core::obj_dict::DictCache;
+use okm_core::index::DYNAMIC_SLOT;
+use okm_core::obj_dict::{DictCache, FIELD_DICT, KIND_VOCAB};
 use okm_core::obj_dynamic::{put_frame_named, DynamicValue};
 use okm_core::{
-    Collection, Document, DocumentEncode, EdgeEncode, EdgeFact, FjallStore, Graph, KeyEncode,
-    KvGraph, MemBatch, NodeRef, VirtualStorage, PRIMARY_SLOT,
+    Collection, Document, DocumentEncode, EdgeHead, FjallStore, Graph, GraphEncode, KeyEncode,
+    MemBatch, NodeRef, NodeSet, VirtualStorage, PRIMARY_SLOT, write_slot,
 };
 use std::collections::BTreeMap;
 
@@ -59,10 +68,6 @@ pub const LITERAL_KIND: &str = "literal";
 /// at one source — one value per entity, so a new fact may overwrite the
 /// incumbent. Absent/false = multi-valued, parallel edges.
 pub const FUNCTIONAL_PROP: &str = "functional";
-/// Dynamic-segment slot 1 (the obj's dynamic entry, okm ADR-0012) —
-/// the edge's own open props live here, beside the graph's 0x0–0x8
-/// entry kinds.
-const FIELDS_SLOT: u16 = 0x0001;
 
 /// Entity identity: `[scope][node_id]`. `scope` leads because the corpus
 /// is per-user (ADR-0003) — the ownership boundary flat memory shares.
@@ -73,10 +78,10 @@ pub struct EntityKey {
     pub node_id: u64,
 }
 
-/// One entity node. `kind_id` allocates through this collection's own
-/// dictionary (the 0x2/0x3 vocabulary — the same one dynamic field names
-/// use; kind tokens and prop names share it, which is harmless: an id is
-/// only ever read back through the field it was written into).
+/// One entity node. `kind_id` allocates through this collection's own KIND
+/// vocabulary (okm's fixed faces 0x04/0x05); the entity's prop names
+/// allocate through the field-name dictionary (0x02/0x03). The two never
+/// share an id space, so a token cannot read back under a prop's name.
 ///
 /// `name` is an ATTRIBUTE (never key material): the human identity reaches
 /// the exact entrance through the `by_name` face. `literal_num` is a
@@ -114,8 +119,17 @@ use __OkmIndex_EntityRow_by_name as ByName;
 /// adjudication input), `confidence` (the write-side's, defaulting to full
 /// confidence so a fact that states none is not penalized) and `weight`
 /// (the weight system's, ADR-0005 — zero until that system writes it).
-#[derive(Clone, Debug, Default, PartialEq, EdgeEncode)]
-#[ok_edge(ns = 37)]
+#[derive(Clone, Debug, Default, PartialEq, GraphEncode)]
+#[ok_ns(37)]
+#[ok_nodes(FactNodes)]
+// The three declared faces ADR-0010 §1 names: each algorithm-queried field
+// gets its own counting-family 0x1 index, declared here (a face is a
+// declaration, never implied by the field's existence).
+#[ok_index(
+    by_since { fields(since) },
+    by_confidence { fields(confidence) },
+    by_weight { fields(weight) },
+)]
 pub struct FactEdge {
     #[ok_default(0)]
     pub since: u64,
@@ -125,26 +139,14 @@ pub struct FactEdge {
     pub weight: u32,
 }
 
-impl FactEdge {
-    /// The declared-attribute payload width: `[since u64][confidence u8]
-    /// [weight u32]` — the derive's own encoding order, contiguous
-    /// big-endian (okm's fixed-width field encoding; `attrs()` is the
-    /// writer half, so this reader is locked against it by a test).
-    pub const ATTRS_LEN: usize = 8 + 1 + 4;
+/// The member set: the graph admits entity nodes (ns 36) and nothing else.
+/// A compile-time fact in code — checked by okm at write AND at decode.
+pub enum FactNodes {
+    Entities,
+}
 
-    /// Decode the edge body's declared attributes (the adjudication input:
-    /// an incumbent's `since` / `confidence` are what a new fact is
-    /// compared against).
-    pub fn from_attrs(attrs: &[u8]) -> Option<Self> {
-        if attrs.len() < Self::ATTRS_LEN {
-            return None;
-        }
-        Some(Self {
-            since: u64::from_be_bytes(attrs[0..8].try_into().ok()?),
-            confidence: attrs[8],
-            weight: u32::from_be_bytes(attrs[9..13].try_into().ok()?),
-        })
-    }
+impl NodeSet for FactNodes {
+    const NS_VALUES: &'static [u16] = &[ENTITY_NS];
 }
 
 /// One end of a fact: a value, its type label, and its props (the
@@ -157,8 +159,8 @@ pub struct Term {
     pub props: BTreeMap<String, DynamicValue>,
 }
 
-/// The relation: its name IS its kind (the edge collection's dictionary
-/// allocates it), so it carries no type label; its props are the
+/// The relation: its name IS the edge's PREDICATE (the graph's kind
+/// vocabulary allocates it), so it carries no type label; its props are the
 /// assertion's modifiers.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Relation {
@@ -354,9 +356,11 @@ impl GraphStore {
             .scan_keys()
             .last()
             .map_or(1, |k| k.node_id.saturating_add(1));
-        let mut pk_prefix = Vec::with_capacity(4);
+        // `[ns 2B][0x00]` — the primary slot is a fixed face, one byte
+        // (okm ADR-0030), so the header is 3 bytes.
+        let mut pk_prefix = Vec::with_capacity(3);
         pk_prefix.extend_from_slice(<EntityRow as Document>::NS_PREFIX);
-        pk_prefix.extend_from_slice(&PRIMARY_SLOT.to_be_bytes());
+        write_slot(&mut pk_prefix, PRIMARY_SLOT);
         let mut edge_prefix = pk_prefix.clone();
         edge_prefix[0..2].copy_from_slice(FactEdge::NS_PREFIX);
         let next_edge = store
@@ -373,50 +377,27 @@ impl GraphStore {
         }
     }
 
-    /// The edge collection, built PER CALL. okm's `Graph` caches the ns's
-    /// kind dictionary inside the handle and allocates from that cache;
-    /// k10r writes a SECOND vocabulary into the same ns (the edge's open
-    /// prop names), so a long-lived handle would hand out an id that
-    /// already names another entry — the frame then reads back under the
-    /// wrong name. A fresh handle loads the dictionary from the engine on
-    /// first use, and never outlives one call (the vocabulary is tiny and
-    /// its ids only grow). The owed okm-side item this stands in for: a
-    /// dictionary handle the collection exposes, or a rule that one ns
-    /// holds one allocator.
+    /// The edge collection handle. Predicates allocate through the graph's
+    /// own KIND vocabulary (0x04/0x05) and the edge's open prop names
+    /// through the payload's FIELD dictionary (0x02/0x03) — two vocabularies,
+    /// two id spaces, so the collision that used to force a fresh handle per
+    /// call cannot happen. A per-call handle stays cheap (the vocabularies
+    /// load on first probe, ids only grow).
     fn facts(&self) -> Graph<FjallStore, FactEdge> {
         Graph::new(self.store.clone())
     }
 
-    /// A per-call edge handle with its kind dictionary LOADED. okm's
-    /// `Graph` loads lazily and answers typed queries through the
-    /// non-allocating `by_name_get` (no engine fallback), so a brand-new
-    /// handle reports "unknown kind" until something touches the
-    /// dictionary. `kind_name` is that touch: it loads the whole
-    /// vocabulary, allocates nothing, and its result is discarded. The
-    /// owed okm-side item: let `typed_*` / `edges_of_kind` fall back to
-    /// the engine the way `name_for` already does, or expose the load.
-    fn facts_primed(&self) -> Graph<FjallStore, FactEdge> {
-        let mut facts = self.facts();
-        let _ = facts.kind_name(0);
-        facts
-    }
-
-    /// Allocate (or look up) a name in one ns's dictionary — with a FRESH
-    /// cache per call, never a long-lived one. Two writers allocate in the
-    /// same ns dictionary (this path for node kinds, okm's own internal
-    /// caches inside `put_fields` / `Graph::link` for field and kind
-    /// names), and a cache loaded before the other writer's allocation
-    /// would hand out an id that already names another entry: the frame
-    /// then reads back under the WRONG name, silently. Loading is one scan
-    /// of a tiny vocabulary, and the ids only grow.
+    /// Allocate (or look up) an ENTITY KIND token in the collection's own
+    /// kind vocabulary (0x04/0x05). The entity's props are field names and
+    /// live in 0x02/0x03, so the two never share an id.
     fn dict_id(&mut self, ns_prefix: &[u8], name: &str) -> u16 {
-        let mut dict = DictCache::default();
+        let mut dict = DictCache::new(KIND_VOCAB);
         dict.id_for(&mut self.store, ns_prefix, name)
     }
 
-    /// The reverse direction, same discipline.
+    /// The reverse direction of the kind vocabulary.
     fn dict_name(&self, ns_prefix: &[u8], id: u16) -> Option<String> {
-        let mut dict = DictCache::default();
+        let mut dict = DictCache::new(KIND_VOCAB);
         dict.name_for(&self.store, ns_prefix, id)
     }
 
@@ -458,13 +439,13 @@ impl GraphStore {
     pub fn fact(&mut self, edge_id: u64) -> Option<FactBody> {
         let mut facts = self.facts();
         let body = facts.get_edge(edge_id)?;
-        let kind = facts.kind_name(body.kind_id)?;
+        let kind = facts.predicate_name(body.predicate_id)?;
         Some(FactBody {
             edge_id,
             src: body.src,
             dst: body.dst,
             kind,
-            edge: FactEdge::from_attrs(&body.attrs).unwrap_or_default(),
+            edge: FactEdge::decode_payload(&body.payload),
         })
     }
 
@@ -474,13 +455,13 @@ impl GraphStore {
     /// removed).
     pub fn fact_view(&mut self, edge_id: u64) -> Option<FactView> {
         let body = self.facts().get_edge(edge_id)?;
-        let kind = self.facts_primed().kind_name(body.kind_id)?;
+        let kind = self.facts().predicate_name(body.predicate_id)?;
         Some(FactView {
             edge_id,
             kind,
             src: self.resolve_ref(&body.src),
             dst: self.resolve_ref(&body.dst),
-            edge: FactEdge::from_attrs(&body.attrs).unwrap_or_default(),
+            edge: FactEdge::decode_payload(&body.payload),
         })
     }
 
@@ -500,9 +481,9 @@ impl GraphStore {
     /// the primary-key prefix `[scope]`, so no other scope's rows are
     /// touched.
     pub fn scope_entities(&mut self, scope: u64) -> Vec<(u64, EntityRow)> {
-        let mut prefix = Vec::with_capacity(4 + 8);
+        let mut prefix = Vec::with_capacity(3 + 8);
         prefix.extend_from_slice(<EntityRow as Document>::NS_PREFIX);
-        prefix.extend_from_slice(&PRIMARY_SLOT.to_be_bytes());
+        write_slot(&mut prefix, PRIMARY_SLOT);
         prefix.extend_from_slice(&scope.to_be_bytes());
         self.store
             .scan_suffix(&prefix)
@@ -510,7 +491,7 @@ impl GraphStore {
             .filter_map(|sfx| {
                 let mut full = prefix.clone();
                 full.extend_from_slice(sfx);
-                let key = EntityKey::decode(&full[4..]);
+                let key = EntityKey::decode(&full[3..]);
                 let row = self.entities.get(&key)?;
                 Some((key.node_id, row))
             })
@@ -562,10 +543,10 @@ impl GraphStore {
         self.facts().out_edges(&self.node_ref(scope, node_id))
     }
 
-    /// Outgoing edge ids of one kind out of one node — the 0x7 face, and
-    /// the resolution path's incumbent scan.
+    /// Outgoing edge ids of one predicate out of one node — the 0x09 face,
+    /// and the resolution path's incumbent scan.
     pub fn typed_out(&mut self, scope: u64, node_id: u64, kind: &str) -> Vec<u64> {
-        self.facts_primed()
+        self.facts()
             .typed_out(kind, &self.node_ref(scope, node_id))
     }
 
@@ -610,7 +591,7 @@ impl GraphStore {
                     .facts()
                     .get_edge(incumbent)
                     .ok_or_else(|| IngestError::Storage(format!("edge {incumbent} unreadable")))?;
-                let old = FactEdge::from_attrs(&body.attrs).unwrap_or_default();
+                let old = FactEdge::decode_payload(&body.payload);
                 if edge.since > old.since || edge.confidence >= old.confidence {
                     // Rewrite in place: same edge_id, new endpoints and
                     // attributes. Unlink then link — two engine commits,
@@ -687,23 +668,21 @@ impl GraphStore {
         kind: &str,
         props: &BTreeMap<String, DynamicValue>,
     ) -> Result<(), IngestError> {
-        let fact = EdgeFact {
+        let head = EdgeHead {
             src: self.node_ref(scope, src),
             dst: self.node_ref(scope, dst),
-            kind: kind.to_string(),
-            attrs: edge.attrs(),
+            predicate: kind.to_string(),
         };
         let mut batch = MemBatch::default();
         let mut facts = self.facts();
         facts
-            .link_into(&mut batch, &fact, edge, edge_id)
+            .link_into(&mut batch, &head, edge, edge_id)
             .map_err(IngestError::Storage)?;
         if !props.is_empty() {
             let mut body = Vec::new();
-            // One fresh cache for this write's prop names, AFTER `link_into`
-            // committed the kind name: the two allocations then share one
-            // accurate view of the ns vocabulary.
-            let mut dict = DictCache::default();
+            // The prop names are FIELD names: their own vocabulary (0x02/0x03),
+            // untouched by the predicate allocation link_into just did.
+            let mut dict = DictCache::new(FIELD_DICT);
             {
                 let store = &mut self.store;
                 let mut resolver = |name: &str| dict.id_for(store, FactEdge::NS_PREFIX, name);
@@ -737,11 +716,13 @@ impl GraphStore {
         )
     }
 
-    /// A dynamic-segment key: `[ns 2B][slot 1 2B][key payload]`.
+    /// A dynamic-segment key: `[ns 2B][0x01][key payload]` — the dynamic
+    /// segment is a FIXED FACE, one byte (okm ADR-0030), the same key
+    /// `Collection::put_fields` writes.
     fn fields_key(&self, ns_prefix: &[u8], payload: &[u8]) -> Vec<u8> {
-        let mut key = Vec::with_capacity(4 + payload.len());
+        let mut key = Vec::with_capacity(3 + payload.len());
         key.extend_from_slice(ns_prefix);
-        key.extend_from_slice(&FIELDS_SLOT.to_be_bytes());
+        write_slot(&mut key, DYNAMIC_SLOT);
         key.extend_from_slice(payload);
         key
     }
@@ -764,7 +745,7 @@ fn decode_props(
     store: &FjallStore,
     ns_prefix: &[u8],
 ) -> Option<BTreeMap<String, DynamicValue>> {
-    let mut dict = DictCache::default();
+    let mut dict = DictCache::new(FIELD_DICT);
     let frames =
         okm_core::obj_dynamic::decode_named(raw, &mut |id| dict.name_for(store, ns_prefix, id));
     if frames.is_empty() {

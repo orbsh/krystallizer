@@ -193,9 +193,11 @@ impl ChannelStore {
     /// secondary index — the log IS the index (ADR-0008 §3: max-gap and
     /// increments ride the same physical order).
     fn messages_after(&self, channel_id: u64, after_ts: u64) -> Vec<(MessageKey, MessageRow)> {
-        let mut prefix = Vec::with_capacity(4 + 8);
+        // Header is `[ns 2B][0x00]` — the primary slot is a fixed face, one
+        // byte (okm ADR-0030).
+        let mut prefix = Vec::with_capacity(3 + 8);
         prefix.extend_from_slice(MessageRow::NS_PREFIX);
-        prefix.extend_from_slice(&okm_core::index::PRIMARY_SLOT.to_be_bytes());
+        okm_core::index::write_slot(&mut prefix, okm_core::index::PRIMARY_SLOT);
         let probe = MessageKey {
             channel_id,
             ts_ms: 0,
@@ -208,11 +210,11 @@ impl ChannelStore {
             .iter()
             .filter_map(|sfx| {
                 // suffix = `[ts_ms 8B][sub 2B]` after
-                // `[ns 2B][slot 2B][channel_id 8B]`; decode via
-                // full-key reconstruction (MemoryStore's pattern).
+                // `[ns 2B][0x00][channel_id 8B]`; decode via full-key
+                // reconstruction (MemoryStore's pattern).
                 let mut full = prefix.clone();
                 full.extend_from_slice(sfx);
-                let key = MessageKey::decode(&full[4..]);
+                let key = MessageKey::decode(&full[3..]);
                 if key.ts_ms <= after_ts {
                     return None;
                 }

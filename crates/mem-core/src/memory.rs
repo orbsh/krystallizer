@@ -123,11 +123,11 @@ impl MemoryStore {
             .scan_suffix(&prefix)
             .iter()
             .filter_map(|sfx| {
-                // suffix = `[id 8B]` (after `[ns 2B][slot 2B][user_id 8B]`);
+                // suffix = `[id 8B]` (after `[ns 2B][0x00][user_id 8B]`);
                 // decode via full-key reconstruction.
                 let mut full = prefix.clone();
                 full.extend_from_slice(sfx);
-                let key = MemoryKey::decode(&full[4..]);
+                let key = MemoryKey::decode(&full[3..]);
                 let row = self.table.get(&key)?;
                 row.text.contains(query).then(|| (key.id, row.text.clone()))
             })
@@ -150,7 +150,7 @@ impl MemoryStore {
             .filter_map(|sfx| {
                 let mut full = prefix.clone();
                 full.extend_from_slice(sfx);
-                let key = MemoryKey::decode(&full[4..]);
+                let key = MemoryKey::decode(&full[3..]);
                 let row = self.table.get(&key)?;
                 Some((key.id, row.text.clone()))
             })
@@ -179,13 +179,13 @@ impl MemoryStore {
     }
 
     /// Scan prefix for one user's primary entries:
-    /// `[ns 2B][slot 2B BE = 0x0000][user_id 8B]` (ADR-0016 4-byte head).
-    /// The key payload starts right after the 4-byte header, so a suffix
-    /// byte range reconstructs to `MemoryKey::decode(&full[4..])`.
+    /// `[ns 2B][0x00][user_id 8B]` — the primary slot is a FIXED FACE, one
+    /// byte (okm ADR-0030), so the header is 3 bytes and a suffix byte range
+    /// reconstructs to `MemoryKey::decode(&full[3..])`.
     fn user_prefix(&self, user_id: u64) -> Vec<u8> {
-        let mut prefix = Vec::with_capacity(4 + 8);
+        let mut prefix = Vec::with_capacity(3 + 8);
         prefix.extend_from_slice(MemoryRow::NS_PREFIX);
-        prefix.extend_from_slice(&okm_core::index::PRIMARY_SLOT.to_be_bytes());
+        okm_core::index::write_slot(&mut prefix, okm_core::index::PRIMARY_SLOT);
         let probe = MemoryKey { user_id, id: 0 };
         probe.encode_prefix_named(&mut prefix, &["user_id"]);
         prefix

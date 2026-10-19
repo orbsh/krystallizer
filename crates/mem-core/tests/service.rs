@@ -60,7 +60,7 @@ fn the_memory_keyspace_tables_declare_different_ns() {
     assert_eq!(ns_of(CodeRow::NS_PREFIX), 35);
     assert_eq!(ns_of(EntityRow::NS_PREFIX), mem_core::ENTITY_NS);
     assert_eq!(
-        ns_of(<mem_core::FactEdge as okm_core::KvGraph>::NS_PREFIX),
+        ns_of(<mem_core::FactEdge as okm_core::Document>::NS_PREFIX),
         mem_core::FACT_NS
     );
 
