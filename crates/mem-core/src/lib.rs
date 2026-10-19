@@ -37,7 +37,7 @@ pub use config::{ConfigError, EmbeddingConfig, KrystallizerConfig};
 pub use embedding::{EmbedError, Embedder};
 pub use graph::{
     EntityKey, EntityRow, FactBody, FactEdge, FactTuple, GraphStore, IngestError, IngestOutcome,
-    Relation, Term, ENTITY_NS, FACT_NS, FUNCTIONAL_PROP, LITERAL_KIND,
+    Relation, Seed, Term, ENTITY_NS, FACT_NS, FUNCTIONAL_PROP, LANDING_FLOOR, LITERAL_KIND,
 };
 pub use memory::{MemoryKey, MemoryRow, MemoryStats, MemoryStore};
 pub use service::{open_service, ServiceStores};

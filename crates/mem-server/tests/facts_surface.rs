@@ -418,3 +418,24 @@ async fn the_visualization_door_serves_one_scope_as_nodes_and_links() {
         "an empty scope is a legal empty graph"
     );
 }
+
+/// `GET /facts/{scope}/search` — vector landing (ADR-0003). The server built
+/// without an engine cannot embed the query, so the door answers the legal
+/// EMPTY list (200 + `[]`), never an error: "nothing landed" is a valid
+/// retrieval outcome, and the caller injects no memory. The ranked path is
+/// covered in mem-core (which owns the engine), so this test pins the door's
+/// shape and its no-engine contract.
+#[tokio::test]
+async fn retrieval_door_answers_an_empty_landing_without_an_engine() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    let response = client
+        .get(format!("{base}/facts/1/search?q=fjall_engine"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "empty landing is not an error status");
+    let seeds: Vec<serde_json::Value> = response.json().await.unwrap();
+    assert!(seeds.is_empty(), "no engine = nothing lands");
+}

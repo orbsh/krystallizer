@@ -45,14 +45,16 @@
 //! `by_community` face, which are NOT declared until something reads
 //! them) and the weight system's writer (ADR-0005, Phase 5).
 
+use crate::embedding::Embedder;
 use okm_core::index::DYNAMIC_SLOT;
 use okm_core::obj_dict::{DictCache, FIELD_DICT, KIND_VOCAB};
 use okm_core::obj_dynamic::{put_frame_named, DynamicValue};
 use okm_core::{
     Collection, Document, DocumentEncode, EdgeHead, FjallStore, Graph, GraphEncode, KeyEncode,
-    MemBatch, NodeRef, NodeSet, VirtualStorage, PRIMARY_SLOT, write_slot,
+    MemBatch, NodeRef, NodeSet, Vector, VectorElem, VirtualStorage, PRIMARY_SLOT, write_slot,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::Arc;
 
 /// Entity node collection (ADR-0010 §1's ns 36 — allocated at landing,
 /// next free after the code store's 35).
@@ -110,6 +112,12 @@ pub struct EntityRow {
     #[ok_default(0)]
     pub literal_num: i64,
     pub name: String,
+    /// The node's vector (ADR-0003): the built-in engine's output over the
+    /// entity's name, a cold frame of ANY length, L2-normalized at the
+    /// source so the contract's `cosine` is an inner product. EMPTY is a
+    /// legal row (no engine attached when it was written) and the retrieval
+    /// side skips it — never a zero vector.
+    pub embedding: Vector<f32>,
 }
 
 use __OkmIndex_EntityRow_by_name as ByName;
@@ -288,6 +296,8 @@ pub enum IngestError {
     Slot { slot: usize, why: &'static str },
     #[error("graph storage: {0}")]
     Storage(String),
+    #[error("embedding: {0}")]
+    Embedding(String),
 }
 
 /// A decoded fact, read back from storage.
@@ -323,9 +333,98 @@ pub struct FactView {
     pub edge: FactEdge,
 }
 
+/// One landing seed (ADR-0003): the node the query landed on, its similarity
+/// (inner product of unit vectors = cosine), and the kind token. Seeds are
+/// what the neighbourhood expansion consumes; the caller needs nothing else.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Seed {
+    pub node_id: u64,
+    pub score: f32,
+    pub name: String,
+    pub kind: String,
+}
+
+/// The landing confidence floor (ADR-0003): below it nothing landed, and an
+/// EMPTY result is the legal answer — the caller injects no memory. One place,
+/// deliberately not a per-call parameter.
+pub const LANDING_FLOOR: f32 = 0.35;
+
+/// Byte budget for the per-scope vector tables. 512-dim f32 is ~2 KB per row,
+/// so this holds roughly 32k vectors across every active scope; past it the
+/// least-recently-used scope is dropped and rebuilt from the KV on demand.
+const TABLE_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+
+/// How a scope's vectors are scanned. ONE shape exists today — `Flat`: the
+/// table is loaded from the KV once and scanned in memory, which is what
+/// ADR-0003 chose (the corpus is per-scope; ANN is re-opened only when a
+/// measured corpus crosses the threshold). The bucketed form (IVF: coarse
+/// centroids in the key, probe nprobe buckets) is the documented next step
+/// and only pays off once one scope's table no longer fits the budget above;
+/// it slots in behind this same `retrieve` signature.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScanStrategy {
+    Flat,
+}
+
+/// One scope's loaded table: `(node_id, name, kind_id, unit vector)` rows and
+/// the bytes they occupy.
+struct ScopeTable {
+    rows: Vec<(u64, String, u16, Vec<f32>)>,
+    bytes: usize,
+}
+
+/// The per-scope tables, with a hard byte budget and LRU eviction — the table
+/// is derived state, so evicting costs one reload, never correctness.
+#[derive(Default)]
+struct ScopeTables {
+    tables: HashMap<u64, ScopeTable>,
+    /// Load order, oldest first.
+    order: VecDeque<u64>,
+    bytes: usize,
+}
+
+impl ScopeTables {
+    fn contains(&self, scope: u64) -> bool {
+        self.tables.contains_key(&scope)
+    }
+
+    fn get(&self, scope: u64) -> Option<&ScopeTable> {
+        self.tables.get(&scope)
+    }
+
+    fn forget(&mut self, scope: u64) {
+        if let Some(table) = self.tables.remove(&scope) {
+            self.bytes -= table.bytes;
+        }
+        if let Some(pos) = self.order.iter().position(|s| *s == scope) {
+            self.order.remove(pos);
+        }
+    }
+
+    fn touch(&mut self, scope: u64) {
+        if let Some(pos) = self.order.iter().position(|s| *s == scope) {
+            self.order.remove(pos);
+        }
+        self.order.push_back(scope);
+    }
+
+    fn insert(&mut self, scope: u64, table: ScopeTable) {
+        while self.bytes + table.bytes > TABLE_BUDGET_BYTES {
+            let Some(oldest) = self.order.front().copied() else {
+                break;
+            };
+            self.forget(oldest);
+        }
+        self.forget(scope);
+        self.bytes += table.bytes;
+        self.tables.insert(scope, table);
+        self.order.push_back(scope);
+    }
+}
+
 /// The graph's tables, attached to one already-open store handle (the
-/// `memory` keyspace: different entity class, different ns, one tree —
-/// the same rule flat memory and the code store follow).
+/// `memory` keyspace: different entity class, different ns, one tree — the
+/// same rule flat memory and the code store follow).
 pub struct GraphStore {
     entities: Collection<FjallStore, EntityKey, EntityRow>,
     /// One handle for the writes the collections cannot express in their
@@ -334,6 +433,16 @@ pub struct GraphStore {
     store: FjallStore,
     next_node: u64,
     next_edge: u64,
+    /// The built-in embedding engine (ADR-0003). `None` = no engine attached:
+    /// rows land with an EMPTY vector frame and retrieval has nothing to
+    /// rank (a legal, empty result — never an error).
+    embedder: Option<Arc<Embedder>>,
+    /// Per-scope vector tables, built from the KV on first use (ADR-0003's
+    /// "per-ns in-memory table + brute-force inner product"). Bounded: see
+    /// `TABLE_BUDGET_BYTES`.
+    tables: ScopeTables,
+    /// How those tables are scanned. `Flat` is the only strategy today.
+    strategy: ScanStrategy,
 }
 
 impl GraphStore {
@@ -374,7 +483,18 @@ impl GraphStore {
             store,
             next_node,
             next_edge,
+            embedder: None,
+            tables: ScopeTables::default(),
+            strategy: ScanStrategy::Flat,
         }
+    }
+
+    /// Attach the built-in embedding engine (ADR-0003). `open_service` cannot
+    /// know about it — the engine is a serving-process concern — so the
+    /// serving side attaches it here, before the store goes behind its lock.
+    pub fn with_embedder(mut self, engine: Arc<Embedder>) -> Self {
+        self.embedder = Some(engine);
+        self
     }
 
     /// The edge collection handle. Predicates allocate through the graph's
@@ -515,6 +635,77 @@ impl GraphStore {
         facts
     }
 
+    /// Vector landing (ADR-0003): embed the query, scan the scope's table by
+    /// inner product, drop everything under [`LANDING_FLOOR`], return the top
+    /// `k`. The table is DERIVED state — built from the KV on first use and
+    /// dropped on every write — so it never drifts from the rows.
+    pub fn retrieve(
+        &mut self,
+        scope: u64,
+        query: &str,
+        k: usize,
+    ) -> Result<Vec<Seed>, IngestError> {
+        let Some(engine) = self.embedder.clone() else {
+            // No engine attached: no query vector can exist, so nothing
+            // lands. That is a legal answer, not an error.
+            return Ok(Vec::new());
+        };
+        if query.trim().is_empty() || k == 0 {
+            return Ok(Vec::new());
+        }
+        let q = engine
+            .embed(query)
+            .map_err(|e| IngestError::Embedding(e.to_string()))?;
+        self.load_vector_table(scope);
+        let Some(table) = self.tables.get(scope) else {
+            return Ok(Vec::new());
+        };
+        let mut hits: Vec<(usize, f32)> = match self.strategy {
+            ScanStrategy::Flat => table
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(i, row)| (i, dot(&q, &row.3)))
+                .filter(|(_, score)| *score >= LANDING_FLOOR)
+                .collect(),
+        };
+        hits.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        hits.truncate(k);
+        Ok(hits
+            .into_iter()
+            .map(|(i, score)| {
+                let (node_id, name, kind_id, _) = &table.rows[i];
+                Seed {
+                    node_id: *node_id,
+                    score,
+                    name: name.clone(),
+                    kind: self
+                        .dict_name(<EntityRow as Document>::NS_PREFIX, *kind_id)
+                        .unwrap_or_default(),
+                }
+            })
+            .collect())
+    }
+
+    /// Build (or refresh the LRU position of) one scope's table. Rows written
+    /// without an engine carry an EMPTY frame and are skipped by construction.
+    fn load_vector_table(&mut self, scope: u64) {
+        if self.tables.contains(scope) {
+            self.tables.touch(scope);
+            return;
+        }
+        let mut rows = Vec::new();
+        let mut bytes = 0usize;
+        for (node_id, row) in self.scope_entities(scope) {
+            if row.embedding.is_empty() {
+                continue;
+            }
+            bytes += row.embedding.len() * std::mem::size_of::<f32>() + row.name.len();
+            rows.push((node_id, row.name, row.kind_id, row.embedding.elems));
+        }
+        self.tables.insert(scope, ScopeTable { rows, bytes });
+    }
+
     /// A `NodeRef` back to its node: the ref is `[ns 2B][len varint]
     /// [entity key]`, so the entity key decodes straight out of it and
     /// the scope rides along (nothing external is consulted).
@@ -553,8 +744,8 @@ impl GraphStore {
     /// Land one fact (ADR-0010 §1 steps 1–2): resolve both endpoints to
     /// nodes, then link the fact or adjudicate it against an incumbent.
     pub fn ingest(&mut self, scope: u64, fact: &FactTuple) -> Result<IngestOutcome, IngestError> {
-        let src = self.resolve(scope, &fact.head);
-        let dst = self.resolve(scope, &fact.tail);
+        let src = self.resolve(scope, &fact.head)?;
+        let dst = self.resolve(scope, &fact.tail)?;
         let functional = matches!(
             fact.rel.props.get(FUNCTIONAL_PROP),
             Some(DynamicValue::Bool(true))
@@ -632,25 +823,41 @@ impl GraphStore {
     /// every fact about it, so they MERGE into the node's dynamic
     /// segment (a same-named attribute takes the newer value; the rest
     /// survive, unlike a wholesale replace).
-    fn resolve(&mut self, scope: u64, term: &Term) -> u64 {
+    fn resolve(&mut self, scope: u64, term: &Term) -> Result<u64, IngestError> {
         if let Some((node_id, _)) = self.entity_by_name(scope, &term.value) {
             self.merge_props(scope, node_id, &term.props);
-            return node_id;
+            return Ok(node_id);
         }
         let kind_id = self.dict_id(<EntityRow as Document>::NS_PREFIX, &term.type_label);
         let node_id = self.next_node;
         self.next_node += 1;
+        // ADR-0003: the vector is computed INSIDE k10r, over the node's NAME
+        // (an entity's semantic handle). No engine = EMPTY frame, a legal row
+        // the retrieval side skips. An engine that fails to embed is an error
+        // the caller sees — never a silently vectorless node.
+        let embedding = match &self.embedder {
+            Some(engine) => Vector::new(
+                engine
+                    .embed(&term.value)
+                    .map_err(|e| IngestError::Embedding(e.to_string()))?,
+            ),
+            None => Vector::new(Vec::new()),
+        };
         let row = EntityRow {
             kind_id,
             literal_num: literal_num(term),
             name: term.value.clone(),
+            embedding,
         };
         let key = EntityKey { scope, node_id };
         self.entities.put(&key, &row);
+        // The scope's in-memory vector table is derived state: drop it rather
+        // than maintain it row by row (it reloads on the next retrieval).
+        self.tables.forget(scope);
         if !term.props.is_empty() {
             self.entities.put_fields(&key, &term.props);
         }
-        node_id
+        Ok(node_id)
     }
 
     /// Merge props into an existing node's dynamic segment.
@@ -690,6 +897,7 @@ impl GraphStore {
 
     /// The edge's full write set into an externally owned batch — the
     /// cross-collection atomic path, and the rewrite's write half.
+    #[allow(clippy::too_many_arguments)] // one edge's own fields, not a grab bag
     fn write_edge_into(
         &mut self,
         batch: &mut MemBatch,
@@ -759,6 +967,16 @@ impl GraphStore {
         key.extend_from_slice(payload);
         key
     }
+}
+
+/// Inner product of two L2-normalized vectors (= cosine, ADR-0003's metric).
+/// A length mismatch means the table was built by a different model than the
+/// query: score it as unreachable rather than compare across spaces.
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() {
+        return f32::NEG_INFINITY;
+    }
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
 /// A literal's integer projection: the value's own text parsed as an

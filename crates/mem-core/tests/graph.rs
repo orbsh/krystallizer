@@ -228,7 +228,7 @@ fn functional_relation_rewrites_the_incumbent() {
     // into the new one.
     let props = graph.fact_props(edge_id).expect("the assertion's own record");
     assert!(
-        props.get("reason").is_none(),
+        !props.contains_key("reason"),
         "the old assertion's prop does not survive the rewrite"
     );
     assert_eq!(
@@ -410,4 +410,113 @@ fn ids_are_recovered_across_reopen() {
     assert_eq!(edge_id, 3, "the edge counter continues past the stored ids");
     let (user_id, _) = graph.entity_by_name(1, "user").unwrap();
     assert_eq!(user_id, 3, "the node counter continues too");
+}
+
+// ---- retrieval (ADR-0003): vector landing ------------------------------
+
+/// The embedding artifact is ~96 MB and deliberately NOT in the repo, so these
+/// tests read the repo config's own model directory and skip when the machine
+/// has none — the default gate stays runnable anywhere, and a machine that HAS
+/// the model exercises the real inference path (the discipline `embedding.rs`
+/// uses).
+fn local_embedder() -> Option<std::sync::Arc<mem_core::Embedder>> {
+    let cfg_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/krystallizer.kdl");
+    let cfg = mem_core::KrystallizerConfig::load(&cfg_path).ok()?;
+    let dir = std::path::Path::new(&cfg.embedding.model_dir);
+    if !dir.join("model.safetensors").exists() {
+        eprintln!("skipping: no embedding model in {}", cfg.embedding.model_dir);
+        return None;
+    }
+    Some(std::sync::Arc::new(
+        mem_core::Embedder::load(&cfg.embedding.model_dir).expect("model loads"),
+    ))
+}
+
+/// Vector landing: an exact-name query lands on that node with score 1.0 (the
+/// stored vector IS that text's embedding, and both are unit-length), ahead of
+/// every other node. This is the deterministic core of ADR-0003's landing; the
+/// semantic ranking quality is PLAN 1d's exit gate, not a unit test.
+#[test]
+fn retrieval_lands_on_the_exact_node() {
+    let Some(engine) = local_embedder() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap().with_embedder(engine);
+
+    graph
+        .ingest(
+            1,
+            &tuple(r#"["fjall_engine","system",{},"STORAGE_ENGINE",{},"k10r_core","system",{}]"#),
+        )
+        .unwrap();
+    graph
+        .ingest(
+            1,
+            &tuple(
+                r#"["slatedb_engine","system",{},"STORAGE_ENGINE",{},"k10r_core","system",{}]"#,
+            ),
+        )
+        .unwrap();
+
+    let seeds = graph.retrieve(1, "fjall_engine", 5).unwrap();
+    assert!(!seeds.is_empty(), "an exact-name query lands");
+    assert_eq!(seeds[0].name, "fjall_engine", "the exact node ranks first");
+    assert!(
+        (seeds[0].score - 1.0).abs() < 1e-5,
+        "same text, same vector: score 1.0, got {}",
+        seeds[0].score
+    );
+    assert_eq!(seeds[0].kind, "system", "the kind token rides the seed");
+    // k bounds the answer.
+    assert_eq!(graph.retrieve(1, "fjall_engine", 1).unwrap().len(), 1);
+}
+
+/// The table is DERIVED state: a write drops it, and the next retrieval sees
+/// the new node. A cached table that survived a write would silently answer
+/// from the old corpus.
+#[test]
+fn retrieval_table_follows_writes() {
+    let Some(engine) = local_embedder() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap().with_embedder(engine);
+
+    graph
+        .ingest(
+            1,
+            &tuple(r#"["alpha","thing",{},"IS",{},"beta","thing",{}]"#),
+        )
+        .unwrap();
+    let first = graph.retrieve(1, "alpha", 5).unwrap();
+    assert_eq!(first[0].name, "alpha");
+
+    // A node created AFTER the table was built must be reachable.
+    graph
+        .ingest(
+            1,
+            &tuple(r#"["gamma","thing",{},"IS",{},"beta","thing",{}]"#),
+        )
+        .unwrap();
+    let seeds = graph.retrieve(1, "gamma", 5).unwrap();
+    assert_eq!(seeds[0].name, "gamma", "the table was rebuilt, not stale");
+}
+
+/// No engine attached: nothing can be embedded, so retrieval answers the legal
+/// empty list rather than an error, and the row is legal but vectorless.
+#[test]
+fn retrieval_without_an_engine_lands_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap();
+    graph
+        .ingest(
+            1,
+            &tuple(r#"["alpha","thing",{},"IS",{},"beta","thing",{}]"#),
+        )
+        .unwrap();
+    assert!(graph.retrieve(1, "alpha", 5).unwrap().is_empty());
+    let (node_id, _) = graph.entity_by_name(1, "alpha").unwrap();
+    assert!(graph.entity(1, node_id).unwrap().embedding.is_empty());
 }

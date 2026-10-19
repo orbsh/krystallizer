@@ -72,11 +72,18 @@ pub fn open_with(
     embedder: Option<Arc<mem_core::Embedder>>,
 ) -> Result<Router, fjall::Error> {
     let stores = mem_core::open_service(&path)?;
+    let graph = match &embedder {
+        // The serving process attaches its engine to the graph too: node
+        // vectors are computed in-process at ingest (ADR-0003), so the HTTP
+        // client never sends one.
+        Some(engine) => stores.graph.with_embedder(engine.clone()),
+        None => stores.graph,
+    };
     let state = Arc::new(MemState {
         store: tokio::sync::Mutex::new(stores.channels),
         code: tokio::sync::Mutex::new(stores.code),
         memory: tokio::sync::Mutex::new(stores.memory),
-        graph: tokio::sync::Mutex::new(stores.graph),
+        graph: tokio::sync::Mutex::new(graph),
         embedder,
     });
     Ok(Router::new()
@@ -94,6 +101,7 @@ pub fn open_with(
         .route("/memory", post(store_memory))
         .route("/memory/{user_id}/search", get(search_memory))
         .route("/facts/{scope}", post(ingest_fact))
+        .route("/facts/{scope}/search", get(search_facts))
         .route("/facts/{scope}/entities/{name}", get(fetch_entity))
         .route(
             "/facts/{scope}/entities/{node_id}/edges",
@@ -496,6 +504,56 @@ pub struct EntityDto {
     pub kind: String,
     pub literal_num: i64,
     pub name: String,
+}
+
+/// One landing seed (`GET /facts/{scope}/search`): the node the query landed
+/// on and its similarity. The caller expands from here (ADR-0003: vector
+/// landing + graph traversal); an EMPTY list is the legal "nothing landed".
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct SeedDto {
+    pub node_id: u64,
+    pub score: f32,
+    pub name: String,
+    pub kind: String,
+}
+
+/// The retrieval door's query: `?q=<text>&k=<n>` — `k` defaults to 10.
+#[derive(Deserialize)]
+pub struct FactSearchQuery {
+    pub q: String,
+    #[serde(default = "default_seed_count")]
+    pub k: usize,
+}
+
+fn default_seed_count() -> usize {
+    10
+}
+
+/// `GET /facts/{scope}/search?q=&k=` — vector landing over one scope's
+/// entities (ADR-0003). Below the landing floor the answer is an empty list,
+/// never an error; no embedding engine attached is the same empty list.
+async fn search_facts(
+    State(state): State<Arc<MemState>>,
+    Path(scope): Path<u64>,
+    Query(query): Query<FactSearchQuery>,
+) -> Result<Json<Vec<SeedDto>>, FactError> {
+    let mut graph = state.graph.lock().await;
+    graph
+        .retrieve(scope, &query.q, query.k)
+        .map(|seeds| {
+            Json(
+                seeds
+                    .into_iter()
+                    .map(|s| SeedDto {
+                        node_id: s.node_id,
+                        score: s.score,
+                        name: s.name,
+                        kind: s.kind,
+                    })
+                    .collect(),
+            )
+        })
+        .map_err(FactError::from)
 }
 
 /// One fact with both endpoints resolved (what a renderer or a recall
