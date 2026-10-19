@@ -341,15 +341,17 @@ pub struct EntityRow {
 - **Retrieval (`GraphStore::retrieve`, `GET /graph/{scope}/search?q=&k=` — the
   ANALYSIS class: the landing alone, for inspection; the core answer is
   `recall`, below)**
-  is vector landing, not a query language: embed the query, inner-product it
-  against one scope's DERIVED in-memory table, drop everything under
-  `LANDING_FLOOR` (0.35), return the top `k` seeds `{node_id, score, name,
-  kind}`. An empty result is legal (nothing landed — the caller injects no
-  memory). The table is rebuilt from the KV on first use and DROPPED on every
-  write, so it can never answer from a stale corpus; it is byte-budgeted with
-  LRU eviction, and the scan is `Flat` (brute force) — the bucketed form is
-  the documented next step, taken only when one scope's table no longer fits
-  (ADR-0003's measured threshold).
+  is vector landing, not a query language: embed the query, ask the scope's
+  DERIVED index for its nearest rows, drop everything under `LANDING_FLOOR`
+  (0.35 cosine), return the top `k` seeds `{node_id, score, name, kind}`. An
+  empty result is legal (nothing landed — the caller injects no memory). The
+  SEARCH is `okm-vector`'s, not k10r's: the index is its `ExactIndex` (one flat
+  vector block plus keys), rebuilt from the KV on first use and DROPPED on every
+  write, so it can never answer from a stale corpus, and byte-budgeted with LRU
+  eviction here because the budget is about k10r's memory, not the search. The
+  ANN behind the same call is `okm-vector`'s `VectorIndex` (sharded HNSW, one
+  snapshot blob per shard at okm's face 0x0B), taken when ADR-0003's measured
+  threshold says so — never a hand-rolled graph.
 - **`GraphStore::recall` (`GET /memories/{scope}/recall?q=&k=&budget=&ts_ms=` — the
   CORE class: the memory answer a consumer runs on)**
   is that landing plus the landed COMMUNITY: the seeds' `community_id`s are

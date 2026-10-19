@@ -64,6 +64,7 @@ use okm_core::{
     Collection, Document, DocumentEncode, EdgeHead, FjallStore, Graph, GraphEncode, KeyEncode,
     MemBatch, NodeRef, NodeSet, Vector, VectorElem, VirtualStorage, PRIMARY_SLOT, write_slot,
 };
+use okm_vector::ExactIndex;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -552,34 +553,34 @@ pub struct CommunitySlice {
 
 /// The landing confidence floor (ADR-0003): below it nothing landed, and an
 /// EMPTY result is the legal answer — the caller injects no memory. One place,
-/// deliberately not a per-call parameter.
+/// deliberately not a per-call parameter. It is a COSINE floor; the index
+/// answers in squared euclidean distance, and for the unit vectors this store
+/// keeps the two order identically (`dist² = 2 − 2·cos`), so the floor has one
+/// translation and it lives here.
 pub const LANDING_FLOOR: f32 = 0.35;
 
-/// Byte budget for the per-scope vector tables. 512-dim f32 is ~2 KB per row,
+/// [`LANDING_FLOOR`] in the index's own metric.
+const LANDING_DIST2: f32 = 2.0 * (1.0 - LANDING_FLOOR);
+
+/// Byte budget for the per-scope indexes. 512-dim f32 is ~2 KB per row,
 /// so this holds roughly 32k vectors across every active scope; past it the
 /// least-recently-used scope is dropped and rebuilt from the KV on demand.
 const TABLE_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 
-/// How a scope's vectors are scanned. ONE shape exists today — `Flat`: the
-/// table is loaded from the KV once and scanned in memory, which is what
-/// ADR-0003 chose (the corpus is per-scope; ANN is re-opened only when a
-/// measured corpus crosses the threshold). The bucketed form (IVF: coarse
-/// centroids in the key, probe nprobe buckets) is the documented next step
-/// and only pays off once one scope's table no longer fits the budget above;
-/// it slots in behind this same `retrieve` signature.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ScanStrategy {
-    Flat,
-}
-
-/// One scope's loaded table: `(node_id, name, kind_id, unit vector)` rows and
-/// the bytes they occupy.
+/// One scope's loaded index. The search itself is `okm_vector::ExactIndex` —
+/// okm owns the vector path (its `VectorIndex` owns the ANN the moment a
+/// measured corpus asks for one), and this side owns only what is k10r's: when
+/// to build, what the answer needs besides the id, and how much derived state
+/// may sit in memory.
 struct ScopeTable {
-    rows: Vec<(u64, String, u16, Vec<f32>)>,
+    index: ExactIndex,
+    /// `node_id` as the index key (BE bytes) → the name and kind id the answer
+    /// reports beside it.
+    rows: HashMap<Vec<u8>, (String, u16)>,
     bytes: usize,
 }
 
-/// The per-scope tables, with a hard byte budget and LRU eviction — the table
+/// The per-scope indexes, with a hard byte budget and LRU eviction — the index
 /// is derived state, so evicting costs one reload, never correctness.
 #[derive(Default)]
 struct ScopeTables {
@@ -643,12 +644,10 @@ pub struct GraphStore {
     /// rows land with an EMPTY vector frame and retrieval has nothing to
     /// rank (a legal, empty result — never an error).
     embedder: Option<Arc<Embedder>>,
-    /// Per-scope vector tables, built from the KV on first use (ADR-0003's
-    /// "per-ns in-memory table + brute-force inner product"). Bounded: see
-    /// `TABLE_BUDGET_BYTES`.
+    /// Per-scope vector indexes, built from the KV on first use (ADR-0003).
+    /// The scan is okm-vector's; this map only decides when to rebuild and how
+    /// much derived state may be held — see `TABLE_BUDGET_BYTES`.
     tables: ScopeTables,
-    /// How those tables are scanned. `Flat` is the only strategy today.
-    strategy: ScanStrategy,
     /// Next community id per scope (ADR-0010 §1 — a fresh seed per landed
     /// node). The SEQUENCE row is the source of truth and only ever grows;
     /// this map is the in-process cache of it.
@@ -695,7 +694,6 @@ impl GraphStore {
             next_edge,
             embedder: None,
             tables: ScopeTables::default(),
-            strategy: ScanStrategy::Flat,
             next_community: HashMap::new(),
         }
     }
@@ -846,10 +844,12 @@ impl GraphStore {
         facts
     }
 
-    /// Vector landing (ADR-0003): embed the query, scan the scope's table by
-    /// inner product, drop everything under [`LANDING_FLOOR`], return the top
-    /// `k`. The table is DERIVED state — built from the KV on first use and
-    /// dropped on every write — so it never drifts from the rows.
+    /// Vector landing (ADR-0003): embed the query, ask the scope's index for
+    /// its nearest rows, drop everything under [`LANDING_FLOOR`], return the
+    /// top `k`. The scan is okm-vector's exact one (squared euclidean, which
+    /// orders like cosine for unit vectors — see [`LANDING_FLOOR`]); the index
+    /// is DERIVED state — built from the KV on first use and dropped on every
+    /// write — so it never drifts from the rows.
     pub fn retrieve(
         &mut self,
         scope: u64,
@@ -871,29 +871,28 @@ impl GraphStore {
         let Some(table) = self.tables.get(scope) else {
             return Ok(Vec::new());
         };
-        let mut hits: Vec<(usize, f32)> = match self.strategy {
-            ScanStrategy::Flat => table
-                .rows
-                .iter()
-                .enumerate()
-                .map(|(i, row)| (i, dot(&q, &row.3)))
-                .filter(|(_, score)| *score >= LANDING_FLOOR)
-                .collect(),
-        };
-        hits.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        hits.truncate(k);
-        Ok(hits
+        // An empty index has no dimension to compare against, and a scope whose
+        // rows were written by a different engine cannot be ranked by this
+        // query — either way nothing lands.
+        if table.index.is_empty() || table.index.dim() != q.len() {
+            return Ok(Vec::new());
+        }
+        Ok(table
+            .index
+            .search(&q, table.index.live())
             .into_iter()
-            .map(|(i, score)| {
-                let (node_id, name, kind_id, _) = &table.rows[i];
-                Seed {
-                    node_id: *node_id,
-                    score,
+            .filter(|(_, dist2)| *dist2 <= LANDING_DIST2)
+            .take(k)
+            .filter_map(|(key, dist2)| {
+                let (name, kind_id) = table.rows.get(&key)?;
+                Some(Seed {
+                    node_id: u64::from_be_bytes(key.as_slice().try_into().ok()?),
+                    score: 1.0 - dist2 / 2.0,
                     name: name.clone(),
                     kind: self
                         .dict_name(<EntityRow as Document>::NS_PREFIX, *kind_id)
                         .unwrap_or_default(),
-                }
+                })
             })
             .collect())
     }
@@ -1115,16 +1114,37 @@ impl GraphStore {
             self.tables.touch(scope);
             return;
         }
-        let mut rows = Vec::new();
+        let rows = self.scope_entities(scope);
+        // One dimension per scope: the first row with an engine-written frame
+        // sets it (an empty frame is a legal vectorless row, and a width that
+        // is not this scope's width cannot be ranked against the query).
+        let dim = rows
+            .iter()
+            .find(|(_, row)| !row.embedding.is_empty())
+            .map_or(0, |(_, row)| row.embedding.len());
+        let mut index = ExactIndex::new(dim);
+        let mut named = HashMap::new();
         let mut bytes = 0usize;
-        for (node_id, row) in self.scope_entities(scope) {
-            if row.embedding.is_empty() {
-                continue;
+        if dim > 0 {
+            for (node_id, row) in rows {
+                if row.embedding.len() != dim {
+                    continue;
+                }
+                let name_len = row.name.len();
+                let key = node_id.to_be_bytes().to_vec();
+                index.add(key.clone(), &row.embedding.elems);
+                named.insert(key, (row.name, row.kind_id));
+                bytes += dim * std::mem::size_of::<f32>() + name_len;
             }
-            bytes += row.embedding.len() * std::mem::size_of::<f32>() + row.name.len();
-            rows.push((node_id, row.name, row.kind_id, row.embedding.elems));
         }
-        self.tables.insert(scope, ScopeTable { rows, bytes });
+        self.tables.insert(
+            scope,
+            ScopeTable {
+                index,
+                rows: named,
+                bytes,
+            },
+        );
     }
 
     /// A `NodeRef` back to its node: the ref is `[ns 2B][len varint]
@@ -1429,16 +1449,6 @@ impl GraphStore {
         key.extend_from_slice(payload);
         key
     }
-}
-
-/// Inner product of two L2-normalized vectors (= cosine, ADR-0003's metric).
-/// A length mismatch means the table was built by a different model than the
-/// query: score it as unreachable rather than compare across spaces.
-fn dot(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() {
-        return f32::NEG_INFINITY;
-    }
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
 /// A literal's integer projection: the value's own text parsed as an

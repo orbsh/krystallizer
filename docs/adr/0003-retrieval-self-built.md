@@ -119,9 +119,10 @@ only complex ones (PageRank, community detection) earn a dependency.
   batch, droppable at any time — so the "never a second source of truth" line
   holds without k10r owning a graph implementation. No arroy (the LMDB reason
   above), no second storage engine, and no schema change here: the corpus
-  stays the entity rows' `embedding` frames. Below the threshold the
-  brute-force in-memory table remains the implementation; crossing it is a
-  measurement, not a rewrite.
+  stays the entity rows' `embedding` frames. Below the threshold the scan is
+  the same crate one layer down — `okm-vector`'s `ExactIndex` — so neither side
+  of the threshold is k10r's code, and crossing it is a measurement, not a
+  rewrite.
 - There is no tokenizer to control, so "tokenization and scoring fully under
   our control" is no longer a trade-off claim this route makes.
 - The PG exit gate becomes an end-to-end recall comparison on a fixed query set,

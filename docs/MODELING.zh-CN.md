@@ -296,12 +296,14 @@ pub struct EntityRow {
   一次内积。**空帧是合法行**（写入时没有挂引擎），检索侧跳过它，绝不是零向量。
 - **检索（`GraphStore::retrieve`、`GET /graph/{scope}/search?q=&k=`——**分析**类：
   只有落点，供检视；核心答案是下面的 `recall`）是向量落地，
-  不是查询语言**：嵌 query → 与该 scope 的**派生**内存表做内积 → 丢掉
-  `LANDING_FLOOR`（0.35）以下的 → 取前 `k` 个种子 `{node_id, score, name,
-  kind}`。空结果是合法的（什么都没落地，调用方不注入记忆）。表在首次使用时从
-  KV 重建、**每次写入即失效**，所以不可能拿旧语料作答；它带字节预算与 LRU 淘汰，
-  扫描形态是 `Flat`（暴力）——分桶形态是文档化的下一步，只在单个 scope 的表装不下
-  时（ADR-0003 的可测阈值）才取。
+  不是查询语言**：嵌 query → 向该 scope 的**派生**索引要最近的几行 → 丢掉
+  `LANDING_FLOOR`（0.35 余弦）以下的 → 取前 `k` 个种子 `{node_id, score, name,
+  kind}`。空结果是合法的（什么都没落地，调用方不注入记忆）。**扫描是
+  `okm-vector` 的，不是 k10r 的**：索引是它的 `ExactIndex`（一整块 f32 加键表），
+  首次使用时从 KV 重建、**每次写入即失效**，所以不可能拿旧语料作答；字节预算与
+  LRU 淘汰留在这边，因为那是 k10r 的内存账，不是搜索本身。同一调用背后的 ANN 是
+  `okm-vector` 的 `VectorIndex`（分片 HNSW，每个分片一份快照存在 okm 的 0x0B 面），
+  按 ADR-0003 的可测阈值才取——绝不自己养一份图实现。
 - **`GraphStore::recall`（`GET /memories/{scope}/recall?q=&k=&budget=&ts_ms=`——**核心**
   类：消费方跑在上面的记忆答案**）是落地 + 着陆到的**社区**：种子的 `community_id`
   当作桶读（成员走 `by_community` 面，两端都在社区内的事实走遍历面），按权重
