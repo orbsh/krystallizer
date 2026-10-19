@@ -1,6 +1,6 @@
-# ADR-0005: Weight System — Delta Counts, Read-Write Quadrants, Tool Index
+# ADR-0005: Weight System — Counters on the Edge Row, Read-Write Quadrants, Tool Index
 
-**Status**: Accepted (the counting half LANDED 2026-10-19 — see Updates; the delta table waits for the multi-writer switch)
+**Status**: Landed 2026-10-19 (the counters ride the edge row; the delta-append table survives only as the multi-writer escape)
 **Date**: 2026-09-08
 **Chinese**: [0005-weight-system.zh-CN.md](0005-weight-system.zh-CN.md)
 
@@ -13,36 +13,37 @@ quadrants (core / deep-water / noise / cold), and retrieval order is
 weight-ordered Top-K (progressive loading).
 
 Two engineering questions: how to count without read-modify-write
-contention, and how to serve Top-K without full scans.
+contention, and how to serve a weight-ordered Top-K without full scans.
 
 ## Decision
 
-**Counting: delta-append keys, fold to a count key in the background.**
+**Counting: the edge ROW is the count key.** `read_count` / `write_count` /
+`tool_count` / `last_read` / `last_write` are declared hot fields of
+`FactEdge` (ns 37, payload layout v2), with the folded `weight` beside them.
+One identity, one write — and because okm's declared faces are derived from
+the row, a bump rewrites one row and everything derived from it follows.
 
-```
-put edge:{src}:{label}:{dst}/read/{ts}  → +1        # append-first: this path stays an append
-put edge:{src}:{label}:{dst}/count/read → N         # folded, whole-value put
-```
-
-The key on the left is spelled in an earlier pass's notation: `edge:{src}:
-{label}:{dst}` is a **former LAYER**, not a layout to restore — the graph's
-edges are an okm edge collection keyed by `[edge_id]` with the endpoints and the
-kind carried as refs and an allocated `predicate_id` (ADR-0010 §1), so the two
-counting keys land on that identity when this system is built (Phase 5). What
-this decision fixes is unchanged: count by appending deltas, fold to a
-whole-value count key in the background, and keep the layout
-delta-compatible from day one so the multi-writer switch changes no schema.
-
-- Reads merge the delta chain for the current count; low-peak fold writes
-  the merged value to the count key.
-- The single-process start can use direct RMW on the count key (per the
-  wiki's concurrency-model criterion: same WriteBatch, serial updates —
-  delta machinery buys nothing yet). **The key layout is delta-compatible
-  from day one**, so the multi-agent switch (SlateDB+S3 shared truth,
-  concurrent writers) changes no schema.
-- read_count and write_count are physically separate objects — the
-  atomic-fact append model guarantees read/write independence, which is
-  what makes the 2D quadrant classification stable at the storage layer.
+- **Who bumps what.** `write_count` is the fact's own assertion: `ingest`
+  bumps it when the fact links or wins the adjudication (a dropped fact is
+  not a write). `read_count` is a served recall — `recall` / `expand` bump
+  it only when the caller's clock rides the call (`ts_ms`), because a read
+  nobody stamped is not a read and an absent timestamp must not invent
+  decay. `tool_count` is a caller-reported tool consult
+  (`POST /facts/{scope}/edges/{id}/touch`): k10r cannot see a tool call from
+  inside, so the consumer that used the fact reports it.
+- **read_count and write_count stay physically separate** — the atomic-fact
+  append model guarantees read/write independence, which is what makes the
+  2D quadrant classification stable at the storage layer.
+- **Fold points, not background passes.** A touch rewrites the row in one
+  batch. The decay the gap accrued is charged AT that fold, measured against
+  the PREVIOUS access, and the same fold then re-bases the clock, so the gap
+  is charged once rather than twice. The order is load-bearing: fold against
+  the previous access, THEN bump the clock and the counter — folding after
+  the clock update makes `time_decay` permanently zero, a mistake invisible
+  in the numbers (everything simply sorts by raw counts). The delta-append
+  table stays the multi-writer ESCAPE: it folds into these same fields, so
+  switching to it changes no schema, and its key layout is the one thing to
+  fix when it lands.
 
 **Weight formula** (from the wiki, including the tool index):
 
@@ -60,56 +61,10 @@ Deep-water bonus (high read, low write) is load-bearing: write-threshold
 penalties structurally punish high-entry-cost expert knowledge; the
 rarity_bonus corrects that.
 
-**Top-K: weight secondary index `W:{weight}:{edge_id}`.**
-
-- Weight changes write the new key + delete the old (tombstone) in one
-  WriteBatch — memory weight updates are low-frequency batched flushes, so
-  tombstone overhead is negligible (standard put+delete per the wiki's
-  index-update criterion).
-- Progressive loading reads the index in descending order, fetches back
-  edge payloads, stops at K.
-- Weight is stored at the precision the index needs (bucketed): recompute
-  order must match index order, so the indexed value is the same value the
-  formula produces at fold time.
-
-## Consequences
-
-- Hot path (search) never scans all edges; cold data identification
-  (noise/cold quadrants) is an index range read, not a full-table job.
-- The S3 cold-tier fallout (Phase 5+) reads the same index from the bottom
-  of the weight range; no separate "cold data" bookkeeping.
-- Time decay makes weight non-monotonic between folds — acceptable: the
-  index refreshes at fold cadence, and retrieval ordering tolerates
-  day-scale staleness (same eventual-consistency posture as skill boundary
-  reconsolidation).
-
-## Updates
-
-**2026-10-19 — the counting half landed, in okm's terms.** The counter keys
-are the edge ROW, not a side table: `read_count` / `write_count` /
-`tool_count` / `last_read` / `last_write` are declared hot fields of
-`FactEdge` (ns 37, payload layout v2), and `weight` is the folded field
-beside them. One identity, one write.
-
-- **Who bumps what.** `write_count` is the fact's own assertion: `ingest`
-  bumps it when a fact links or wins the adjudication (a dropped fact is not
-  a write). `read_count` is a served recall — `recall`/`expand` bump it only
-  when the caller's clock rides the call (`ts_ms`), because a read nobody
-  stamped is not a read and an absent timestamp must not invent decay.
-  `tool_count` is a caller-reported tool consult
-  (`POST /facts/{scope}/edges/{id}/touch`): k10r cannot see a tool call from
-  inside, so the consumer that used the fact reports it.
-- **Fold points, not background passes.** The single-process start pays a
-  direct RMW per access — this ADR's own allowance. A touch rewrites the row
-  in one batch. The decay the gap accrued is charged AT that fold, measured
-  against the PREVIOUS access, and the same fold re-bases the clock, so it is
-  charged once rather than twice. The delta-append table stays the
-  multi-writer escape; it folds into these same fields, so switching to it
-  changes no schema — its key layout is the one thing to fix when it lands.
 - **The bucket.** The stored value is the formula in MILLI-units (`× 1000`,
-  rounded, clamped at 0): a small float needs a stable ordered integer for
-  the index, and 0.001 is finer than the per-day decay step, so the bucket
-  never reorders two facts the formula would order differently. The
+  rounded, clamped at 0): a small float needs a stable ordered integer to be
+  compared by integer, and 0.001 is finer than the per-day decay step, so the
+  bucket never reorders two facts the formula would order differently. The
   coefficients are named constants in `mem-core/src/graph.rs` (read 1.0,
   write 0.5, tool 1.5, rarity 1.0, decay 0.01/day, deep-water floors
   read > 3 and write < 3). They are the formula, not deployment knobs; a
@@ -119,15 +74,48 @@ beside them. One identity, one write.
   order that pulled them in). Landing stays ADR-0003's; weight is this
   ADR's.
 
-**The W index — corrected.** `W:{weight}:{edge_id}` is a declared-field face
-like any other, and it is deliberately NOT declared today: weight changes
-already rewrite the row, so the face would be maintained for a reader that
-does not exist. The sketch named two readers — a scope-wide top-K /
-progressive load, and the Phase-5 cold-tier range read. Neither is callable
-now, and the first is not even shaped right: edges carry no `scope` segment
-(ADR-0010 §1 — ownership rides the endpoints), so `[weight][edge_id]`
-answers "the store's heaviest edges", not "this user's heaviest facts". A
-per-scope top-K would be a projection table keyed `[scope][weight][edge_id]`,
-written on the same touch — a design item to name when the read exists, not
-a face to pre-pay for. Recall's in-memory ranking needs none of it: the set
-it ranks is already in hand.
+**Top-K: no weight face is declared, and no index exists.** `W:{weight}:
+{edge_id}` would answer "the store's heaviest edges", not "this user's
+heaviest facts": edges carry no `scope` segment (ADR-0010 §1 — ownership
+rides the endpoints). A scope-wide Top-K is therefore a PROJECTION table
+keyed `[scope][weight][edge_id]`, written on the same touch — a follow-up
+named with the read that consumes it (Phase 4's progressive loading), not a
+face to pre-pay for. Recall's ranking needs none of it: the set it ranks is
+already in hand. Two further reasons the face stays undeclared: a weight
+change rewrites the row anyway, so the face would be maintained for a reader
+that does not exist; and okm's document overwrite does not delete an entry
+keyed by the OLD value, so every bump would owe an explicit delete for a
+query nobody makes.
+
+## Consequences
+
+- Today's ranking is an in-memory sort over the set recall already fetched —
+  no index, no full-table job, no second engine.
+- Cold-tier work (Phase 5+ fallout) and progressive loading want the same
+  scope-keyed projection; when either arrives, one table serves both, and the
+  decision above names its shape.
+- Time decay makes a fact's weight non-monotonic between folds, which is
+  acceptable: nothing derived is kept in step today, and the ordering
+  tolerates day-scale staleness (same eventual-consistency posture as skill
+  boundary reconsolidation).
+
+## History
+
+**The 2026-09-08 draft, retired when the counting half landed (2026-10-19).**
+It counted by appending deltas — `put edge:{src}:{label}:{dst}/read/{ts} →
++1`, folded in the background into `put edge:{src}:{label}:{dst}/count/read
+→ N` — and served Top-K from a declared weight secondary index `W:{weight}:
+{edge_id}`, writing the new key and deleting the old (tombstone) per weight
+change.
+
+- The delta keys were wrong twice over: they were spelled in a retired
+  LAYER (`edge:{src}:{label}:{dst}` is not a k10r key shape — an edge's
+  identity is `[edge_id]`, with endpoints and the allocated `predicate_id`
+  carried as refs), and the delta table itself buys nothing for a single
+  serial writer, which is what the store is.
+- The count key needed no side table either: the counters are fields of the
+  row they count, so a fold is one row rewrite.
+- The declared weight face died for the reason the Top-K section states: it
+  addresses the whole store rather than one scope, and it would have been
+  maintained for readers that do not exist. The tombstone rule went with it —
+  there is no face left to dangle.

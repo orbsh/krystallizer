@@ -859,10 +859,9 @@ async fn complete_community(
 // One scope's graph in the shape a force-graph client consumes (nodes +
 // links), so `docs/kg-demo-3d.html` reads the real graph instead of
 // hand-written packets (PLAN's Deferred gate: a bulk read over the same
-// HTTP boundary, read-only, no new mechanism). No community id rides it —
-// that machinery (ADR-0010's steps 3–4) is not landed, and the demo colors
-// by node kind; and there is no paging yet: the gate's whole-table-vs-paged
-// question stays open until a corpus needs it.
+// HTTP boundary, read-only, no new mechanism). Each node carries its
+// community id (ADR-0010 §6's color cluster); there is no paging yet — the
+// gate's whole-table-vs-paged question stays open until a corpus needs it.
 
 /// One node of a rendered graph.
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]

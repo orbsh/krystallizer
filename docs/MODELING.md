@@ -15,7 +15,7 @@ One entity class = one ns (OKM rule). Current state:
 
 | ns  | Entity        | Status                  | ADR      |
 |-----|---------------|-------------------------|----------|
-| 32  | Flat memory   | Implemented (Phase 0)   | ADR-0002 |
+| 32  | Flat memory   | **Withdrawn 2026-10-19** (the block below is history) | ADR-0002 |
 | 33  | Channel messages | Implemented (minimal slice, 2026-10-09) | ADR-0008 |
 | 34  | Checkpoints (per member) | Implemented (minimal slice, 2026-10-09) | ADR-0008 |
 | 35  | Code (delivered scripts) | Implemented (bring-up slice, 2026-10-15) | gravity ADR-0001/0003 |
@@ -23,11 +23,14 @@ One entity class = one ns (OKM rule). Current state:
 | —   | Tasks / task_links DAG | Declared (ADR-0001 — the third interface surface; same graph as the facts) | ADR-0001, ADR-0002 |
 | 36  | Entities (fact graph) | Implemented (2026-10-17) | ADR-0010 |
 | 37  | Facts (fact graph edges) | Implemented (2026-10-17) | ADR-0010 |
-| —   | Initialization memory (persona / style) | Declared (ADR-0001 | ADR-0001 |
+| 38  | Capsules (per community) | Implemented (2026-10-19) | ADR-0010 |
+| —   | Initialization memory (persona / style) | Declared (ADR-0001) | ADR-0001 |
 
-The graph's read side (LPA, binning, the capsules), the session log's
-missing slices, and the tasks land in later phases; a row above marked
-`Declared` is an ADR commitment rather than working code.
+The graph's read side (LPA, binning, the capsules) landed with it
+(2026-10-19); the session log's missing slices, the tasks, and the
+scope-wide Top-K's `[scope][weight][edge_id]` projection table land in later
+phases; a row above marked `Declared` is an ADR commitment rather than
+working code.
 
 ## Memory kinds (who initiates)
 
@@ -56,7 +59,7 @@ naming is 被动 / 主动, with 短期 / 长期 as the content horizon:
   `tool_count`, `last_read`, `last_write`; layout v2). `weight` is the folded
   formula in milli-units. Its three declared faces (`by_since` /
   `by_confidence` / `by_weight`) are NOT declared: nothing scans them, and
-  every touch would maintain them for no reader (ADR-0005's Updates).
+  every touch would maintain them for no reader (ADR-0005).
 - `CommunityRow` (ns 38): `[scope][community_id]` → `updated_at`, `state`
   (0 pending / 1 done), `uncompressed`, `title`, `summary`. One row per
   community, overwritten in place — a cache, not a log.
@@ -140,10 +143,10 @@ Current standing:
 
 - Flat memory (ns 32): a **declared degenerate path** — the `[user_id]` prefix
   scan plus an in-table substring filter (ADR-0003's bring-up posture). The table
-  is the PRE-GRAPH carrier of long-term memory and is withdrawn with the graph
-  (ADR-0001, PLAN Phase 3), so the vector landing and the name/alias point
-  lookup ADR-0003 specifies are declared on the graph's collections, not
-  here.
+  WAS the pre-graph carrier of long-term memory and went with the graph's
+  landing (ADR-0001, withdrawn 2026-10-19), so the vector landing and the
+  name/alias point lookup ADR-0003 specifies are declared on the graph's
+  collections, not here.
 - Channel messages (ns 33): a **named face** — prefix scan by
   `[channel_id][ts_ms][sub]`: replay, increment and max-gap reads are one prefix
   scan, and the interval rides the main table's own sort segment (sequential, no
@@ -161,10 +164,11 @@ Current standing:
 
 ## Hex stability
 
-Key layout is locked by `key_layout_hex_stability`
-(`crates/mem-core/tests/smoke_test.rs`): `[user_id 8B BE][id 8B BE]`,
-ns header excluded (`KeyEncode::encode()` returns payload without the
-ns; the Table prepends `[ns 2B][slot 1B]`).
+Key layouts are locked by each suite's own hex test — `key_layout_is_hex_locked`
+in `tests/channel.rs` and `tests/code.rs`, `entity_key_layout_is_hex_locked` and
+`edge_payload_layout_is_locked` in `tests/graph.rs`; the flat-memory lock went
+with its table (2026-10-19). ns header excluded (`KeyEncode::encode()` returns
+payload without the ns; the Table prepends `[ns 2B][slot 1B]`).
 
 ## Channel log (ns 33) + checkpoints (ns 34)
 

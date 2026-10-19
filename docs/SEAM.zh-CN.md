@@ -36,7 +36,9 @@
 | `GET /facts/{scope}/entities/{name}` | `GraphStore::entity_by_name`（名/别名精确入口；未知名字 404） | 实体（36） | 已落（2026-10-17） |
 | `GET /facts/{scope}/entities/{node_id}/edges` | `GraphStore::out_facts`（一跳，两端都已解析） | 事实（37）+ 实体（36） | 已落（2026-10-17） |
 | `GET /graph/{scope}` | `GraphStore::scope_entities` + `scope_facts`（一个 scope 作为节点 + 连边——渲染方的批量读） | 实体（36）+ 事实（37） | 已落（2026-10-17） |
-| — 无路由 | `entity` / `entity_props` / `fact` / `fact_props` / `typed_out`（核心其余读），以及检索（落点 + 权重 Top-K） | 事实图（36/37） | core 已落；检索尚欠（Phase 4） |
+| `GET /facts/{scope}/search?q=&k=` | `GraphStore::retrieve`（落点：节点向量、内积、0.35 地板；无 engine = 200 + `[]`） | 实体（36） | 已落（2026-10-19） |
+| `GET /facts/{scope}/recall?q=&k=&ts_ms=` | `GraphStore::recall`（落点 + 一跳、两个方向、按边 id 去重；种子的胶囊；事实按权重排序） | 实体（36）+ 事实（37）+ 胶囊（38） | 已落（2026-10-19） |
+| — 无路由 | `entity` / `entity_props` / `fact` / `fact_props` / `typed_out`（核心其余读），以及 scope 级的权重 Top-K | 事实图（36/37） | core 已落、无路由；scope 级 Top-K 是后续件（Phase 4——需要 `[scope][weight][edge_id]` 投影表，ADR-0005） |
 | — 无路由 | 初始化记忆装配（从用户节点出发遍历） | initialization memory | 已声明（ADR-0001），无 ns |
 | — 无路由 | 任务顶点 + `task_links` 边（第三个接口面——一个图，与事实同图） | task graph | 已声明（ADR-0001），无 ns |
 | 读侧随会话投影；写侧无路由 | 任务实例态（开 / 完——用于精确枚举的结构化字段） | task state | 已声明（gravity ADR-0003 §3/§4） |
@@ -51,9 +53,10 @@ in-process 不是第二道门：`InProcessSurface` 在调用方进程内链接�
 | 轮首取投影 | `MemorySurface::fetch_session` | `GET /channels/{c}/members/{m}/session` | `ChannelStore::fetch_full` | 已落 |
 | 轮末追加 delta（用户消息 + 回复，同一个 `ts_ms`，`sub` 0/1） | `MemorySurface::append_message` | `POST /channels/{c}/messages` | `ChannelStore::append` | 已落 |
 | 压缩落地（summarize） | 未接 | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint` | 门已落，gravity 侧欠（Phase 2/2.6） |
+| 胶囊摘要（写侧的胶囊生成器） | 未接 | 拉：`GET /facts/{scope}/communities?state=pending` → `GET .../{id}/packet`；回写：`PUT .../{id}` | `GraphStore::communities` / `community_packet` / `complete_community` | 门已落（2026-10-19）；gravity 侧是后续件（k10r 从不外呼，ADR-0007） |
 | 任务进度（一步一 task 行；读随轮首投影，完成在执行点写） | ADR-0003 §3/§4 | 读侧随 `GET /channels/{c}/members/{m}/session`；写侧尚无路由 | 任务顶点 + `task_links` 边，与事实同图 | 已声明——第三个接口面（ADR-0001）；gravity Phase 2.6 |
-| `recall_memory`——长期事实 | 工具面（未进代码） | `GET /memory/{user_id}/search?q=`（flat） | `MemoryStore::search`；图的检索（落点 + traversal + 权重 Top-K）尚欠 | flat 门已落（PLAN 1e）；图的读已在 core 落地（2026-10-17），尚无路由；工具欠 |
-| `commit_memory`——写事实 | 工具面 | `POST /memory`（flat）/ `POST /facts/{scope}`（图） | `MemoryStore::store`（flat）/ `GraphStore::ingest(fact)`（图） | 两道门都已落（2026-10-17）；工具本身欠（gravity 侧） |
+| `recall_memory`——长期事实 | 工具面（未进代码） | `GET /facts/{scope}/recall?q=`（落点 + 一跳）与 `GET /facts/{scope}/entities/{name}`（精确入口） | `GraphStore::recall` / `entity_by_name` | 图的门已落（2026-10-19）；工具面是后续件（gravity 侧） |
+| `commit_memory`——写事实 | 工具面 | `POST /facts/{scope}` | `GraphStore::ingest(fact)` | 门已落（2026-10-17）；工具本身是后续件（gravity 侧） |
 | `resolve_skills`——可选 skills 列表 | 工具面 | `GET /code`（bring-up：池读） | `CodeStore::list` | bring-up 形态已落；skill 节点（前置 / 步骤 / 经验 / 后验）是 Phase 5+ deferred |
 | `invoke_skill`——计划里取码那一步 | 工具面 | `GET /code/{id}` | `CodeStore::get` | 已落 |
 | `invoke_skill`——调用本身 | 计划里的一步 | **不走 k10r**（见 §3） | — | gravity Phase 4.6 |
@@ -81,7 +84,7 @@ k10r 的任何路由都不会成为 LLM 的工具目标，k10r 也从不回调�
   （ADR-0008 §3）。任何新门都带同一条规则。
 - **一库两 keyspace，按写形态分**（每进程一个、一把锁）：`channel`
   （ns 33/34——队列式，自带 LSM 树，压缩不拖别的表）与 `memory`（今天
-  32/35/36/37，之后是技能）。新表加入它写形态所属的那个 keyspace；批不跨
+  35/36/37/38，之后是技能；32 是已撤的 flat 记忆）。新表加入它写形态所属的那个 keyspace；批不跨
   keyspace。
 - **gravity 自己讲 mem-server 的 wire，而且是两处**：`HttpSurface`
   （`crates/core/src/surface.rs`）与 booth 的 turn guest
@@ -96,6 +99,6 @@ k10r 的任何路由都不会成为 LLM 的工具目标，k10r 也从不回调�
 ## 5. 保持这页为真
 
 - 新门在**落地同一批**登记在此（路由 + 原语 + ns + 状态），通常与它的
-  PLAN 子步、ADR Update 一起。
+  PLAN 子步、ADR 正文一起。
 - 门的状态只能凭证据移动：走真实服务的集成测试，或锁住原语的核心测试。
 - 设计问题不住在这里。一句话若需要论证，它属于 ADR，本页只指过去。

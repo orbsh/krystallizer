@@ -14,7 +14,7 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
 
 | ns  | 实体              | 状态                     | ADR      |
 |-----|-------------------|--------------------------|----------|
-| 32  | Flat memory       | 已实现（Phase 0）        | ADR-0002 |
+| 32  | Flat memory       | **2026-10-19 撤除**（下面一块是历史） | ADR-0002 |
 | 33  | Channel 消息日志   | 已实现（最小切片，2026-10-09） | ADR-0008 |
 | 34  | Checkpoint（每成员）| 已实现（最小切片，2026-10-09） | ADR-0008 |
 | 35  | Code（交付的脚本） | 已实现（bring-up 切片，2026-10-15） | gravity ADR-0001/0003 |
@@ -22,9 +22,11 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
 | —   | Tasks / task_links DAG | 已声明（ADR-0001——第三个接口面；与事实同图） | ADR-0001, ADR-0002 |
 | 36  | 实体（事实图）     | 已实现（2026-10-17）      | ADR-0010 |
 | 37  | 事实（事实图边）   | 已实现（2026-10-17）      | ADR-0010 |
+| 38  | 胶囊（每社区）     | 已实现（2026-10-19）      | ADR-0010 |
 | —   | 初始化记忆（人设 / 风格） | 已声明（ADR-0001） | ADR-0001 |
 
-图的读侧（LPA、分箱、胶囊）、会话日志缺的几块、以及任务，属后续阶段；
+图的读侧（LPA、分箱、胶囊）已随之落地（2026-10-19）；会话日志缺的几块、任务、
+以及 scope 级 Top-K 需要的 `[scope][weight][edge_id]` 投影表，属后续阶段；
 上表标 `已声明` 的行是 ADR 承诺，非运行代码。
 
 ## 记忆种类（谁发起）
@@ -49,7 +51,7 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
 - `FactEdge` 携带权重系统的输入（`read_count`、`write_count`、`tool_count`、
   `last_read`、`last_write`；布局 v2）。`weight` 是折出来的毫单位公式值。原声明的
   三个面（`by_since` / `by_confidence` / `by_weight`）**不再声明**：没有读者扫它们，
-  而每次 touch 都要为不存在的读者维护（ADR-0005 的「更新」）。
+  而每次 touch 都要为不存在的读者维护（ADR-0005）。
 - `CommunityRow`（ns 38）：`[scope][community_id]` → `updated_at`、`state`
   （0 pending / 1 done）、`uncompressed`、`title`、`summary`。一个社区一行、原地
   覆盖——是缓存，不是日志。
@@ -122,9 +124,9 @@ okm 的纪律：查询只走声明过的路径——没有通用全表扫描的�
 现状：
 
 - Flat memory（ns 32）：**声明的退化路径**——`[user_id]` 前缀扫描加表内 substring
-  过滤（ADR-0003 的 bring-up 姿态）。这张表是长期记忆的**图前**载体，随图一起
-  撤销（ADR-0001，PLAN Phase 3），所以 ADR-0003 描述的向量落址与名/别名点查
-  声明在图的两个 collection 上，不在这张表上。
+  过滤（ADR-0003 的 bring-up 姿态）。这张表**曾**是长期记忆的图前载体，已随图
+  落地撤除（ADR-0001；2026-10-19），所以 ADR-0003 描述的向量落址与名/别名
+  点查声明在图的两个 collection 上，不在这张表上。
 - Channel 消息（ns 33）：**具名面**——`[channel_id][ts_ms][sub]` 前缀扫描：回放、
   increment、max-gap 读都是一次前缀扫描，且区间就落在主表自己的排序段上（顺序扫、
   无回表），见 ADR-0008 §3。checkpoint（ns 34）：按 `[channel_id][member_id]` 点读。
@@ -138,10 +140,11 @@ okm 的纪律：查询只走声明过的路径——没有通用全表扫描的�
 
 ## Hex 稳定性
 
-Key 布局由 `key_layout_hex_stability` 锁定
-（`crates/mem-core/tests/smoke_test.rs`）：`[user_id 8B BE][id 8B BE]`，
-不含 ns 头（`KeyEncode::encode()` 只返回 payload，不含 ns；Table 自
-行前置 `[ns 2B][slot 1B]`）。
+Key 布局由各套件自己的 hex 测试锁定——`tests/channel.rs` 与 `tests/code.rs` 的
+`key_layout_is_hex_locked`、`tests/graph.rs` 的
+`entity_key_layout_is_hex_locked` 与 `edge_payload_layout_is_locked`；flat 记忆
+那把锁随表一起撤除（2026-10-19）。不含 ns 头（`KeyEncode::encode()` 只返回
+payload，不含 ns；Table 自行前置 `[ns 2B][slot 1B]`）。
 
 ## Channel 日志（ns 33）+ checkpoint（ns 34）
 

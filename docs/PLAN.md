@@ -9,8 +9,8 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     - Engine half LANDED 2026-10-17: `mem-core/src/embedding.rs` (`Embedder`: candle BERT, WordPiece tokenize → BERT → CLS pooling → L2 normalize), config `embedding { model-dir … }` + `KRYSTALLIZER_MODEL_DIR` override, model = BAAI/bge-small-zh-v1.5 (512-dim, artifact under `~/.local/share/krystallizer/models/`, not in the repo). Gates: mem-core 8/0 (embedding 3 — a missing artifact names the file it could not read; a Chinese sentence embeds to 512 unit-length floats; related text beats unrelated — the two inference tests skip when the machine has no artifact, so the default gate stays runnable anywhere), clippy 0, fmt clean.
     - Frame half LANDED 2026-10-17: `MemoryRow.embedding: Vector<f32>` (cold frame, ANY length — no `#[ok_len]` contract, because a model swap changes the data rather than the wire); `MemoryStore::store(…, embedding: &[f32])` states the vector and `get()` reads a row back; the SHELL embeds at the door — a `mem_core::Embedder` rides `mem-server`'s state (`open_with(path, Some(engine))`), while `open()` = no engine and rows then land with an empty frame. Gates: mem-core 8/0 lib + 6/0 smoke (a row's vector round-trips through a reopen, including a 512-wide one; an empty frame is not a zero vector), mem-server 5/0 memory_surface (an engine-attached door still round-trips), clippy 0, fmt clean. The mem-ffi binding passes an empty slice — it attaches no engine.
     - Owed: the per-user in-memory vector table + brute-force Top-K (1c), reading rows through `get` / a bulk vector read. Note: no door returns a row's VECTOR (2 KB per hit is what the code store's own pool-read rule refuses), so the vector's contents are asserted in mem-core and the door's test asserts that embedding does not change the surface.
-  - [x] 1c. In-memory vector search LANDED (2026-10-19, on the GRAPH's nodes — the graph is the successor of flat memory): the entity row carries `embedding: Vector<f32>` (empty is legal → skipped), `GraphStore::retrieve(scope, q, k)` loads the scope's table from the KV on first use, scans it by inner product, drops everything under `LANDING_FLOOR` (0.35) and returns top-k seeds; the table is derived state (dropped on every write) and byte-budgeted with LRU eviction. Door: `GET /facts/{scope}/search?q=&k=` (empty landing = 200 + `[]`). Gates: mem-core 15/0 for the graph suite (3 retrieval — exact-name lands at score 1.0, the table follows writes, no engine lands nothing), mem-server facts 9/0. Followed the same day by the ONE-HOP expansion: `GraphStore::recall` + `GET /facts/{scope}/recall` (seeds + every fact touching them in either direction, deduped by edge id; an empty landing returns both empty). Gates: mem-core graph 16/0, mem-server facts 10/0. Still owed inside this item: the weight-ordered ranking (ADR-0005's weight system is Phase 5 — PAID 2026-10-19, see 3b) and deeper-than-one-hop walks (the caller composes them); ANN stays re-opened only on a measured threshold (ADR-0003).
-  - [x] 1d. Recall gate LANDED (2026-10-19) as a MEASURED BASELINE, not the PG comparison: `crates/mem-core/tests/recall_gate.rs` builds a 14-node corpus (k10r's own vocabulary) + a fixed 14-query set, each query naming the node it must reach, and prints/asserts the numbers — **precision@1 = 13/14 (0.929), precision@3 = 14/14 (1.000), lowest true-hit score 0.637 against the 0.35 floor, and the off-corpus query ("今天北京天气怎么样，要不要带伞") lands nothing**. The one p@1 miss is "记忆图谱" → `用户记忆` (0.680) over `事实图谱` (0.661) — two memory concepts, not a failure of landing. The gate asserts p@1 ≥ 0.85, p@3 ≥ 0.95, every true hit above the floor, and the empty landing; it skips when the machine has no model artifact. Still owed: the comparison against the legacy pgvector + pdb.bm25 + RRF stack — that stack is not runnable here, so the fixture above is what a future comparison is measured against.
+  - [x] 1c. In-memory vector search LANDED (2026-10-19, on the GRAPH's nodes — the graph is the successor of flat memory): the entity row carries `embedding: Vector<f32>` (empty is legal → skipped), `GraphStore::retrieve(scope, q, k)` loads the scope's table from the KV on first use, scans it by inner product, drops everything under `LANDING_FLOOR` (0.35) and returns top-k seeds; the table is derived state (dropped on every write) and byte-budgeted with LRU eviction. Door: `GET /facts/{scope}/search?q=&k=` (empty landing = 200 + `[]`). Gates: mem-core 15/0 for the graph suite (3 retrieval — exact-name lands at score 1.0, the table follows writes, no engine lands nothing), mem-server facts 9/0. Followed the same day by the ONE-HOP expansion: `GraphStore::recall` + `GET /facts/{scope}/recall` (seeds + every fact touching them in either direction, deduped by edge id; an empty landing returns both empty). Gates: mem-core graph 16/0, mem-server facts 10/0. Paid inside this item: the weight-ordered ranking (ADR-0005 — 2026-10-19, see 3b). Not this repo's item by design: deeper-than-one-hop walks (the caller composes them); ANN stays re-opened only on a measured threshold (ADR-0003).
+  - [x] 1d. Recall gate LANDED (2026-10-19) as a MEASURED BASELINE, not the PG comparison: `crates/mem-core/tests/recall_gate.rs` builds a 14-node corpus (k10r's own vocabulary) + a fixed 14-query set, each query naming the node it must reach, and prints/asserts the numbers — **precision@1 = 13/14 (0.929), precision@3 = 14/14 (1.000), lowest true-hit score 0.637 against the 0.35 floor, and the off-corpus query ("今天北京天气怎么样，要不要带伞") lands nothing**. The one p@1 miss is "记忆图谱" → `用户记忆` (0.680) over `事实图谱` (0.661) — two memory concepts, not a failure of landing. The gate asserts p@1 ≥ 0.85, p@3 ≥ 0.95, every true hit above the floor, and the empty landing; it skips when the machine has no model artifact. Open (a follow-up, not a debt — that stack is not runnable here): the comparison against the legacy pgvector + pdb.bm25 + RRF stack; the fixture above is what a future comparison is measured against.
   - [x] 1e. HTTP face for the 主动面 LANDED (2026-10-16): `POST /memory` (`MemoryStore::store` — the store assigns the id, the caller's `created_at` rides the request) and `GET /memory/{user_id}/search?q=` (`MemoryStore::search` — one user's key range; an empty result is legal). `forget` / `list` / `stats` still have no route. This is the tool face gravity and other agents read and write through (ADR-0001; the graph's door (`ingest(fact)`) is Phase 3. Gates: mem-server 12/0 (4 in `tests/memory_surface.rs` — round trip, user-scoped scan, legal empty result, flat memory + code sharing one keyspace without leaking into each other), mem-core 22/0 untouched, clippy 0, fmt clean. Transitional: this door is withdrawn together with the table when the fact graph lands (Phase 3).
 - [ ] Phase 2 — Channel log & agent projection: messages / members /
   cursors / checkpoints (per member) tables with gravity-assigned
@@ -18,7 +18,7 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   append) over the projection; thread = parented sub-channel; topic tag
   index. The compression point is its OWN table (ns 34) pointing into the
   log by `coverage_ts` — latest-wins inside that table — while the log
-  itself stays append-only (ADR-0002 / ADR-0008 Updates 2026-10-16).
+  itself stays append-only (ADR-0002 / ADR-0008).
   (ADR-0001, ADR-0002, ADR-0008)
   - [x] Minimal slice LANDED (2026-10-09): ns 33 messages + ns 34
     checkpoints, `ChannelStore::append`/`fetch_full`/`append_checkpoint`.
@@ -89,7 +89,7 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   Owed: this repo's own ADR for the store, and `list()` is the declared
   bring-up posture for a resolver's pool read — the graph's retrieval
   replaces it.
-- [ ] Phase 3 — Atomic-fact graph: fact node/edge tables, ingestion of the 8-slot fact tuple (the facts arrive by the model's ACTIVE add — the caller routes that call to `ingest(fact)`; no compression pass and no trailing extraction worker, ADR-0008, write-time fusion (in-domain id / out-of-domain embedding convergence + small-candidate LLM decision — the LLM decision is gravity's, per ADR-0007's boundary), weight system (delta counts, read-write quadrants, tool_invoke_count, W: index); initialization memory (人设/风格) — a traversal from the user node, delivered at the context head; the task graph (task vertices + `task_links` dependency edges) shares that same graph — tasks are the third interface surface, their instance state structured rather than approximate. Write-time resolution (upsert on a new fact) and cognitive binning ride this side per ADR-0010 (fact node / community reverse index / capsule; ns allocated at landing, next free after 35). Scope note: append-first covers THIS side (node/edge rows, weights, derived entries) — the log does not (ADR-0002. Flat memory (ns 32) and its HTTP door are withdrawn in this landing: the graph is its successor (ADR-0001's carrier line, "flat memory, then the graph") — flat was the pre-graph form of the same extracted knowledge, and a text row carries no per-fact identity. What is owed with it: the fate of legacy flat rows (ADR-0002's PG migration imports them as-is) is a migration question, not a schema one. (ADR-0001, ADR-0002, ADR-0004, ADR-0005, ADR-0007, ADR-0010)
+- [ ] Phase 3 — Atomic-fact graph: fact node/edge tables, ingestion of the 8-slot fact tuple (the facts arrive by the model's ACTIVE add — the caller routes that call to `ingest(fact)`; no compression pass and no trailing extraction worker, ADR-0008, write-time fusion (in-domain id / out-of-domain embedding convergence + small-candidate LLM decision — the LLM decision is gravity's, per ADR-0007's boundary), weight system (the counters on the edge row, read-write quadrants, tool_invoke_count); initialization memory (人设/风格) — a traversal from the user node, delivered at the context head; the task graph (task vertices + `task_links` dependency edges) shares that same graph — tasks are the third interface surface, their instance state structured rather than approximate. Write-time resolution (upsert on a new fact) and cognitive binning ride this side per ADR-0010 (fact node / community reverse index / capsule; ns 36/37 for the graph and 38 for the capsules). Scope note: append-first covers THIS side (node/edge rows, weights, derived entries) — the log does not (ADR-0002. Flat memory (ns 32) and its HTTP door are withdrawn in this landing: the graph is its successor (ADR-0001's carrier line, "flat memory, then the graph") — flat was the pre-graph form of the same extracted knowledge, and a text row carries no per-fact identity. What is owed with it: the fate of legacy flat rows (ADR-0002's PG migration imports them as-is) is a migration question, not a schema one. (ADR-0001, ADR-0002, ADR-0004, ADR-0005, ADR-0007, ADR-0010)
   - [x] 3a. The write side's steps 1–2 LANDED (2026-10-17): the entities
     collection (ns 36) + the facts edge collection (ns 37) and the
     deterministic `ingest(fact)` path — `GraphStore` in
@@ -133,10 +133,12 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     the served facts ordered by weight (stable; seeds keep similarity order).
     The three declared faces (`by_since` / `by_confidence` / `by_weight`) were
     REMOVED: nothing scans them, and every touch would maintain them for no
-    reader — ADR-0005's Updates records the verdict (a per-scope top-K would
+    reader — ADR-0005 records the verdict (a per-scope top-K would
     be a `[scope][weight][edge_id]` projection, not a face). Gates: mem-core
-    graph 25/0 (5 weight tests), mem-server facts 12/0, clippy 0. Still owed:
-    the delta-append table (multi-writer only) and the top-K read itself.
+    graph 25/0 (5 weight tests), mem-server facts 12/0, clippy 0. Follow-ups
+    (not debts): the delta-append table (multi-writer only — a Deferred gate)
+    and a scope-wide Top-K (Phase 4's read; it needs that projection table
+    written on the same touch, ADR-0005).
   - [x] 3c. Steps 3–4 LANDED 2026-10-19 (ADR-0010): `EntityRow.community_id`
     + the `by_community` face; incremental LPA inside `ingest` (2-hop
     subgraph, 3 rounds, vote = `weight × confidence`, ties to the smaller
@@ -155,8 +157,9 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     caught and fixed: the seed watermark did not advance (every node of one
     ingest got the same id) and a new node's capsule creation overwrote a live
     community's uncompressed counter. Gates: mem-core graph 25/0, mem-server
-    facts 12/0, clippy 0. Still owed: the per-scope top-K read and the
-    caller-side summarizer (gravity's).
+    facts 12/0, clippy 0. Follow-ups: the per-scope top-K read (Phase 4, with
+    the projection table 3b names) and the capsule summarizer, which is the
+    CALLER's (gravity's) — k10r only hands out packets.
   - [x] 3d. Flat memory (ns 32) and its HTTP door WITHDRAWN 2026-10-19: the
     table and `MemoryStore` are deleted, `POST /memory` and
     `GET /memory/{user_id}/search` are gone, and `mem-ffi` now binds
@@ -167,7 +170,7 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     withdrawn), SEAM's endpoint table, README. Legacy flat rows stay a
     migration question (ADR-0002's PG import), not a schema one. Gates:
     mem-core 47/0 across its suites, mem-server 20/0, clippy 0.
-- [ ] Phase 4 — Clustered retrieval: entity-anchored / temporal / causal-chain views; progressive loading (Top-K by weight). Reads the write-time structure ADR-0010 lands (the node's community id + the community reverse index + capsules) instead of running a graph algorithm on the read path. (ADR-0005, ADR-0010)
+- [ ] Phase 4 — Clustered retrieval: entity-anchored / temporal / causal-chain views; progressive loading (a scope-wide Top-K by weight — a `[scope][weight][edge_id]` projection table maintained on each touch, not a declared face; ADR-0005). Reads the write-time structure ADR-0010 lands (the node's community id + the community reverse index + capsules) instead of running a graph algorithm on the read path. (ADR-0005, ADR-0010)
 - [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), SKILL topological four-part nodes, Aura Actor nodes. (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.) ADR-0010 takes the incremental LOCAL form of community detection onto the write side and leaves OPEN whether that promotes a slice of Phase 5 ahead of Phase 3/4 — an open ruling, not settled.
 
 Deferred gates:
@@ -182,14 +185,14 @@ Deferred gates:
 - Backup export endpoint: one HTTP endpoint that exports the okm data
   as Parquet for direct download (backup = bulk read over the same
   HTTP boundary, no admin CLI). Deferred until the flat-memory tables
-  are real (Phase 1); format/open questions — table granularity
+  tables settle (Phase 3); format/open questions — table granularity
   (per-ns vs per-collection), whether to reuse okm's export surface if
   one lands — recorded here so the endpoint grows with consumers, not
   ahead of them.
 - Graph visualization endpoint: LANDED 2026-10-17 as
   `GET /graph/{scope}` (`GraphStore::scope_entities` + `scope_facts`) —
   one read-only bulk read over the same HTTP boundary (ADR-0007), no new
-  mechanism. Nodes carry id / name / kind / literal_num; links carry
+  mechanism. Nodes carry id / name / kind / literal_num / community_id; links carry
   source / target / kind / since / confidence / weight — the shape
   3d-force-graph consumes, and the scope prefix bounds the scan, so the
   demo page reads the real graph instead of hand-written packets. Still
@@ -197,7 +200,7 @@ Deferred gates:
   for a corpus that needs it; (b) RULED 2026-10-17: the page is served
   FROM mem-server, same origin — no CORS is opened on the memory service
   (it holds user memory; letting `file://` sandboxes read it is the wrong
-  trade) and the page's fetch stays same-origin; (c) cluster coloring — the community id ADR-0010 §6 would
-  color with does not exist yet (`docs/viz-style.js` colors by node
-  kind), so it waits with everything else that consumes ADR-0010's steps
-  3–4.
+  trade) and the page's fetch stays same-origin; (c) cluster coloring — the
+  node now carries `community_id` (ADR-0010 §6), so the colour is available;
+  `docs/viz-style.js` still colours by kind, which is the demo's own open
+  slice rather than a missing field.
