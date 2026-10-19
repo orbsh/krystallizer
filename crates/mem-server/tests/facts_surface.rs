@@ -469,8 +469,12 @@ async fn recall_door_answers_an_empty_landing_without_an_engine() {
         .unwrap();
     assert_eq!(response.status(), 200);
     let recall: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(recall["seeds"].as_array().unwrap().len(), 0);
-    assert_eq!(recall["facts"].as_array().unwrap().len(), 0);
+    assert_eq!(recall["format"], "plaintext");
+    assert_eq!(recall["text"], "", "nothing landed: an empty text answer");
+    assert!(
+        recall.get("seeds").is_none() && recall.get("facts").is_none(),
+        "the text representation carries no data: {recall}"
+    );
 }
 
 /// `POST /facts/{scope}/edges/{id}/touch` — the caller reports a TOOL
@@ -554,11 +558,31 @@ async fn recall_answers_the_rendered_memory_and_the_consolidation_doors_are_gone
         .json()
         .await
         .unwrap();
-    assert_eq!(answer["seeds"].as_array().unwrap().len(), 0);
-    assert_eq!(answer["facts"].as_array().unwrap().len(), 0);
+    assert_eq!(answer["format"], "plaintext");
     assert_eq!(answer["text"], "", "nothing landed: no text at all");
+    assert!(
+        answer.get("seeds").is_none() && answer.get("facts").is_none(),
+        "a text answer carries the text, not the data: {answer}"
+    );
     assert_eq!(answer["shown"], 0);
     assert_eq!(answer["total"], 0);
+
+    // The same question in the data representation: the structure, no text.
+    let structured: serde_json::Value = client
+        .get(format!("{base}/facts/1/recall?q=alpha&k=3&format=struct"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(structured["format"], "struct");
+    assert_eq!(structured["seeds"].as_array().unwrap().len(), 0);
+    assert_eq!(structured["facts"].as_array().unwrap().len(), 0);
+    assert!(
+        structured.get("text").is_none(),
+        "a data answer carries no text: {structured}"
+    );
 
     // The consolidation machinery retired with the capsules: the pull doors
     // answer 404 because they no longer exist (ADR-0010 §5 — the read side

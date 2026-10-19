@@ -35,10 +35,10 @@ community id），但**维护**那个结构从来不是消费方的活儿。所�
 | 门（HTTP） | mem-core 原语 | 表（ns） | 状态 |
 |---|---|---|---|
 | `POST /channels/{c}/messages` | `ChannelStore::append` | messages (33) | 已落 |
-| `GET /channels/{c}/members/{m}/session` | `channel::fetch_full` + `view::assemble`（头部 → 压缩点 → 增量） | messages + checkpoints (33/34) + 头部的那些事实 (36/37) | 已落（视图形状 2026-10-20） |
+| `GET /channels/{c}/members/{m}/session?format=` | `channel::fetch_full` + `view::assemble`（头部 → 压缩点 → 增量）+ `render::render_head` | messages + checkpoints (33/34) + 头部的那些事实 (36/37) | 已落（视图形状 2026-10-20；头部按格式渲染 2026-10-20） |
 | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint` | checkpoints (34) | 已落 |
 | `POST /facts/{scope}` | `GraphStore::ingest`（请求体就是 8 元组；`scope` 走路径） | 实体（36）+ 事实（37） | 已落（2026-10-17） |
-| `GET /facts/{scope}/recall?q=&k=&budget=&ts_ms=` | `GraphStore::recall`（落点 → 着陆到的**社区**的桶 → 渲染好的带 id 文本；按权重排序、受 `budget` 封顶；无 engine = 空答案） | 实体（36）+ 事实（37） | 已落（2026-10-20） |
+| `GET /facts/{scope}/recall?q=&k=&budget=&ts_ms=&format=` | `GraphStore::recall`（落点 → 着陆到的**社区**的桶 → 一种表示：渲染好的带 id 文本，或 `format=struct` 时只给数据；按权重排序、受 `budget` 封顶；无 engine = 空答案） | 实体（36）+ 事实（37） | 已落（2026-10-20） |
 | `GET /facts/{scope}/entities/{name}` | `GraphStore::entity_by_name`（名/别名精确入口；未知名字 404） | 实体（36） | 已落（2026-10-17） |
 | `POST /facts/{scope}/edges/{id}/touch` | `GraphStore::touch`（调用方上报的工具调用：计数加一、权重重折；未知边或别的 scope 404） | facts (37) | 已落（2026-10-19） |
 | `POST /code` | `CodeStore::put` | code (35) | 已落 |
@@ -73,7 +73,7 @@ in-process 不是第二道门：`InProcessSurface` 在调用方进程内链接�
 
 | gravity 操作 | gravity 侧名称 | 门 | mem-core 原语 | 状态 |
 |---|---|---|---|---|
-| 轮首取投影 | `MemorySurface::fetch_session` | `GET /channels/{c}/members/{m}/session` | `ChannelStore::fetch_full` | 已落 |
+| 轮首取投影（头部是 k10r 渲染的文本，格式由 gravity 配置给出；`struct` 被拒） | `MemorySurface::fetch_session` | `GET /channels/{c}/members/{m}/session?format=` | `ChannelStore::fetch_full` + `render::render_head` | 已落 |
 | 轮末追加 delta（用户消息 + 回复，同一个 `ts_ms`，`sub` 0/1） | `MemorySurface::append_message` | `POST /channels/{c}/messages` | `ChannelStore::append` | 已落 |
 | 压缩落地（summarize） | 未接 | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint` | 门已落，gravity 侧欠（Phase 2/2.6） |
 | 任务进度（一步一 task 行；读随轮首投影，完成在执行点写） | ADR-0003 §3/§4 | 读侧随 `GET /channels/{c}/members/{m}/session`；写侧尚无路由 | 任务顶点 + `task_links` 边，与事实同图 | 已声明——第三个接口面（ADR-0001）；gravity Phase 2.6 |

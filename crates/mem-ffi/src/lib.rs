@@ -10,7 +10,7 @@
 //! graph's exact entrance (`entity`) and its writes work regardless.
 
 use mem_core::{FactTuple, GraphStore};
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 #[pyclass]
@@ -65,21 +65,34 @@ impl PyGraphStore {
 
     /// Landing plus the landed community: `(seeds, facts, text)` — a fact row
     /// is `(edge_id, kind, src_name, dst_name, weight)`, and `text` is the
-    /// rendered, id-bearing memory answer (ADR-0010 §5). `budget` caps the
-    /// fact lines; 0 lifts the cap.
+    /// rendered, id-bearing memory answer (ADR-0010 §5) in `format` — one of
+    /// `plaintext` (default), `markdown`, `mermaid`; the binding never asks
+    /// for `struct` because its answer IS the structured data. `budget` caps
+    /// the fact lines; 0 lifts the cap.
+    #[pyo3(signature = (scope, query, k, budget, format = None))]
     fn recall(
         &mut self,
         scope: u64,
         query: &str,
         k: usize,
         budget: usize,
+        format: Option<&str>,
     ) -> PyResult<(
         Vec<(u64, f32, String, String)>,
         Vec<(u64, String, String, String, u32)>,
         String,
     )> {
+        let format = match format {
+            None => mem_core::RenderFormat::default(),
+            Some(raw) => mem_core::RenderFormat::parse(raw).ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "unknown format `{raw}` — expected one of {}",
+                    mem_core::RenderFormat::NAMES.join(" / ")
+                ))
+            })?,
+        };
         self.inner
-            .recall(scope, query, k, None, budget)
+            .recall(scope, query, k, None, budget, format)
             .map(|recall| {
                 (
                     recall
@@ -92,7 +105,7 @@ impl PyGraphStore {
                         .into_iter()
                         .map(|f| (f.edge_id, f.kind, f.src.name, f.dst.name, f.edge.weight))
                         .collect(),
-                    recall.text,
+                    recall.text.unwrap_or_default(),
                 )
             })
             .map_err(|e| PyRuntimeError::new_err(format!("recall failed: {e}")))

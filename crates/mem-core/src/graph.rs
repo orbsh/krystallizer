@@ -56,6 +56,7 @@
 //! read without a clock is served but not counted.
 
 use crate::embedding::Embedder;
+use crate::render::RenderFormat;
 use okm_core::index::DYNAMIC_SLOT;
 use okm_core::obj_dict::{DictCache, FIELD_DICT, KIND_VOCAB};
 use okm_core::obj_dynamic::{put_frame_named, DynamicValue};
@@ -524,9 +525,14 @@ pub struct Recall {
     pub communities: Vec<u64>,
     /// The facts the answer shows: weight-descending, trimmed to the budget.
     pub facts: Vec<FactView>,
-    /// The rendered memory answer: one block per community, every node and
-    /// edge line carrying its id so the caller can point at a line.
-    pub text: String,
+    /// The rendered memory answer, in the caller's [`RenderFormat`]: one
+    /// block per community, every node and edge line carrying its id so the
+    /// caller can point at a line. `None` under [`RenderFormat::Struct`] —
+    /// there the answer IS the data and the caller assembles it.
+    ///
+    /// [`RenderFormat`]: crate::render::RenderFormat
+    /// [`RenderFormat::Struct`]: crate::render::RenderFormat::Struct
+    pub text: Option<String>,
     /// Facts shown vs facts the landed communities hold (the header's
     /// elision accounting).
     pub shown: usize,
@@ -900,6 +906,11 @@ impl GraphStore {
     /// `budget` (a MAX FACT COUNT, 0 = no limit) keeps the answer at a few
     /// hundred tokens — dropping the lowest-weight facts, never a half line.
     ///
+    /// `format` says how the answer is represented (ADR-0010 §5): the three
+    /// text forms render the same content in different syntax, and
+    /// [`RenderFormat::Struct`] renders nothing — the caller assembles the
+    /// data itself.
+    ///
     /// `ts_ms` is the CALLER's clock (ADR-0008 §3). When it rides the call,
     /// every fact the answer SHOWS counts as one read and its weight is
     /// re-folded (ADR-0005); the shown set is re-ordered by the new weight.
@@ -912,6 +923,7 @@ impl GraphStore {
         k: usize,
         ts_ms: Option<u64>,
         budget: usize,
+        format: RenderFormat,
     ) -> Result<Recall, IngestError> {
         let seeds = self.retrieve(scope, query, k)?;
         let mut communities: Vec<u64> = Vec::new();
@@ -981,7 +993,9 @@ impl GraphStore {
             .iter()
             .flat_map(|slice| slice.facts.iter().cloned())
             .collect();
-        let text = crate::view::render_memory(&slices);
+        let text = format
+            .renders_text()
+            .then(|| crate::render::render_memory(&slices, format));
         Ok(Recall {
             seeds,
             communities,

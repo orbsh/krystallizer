@@ -42,10 +42,10 @@ sit here were exactly that (retired 2026-10-20).
 | Door (HTTP) | mem-core primitive | Table (ns) | Status |
 |---|---|---|---|
 | `POST /channels/{c}/messages` | `ChannelStore::append` | messages (33) | landed |
-| `GET /channels/{c}/members/{m}/session` | `channel::fetch_full` + `view::assemble` (head → checkpoint → increment) | messages + checkpoints (33/34) + the head's facts (36/37) | landed (view shape 2026-10-20) |
+| `GET /channels/{c}/members/{m}/session?format=` | `channel::fetch_full` + `view::assemble` (head → checkpoint → increment) + `render::render_head` | messages + checkpoints (33/34) + the head's facts (36/37) | landed (view shape 2026-10-20; head rendered 2026-10-20) |
 | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint` | checkpoints (34) | landed |
 | `POST /facts/{scope}` | `GraphStore::ingest` (the body IS the 8-slot tuple; `scope` is the path) | entities (36) + facts (37) | landed (2026-10-17) |
-| `GET /facts/{scope}/recall?q=&k=&budget=&ts_ms=` | `GraphStore::recall` (landing → the landed COMMUNITY's bucket → the rendered, id-bearing text; ranked by weight, capped by `budget`; no engine = an empty answer) | entities (36) + facts (37) | landed (2026-10-20) |
+| `GET /facts/{scope}/recall?q=&k=&budget=&ts_ms=&format=` | `GraphStore::recall` (landing → the landed COMMUNITY's bucket → one representation: the rendered, id-bearing text or, under `format=struct`, the data alone; ranked by weight, capped by `budget`; no engine = an empty answer) | entities (36) + facts (37) | landed (2026-10-20) |
 | `GET /facts/{scope}/entities/{name}` | `GraphStore::entity_by_name` (the exact name/alias entrance; 404 on an unknown name) | entities (36) | landed (2026-10-17) |
 | `POST /facts/{scope}/edges/{id}/touch` | `GraphStore::touch` (a caller-reported TOOL consult: counters bump, weight folds; 404 for an unknown edge or another scope's) | facts (37) | landed (2026-10-19) |
 | `POST /code` | `CodeStore::put` | code (35) | landed |
@@ -82,7 +82,7 @@ Every operation in this table rides a CORE door (§1a); the analysis class
 
 | gravity operation | gravity-side name | Door | mem-core primitive | Status |
 |---|---|---|---|---|
-| Turn-start projection read | `MemorySurface::fetch_session` | `GET /channels/{c}/members/{m}/session` | `ChannelStore::fetch_full` | landed |
+| Turn-start projection read (the head is TEXT k10r rendered, in the format gravity's config names; `struct` is refused there) | `MemorySurface::fetch_session` | `GET /channels/{c}/members/{m}/session?format=` | `ChannelStore::fetch_full` + `render::render_head` | landed |
 | Turn-end delta append (user + reply, one `ts_ms`, `sub` 0/1) | `MemorySurface::append_message` | `POST /channels/{c}/messages` | `ChannelStore::append` | landed |
 | Compression landing (summarize) | not wired | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint` | door landed, gravity side owed (Phase 2/2.6) |
 | Task progress (one task row per step; read with the turn-start projection, completion written at the call site) | ADR-0003 §3/§4 | read side rides `GET /channels/{c}/members/{m}/session`; the write face has no route yet | task vertices + `task_links` edges in the same graph as the facts | Declared — the third interface surface (ADR-0001; gravity Phase 2.6 |

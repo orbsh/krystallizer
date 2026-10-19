@@ -36,8 +36,9 @@ and [图谱化记忆](https://github.com/orbsh/wiki/blob/main/graph-memory.md):
 - **Built-in retrieval** — a small local embedding model runs in-process
   (no API, no key; the vector space is locked with the data). The query lands,
   the answer is the landed COMMUNITY (its nodes and edges, weight-ordered,
-  rendered as id-bearing text under a fact budget), and an exact name/alias
-  point lookup is the second entrance. No lexical index, no fusion stage, no
+  rendered as id-bearing text under a fact budget, in the representation
+  `?format=` names — `plaintext` / `markdown` / `mermaid`, or `struct` for the
+  data alone), and an exact name/alias point lookup is the second entrance. No lexical index, no fusion stage, no
   summarization pass, no second storage engine.
 
 ## Crates

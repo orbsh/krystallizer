@@ -7,7 +7,7 @@
 //! empty query is the silent-corruption shape this file exists to catch.
 
 use mem_core::graph::{FactTuple, GraphStore, IngestError, IngestOutcome};
-use mem_core::{EntityKey, EntityRow, FactEdge, LITERAL_KIND};
+use mem_core::{EntityKey, EntityRow, FactEdge, RenderFormat, LITERAL_KIND};
 use okm_core::obj_dynamic::DynamicValue;
 use okm_core::{Document, KeyEncode, NodeRef};
 
@@ -555,7 +555,7 @@ fn recall_returns_the_landed_community_as_text() {
     }
 
     for query in ["fjall_engine", "storage_engine"] {
-        let recall = graph.recall(1, query, 1, None, 0).unwrap();
+        let recall = graph.recall(1, query, 1, None, 0, RenderFormat::Plaintext).unwrap();
         assert_eq!(recall.seeds.len(), 1, "one seed for `{query}`");
         assert_eq!(recall.communities.len(), 1, "both names share one community");
         assert_eq!(recall.facts.len(), 2, "the community's two facts");
@@ -563,7 +563,7 @@ fn recall_returns_the_landed_community_as_text() {
 
         // Every line that names something carries the id it points at: the
         // ids ARE the answer's handles.
-        let text = &recall.text;
+        let text = recall.text.as_deref().expect("plaintext renders text");
         assert!(text.contains("community c"), "{text}");
         for fact in &recall.facts {
             assert!(
@@ -579,9 +579,9 @@ fn recall_returns_the_landed_community_as_text() {
 
     // An empty query is the legal "nothing landed": no seeds, no facts, no
     // text — never an error.
-    let nothing = graph.recall(1, "   ", 5, None, 0).unwrap();
+    let nothing = graph.recall(1, "   ", 5, None, 0, RenderFormat::Plaintext).unwrap();
     assert!(nothing.seeds.is_empty() && nothing.facts.is_empty());
-    assert!(nothing.text.is_empty());
+    assert_eq!(nothing.text.as_deref(), Some(""), "nothing landed: empty text");
     assert_eq!((nothing.shown, nothing.total), (0, 0));
 }
 
@@ -830,28 +830,38 @@ fn the_answer_is_budgeted_and_states_the_elision() {
         graph.ingest(1, &tuple(fact)).unwrap();
     }
 
-    let capped = graph.recall(1, "alpha", 1, None, 2).unwrap();
+    let capped = graph.recall(1, "alpha", 1, None, 2, RenderFormat::Plaintext).unwrap();
     assert_eq!(capped.shown, 2, "the budget caps the shown facts");
     assert_eq!(capped.total, 3, "the community still holds all three");
     assert_eq!(capped.facts.len(), 2);
     assert!(
-        capped.text.contains("showing 2"),
-        "the header states the elision: {}",
+        capped.text.as_deref().unwrap().contains("showing 2"),
+        "the header states the elision: {:?}",
         capped.text
     );
 
     // The elided lines are the LOWEST-weight ones, and lifting the budget
     // shows the rest: the same corpus answers the same way.
-    let full = graph.recall(1, "alpha", 1, None, 0).unwrap();
+    let full = graph.recall(1, "alpha", 1, None, 0, RenderFormat::Plaintext).unwrap();
     assert_eq!(full.shown, 3);
     assert_eq!(full.total, 3);
-    assert!(!full.text.contains("showing"));
+    assert!(!full.text.as_deref().unwrap().contains("showing"));
     for fact in &capped.facts {
         assert!(
             full.facts.iter().any(|f| f.edge_id == fact.edge_id),
             "the capped answer is a prefix of the full one"
         );
     }
+
+    // ONE representation per answer: `struct` carries the data and NO text —
+    // the consumer that assembles the answer asks for it in this form.
+    let structured = graph.recall(1, "alpha", 1, None, 0, RenderFormat::Struct).unwrap();
+    assert!(structured.text.is_none(), "struct renders no text at all");
+    assert_eq!(
+        structured.facts.len(),
+        full.facts.len(),
+        "the data is the same answer"
+    );
 }
 
 /// Community ids come from a sequence row, so they only ever grow: a reopen

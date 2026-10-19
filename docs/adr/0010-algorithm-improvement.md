@@ -324,13 +324,32 @@ The read path runs no graph algorithm and no model call:
    Every line carries the id it names, because that id is the handle a caller
    points at — today to read one more line, later to edit that row precisely.
 
-The answer is ONE door, `GET /facts/{scope}/recall?q=&k=&budget=&ts_ms=`,
-returning the seeds, the community ids, the shown facts and the rendered
-text together. There is no N-hop: a community IS the bounded slice, and a
-caller that wants a deeper walk composes it from `out_edges`/`in_edges`.
+**Rendering is k10r's, never the caller's** — a consumer of memory need not
+know how the graph is assembled, and a third-party agent has no idea what a
+community slice is. So the answer carries ONE representation, chosen by
+`format`:
 
-The text is deterministic: the same corpus and the same budget answer
-identically, and time decay only reorders as ADR-0005 says it does.
+- `plaintext` (the default) — the line form above; what a prompt wants;
+- `markdown` — the same lines as headings and bullets;
+- `mermaid` — `graph LR`, one `subgraph` per community, the relation as the
+  edge label (a diagram's label carries the relation alone: the counters are
+  read off a line, not off a picture);
+- `struct` — the data alone (seeds, community ids, facts) and **no text at
+  all**; the caller that assembles the graph itself asks for this one.
+
+The three text forms state the same facts and differ only in syntax. An
+unknown `format` value is a 400, never a silent fallback — a typo must not
+quietly change the representation.
+
+The answer is ONE door,
+`GET /facts/{scope}/recall?q=&k=&budget=&ts_ms=&format=`, returning the seeds,
+the community ids, the shown facts and the rendered text together. There is no
+N-hop: a community IS the bounded slice, and a caller that wants a deeper walk
+composes it from `out_edges`/`in_edges`.
+
+The text is deterministic: the same corpus, the same budget and the same
+format answer identically, and time decay only reorders as ADR-0005 says it
+does.
 
 ### 6. Front-end extension (no new mechanism)
 

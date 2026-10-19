@@ -163,23 +163,41 @@ pub struct IncrementEntry {
     pub content: String,
 }
 
+/// The head's representation follows the requested format (ADR-0010 §5):
+/// rendered text under every text format, the facts themselves under
+/// `struct` — the consumer that assembles the answer asks for the data.
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum HeadDto {
+    Text(String),
+    Facts(Vec<FactViewDto>),
+}
+
 /// Wire shape of the assembled projection (ADR-0008 §2): head first, then
 /// the compression point, then the increment. Structure, not a rendered
-/// prompt — the caller renders it (ADR-0006 §1).
+/// prompt — except the head, which k10r renders in the requested format.
 #[derive(Serialize)]
 pub struct SessionDto {
+    /// Echoed: which representation this answer carries.
+    pub format: &'static str,
     /// Initialization memory (ADR-0001): the facts touching the user
     /// node, weight-descending. Empty when the node has no facts yet.
-    pub head: Vec<FactViewDto>,
+    pub head: HeadDto,
     pub coverage_ts: u64,
     pub summary: Option<String>,
     pub increment: Vec<IncrementEntry>,
 }
 
-impl From<mem_core::view::Projection> for SessionDto {
-    fn from(p: mem_core::view::Projection) -> Self {
+impl SessionDto {
+    fn new(p: mem_core::view::Projection, format: mem_core::RenderFormat) -> Self {
+        let head = if format.renders_text() {
+            HeadDto::Text(mem_core::render::render_head(&p.head, format))
+        } else {
+            HeadDto::Facts(p.head.into_iter().map(FactViewDto::from).collect())
+        };
         Self {
-            head: p.head.into_iter().map(FactViewDto::from).collect(),
+            format: format.name(),
+            head,
             coverage_ts: p.view.coverage_ts,
             summary: p.view.summary,
             increment: p
@@ -197,6 +215,29 @@ impl From<mem_core::view::Projection> for SessionDto {
     }
 }
 
+/// `GET /channels/{c}/members/{m}/session?format=` — the answer's
+/// representation (ADR-0010 §5); absent = `plaintext`.
+#[derive(Deserialize)]
+pub struct SessionQuery {
+    pub format: Option<String>,
+}
+
+/// Parse the caller's `format` value. Absent is the default
+/// (`plaintext`); an unknown value is the caller's bug (400), never a
+/// silent fallback — a typo must not quietly change the representation.
+fn parse_format(raw: Option<&str>) -> Result<mem_core::RenderFormat, FactError> {
+    let Some(raw) = raw else {
+        return Ok(mem_core::RenderFormat::default());
+    };
+    mem_core::RenderFormat::parse(raw).ok_or_else(|| FactError {
+        error: format!(
+            "unknown format `{raw}` — expected one of {}",
+            mem_core::RenderFormat::NAMES.join(" / ")
+        ),
+        status: StatusCode::BAD_REQUEST,
+    })
+}
+
 /// `GET /channels/{id}/members/{member}/session` — the projection read:
 /// the head (initialization memory) + the latest checkpoint + the log
 /// increment strictly after its coverage point, assembled in that order
@@ -207,7 +248,9 @@ impl From<mem_core::view::Projection> for SessionDto {
 async fn fetch_session(
     State(state): State<Arc<MemState>>,
     Path((channel_id, member_id)): Path<(u64, u64)>,
-) -> Json<SessionDto> {
+    Query(query): Query<SessionQuery>,
+) -> Result<Json<SessionDto>, FactError> {
+    let format = parse_format(query.format.as_deref())?;
     let channels = state.store.lock().await;
     let mut graph = state.graph.lock().await;
     let projection = mem_core::view::assemble(
@@ -218,7 +261,7 @@ async fn fetch_session(
         mem_core::view::DEFAULT_SCOPE,
         mem_core::view::DEFAULT_USER_NODE,
     );
-    Json(projection.into())
+    Ok(Json(SessionDto::new(projection, format)))
 }
 
 /// Request body of `POST .../checkpoint` — `append_checkpoint`'s
@@ -462,6 +505,8 @@ pub struct RecallQuery {
     /// keeps the rendered text at a few hundred tokens; `budget=0` lifts it.
     #[serde(default = "default_budget")]
     pub budget: usize,
+    /// The answer's representation (ADR-0010 §5); absent = `plaintext`.
+    pub format: Option<String>,
 }
 
 fn default_seed_count() -> usize {
@@ -477,12 +522,21 @@ fn default_budget() -> usize {
 /// One recall (`GET /facts/{scope}/recall`): the landing seeds, the
 /// communities they landed in, the facts the answer shows, and the rendered
 /// memory text — id-bearing lines, one block per community (ADR-0010 §5).
+///
+/// ONE representation per answer: the text formats fill `text`, `struct`
+/// fills the data fields (`seeds` / `facts`) and carries no text at all.
+/// `communities` and the budget accounting ride both.
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct RecallDto {
-    pub seeds: Vec<SeedDto>,
+    /// Echoed: which representation this answer carries.
+    pub format: &'static str,
     pub communities: Vec<u64>,
-    pub facts: Vec<FactViewDto>,
-    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seeds: Option<Vec<SeedDto>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub facts: Option<Vec<FactViewDto>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
     pub shown: usize,
     pub total: usize,
 }
@@ -523,23 +577,29 @@ async fn recall_facts(
     Path(scope): Path<u64>,
     Query(query): Query<RecallQuery>,
 ) -> Result<Json<RecallDto>, FactError> {
+    let format = parse_format(query.format.as_deref())?;
+    let structured = !format.renders_text();
     let mut graph = state.graph.lock().await;
     graph
-        .recall(scope, &query.q, query.k, query.ts_ms, query.budget)
+        .recall(scope, &query.q, query.k, query.ts_ms, query.budget, format)
         .map(|recall| {
             Json(RecallDto {
-                seeds: recall
-                    .seeds
-                    .into_iter()
-                    .map(|s| SeedDto {
-                        node_id: s.node_id,
-                        score: s.score,
-                        name: s.name,
-                        kind: s.kind,
-                    })
-                    .collect(),
+                format: format.name(),
                 communities: recall.communities,
-                facts: recall.facts.into_iter().map(FactViewDto::from).collect(),
+                seeds: structured.then(|| {
+                    recall
+                        .seeds
+                        .into_iter()
+                        .map(|s| SeedDto {
+                            node_id: s.node_id,
+                            score: s.score,
+                            name: s.name,
+                            kind: s.kind,
+                        })
+                        .collect()
+                }),
+                facts: structured
+                    .then(|| recall.facts.into_iter().map(FactViewDto::from).collect()),
                 text: recall.text,
                 shown: recall.shown,
                 total: recall.total,

@@ -149,8 +149,14 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     `recall` lands → takes the landed COMMUNITY's bucket (members through
     `by_community`, facts whose endpoints are both members, each edge once) →
     ranks by weight → renders id-bearing text under a fact budget (20 by
-    default, `?budget=`), and the door returns `{seeds, communities, facts,
-    text, shown, total}`. `GET /graph/{scope}` nodes carry `community_id`.
+    default, `?budget=`), in the representation `?format=` names:
+    `plaintext` (default) / `markdown` / `mermaid`, or `struct` for the data
+    alone (no text at all). ONE representation per answer: the text formats
+    fill `text`, `struct` fills `seeds` + `facts`; `{format, communities,
+    shown, total}` ride both. The session door's head follows the same knob
+    (k10r renders the initialization memory; gravity injects the text and
+    refuses `struct`, which its config validates). `GET /graph/{scope}` nodes
+    carry `community_id`.
     RETIRED in the same reshape: the capsule table (title/summary/state/
     uncompressed), the density water line + its `DENSITY_MIN_VERTICES` guard,
     the uncompressed watermark, the orphan-capsule deletion, and the four

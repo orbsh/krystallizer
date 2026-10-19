@@ -23,8 +23,8 @@
 //! the graph's own reads (ADR-0003).
 
 use crate::channel::{role, ChannelStore, SessionView};
-use crate::graph::{CommunitySlice, FactView, GraphStore, WEIGHT_SCALE};
-use std::collections::{BTreeMap, BTreeSet};
+use crate::graph::{FactView, GraphStore};
+use std::collections::BTreeSet;
 
 /// The corpus the head reads, and which node inside it is the user.
 ///
@@ -101,55 +101,4 @@ fn initialization_memory(graph: &mut GraphStore, scope: u64, user_node: u64) -> 
             .then_with(|| a.edge_id.cmp(&b.edge_id))
     });
     head
-}
-
-/// Render one answer's community slices as the id-bearing memory text
-/// (ADR-0010 §5).
-///
-/// One block per community. The header states the slice's size and, when the
-/// budget elided anything, how much of it the answer shows; every node line
-/// carries its node id and every fact line its edge id, because an id IS the
-/// caller's handle — it is what a later precise read or edit points at.
-/// The text is deterministic: same corpus, same budget, same answer.
-pub fn render_memory(slices: &[CommunitySlice]) -> String {
-    let mut out = String::new();
-    for slice in slices {
-        let shown = slice.facts.len();
-        out.push_str(&format!(
-            "community c{} · {} nodes / {} facts",
-            slice.community, slice.members, slice.total
-        ));
-        if shown < slice.total {
-            out.push_str(&format!(" · showing {shown}"));
-        }
-        out.push('\n');
-
-        // Only the nodes the shown facts mention: a node line with no edge
-        // is a bare name the caller cannot use.
-        let mut nodes: BTreeMap<u64, (String, String)> = BTreeMap::new();
-        for fact in &slice.facts {
-            nodes
-                .entry(fact.src.node_id)
-                .or_insert_with(|| (fact.src.name.clone(), fact.src.kind.clone()));
-            nodes
-                .entry(fact.dst.node_id)
-                .or_insert_with(|| (fact.dst.name.clone(), fact.dst.kind.clone()));
-        }
-        for (node_id, (name, kind)) in &nodes {
-            out.push_str(&format!("n{node_id} {name} [{kind}]\n"));
-        }
-        for fact in &slice.facts {
-            out.push_str(&format!(
-                "e{} n{} -[{}]-> n{} · w={:.3} · c={:.2} · since={}\n",
-                fact.edge_id,
-                fact.src.node_id,
-                fact.kind,
-                fact.dst.node_id,
-                fact.edge.weight as f64 / WEIGHT_SCALE,
-                fact.edge.confidence as f64 / 255.0,
-                fact.edge.since
-            ));
-        }
-    }
-    out.trim_end().to_string()
 }

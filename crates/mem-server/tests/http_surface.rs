@@ -106,9 +106,12 @@ async fn append_fetch_checkpoint_flow() {
     assert_eq!(session["increment"][0]["content"], "hi");
     assert_eq!(session["increment"][1]["role"], "assistant");
     assert_eq!(
-        session["head"].as_array().unwrap().len(),
-        0,
+        session["head"], "",
         "no facts in the scope yet: an empty head, never an error"
+    );
+    assert_eq!(
+        session["format"], "plaintext",
+        "the default representation is echoed"
     );
 
     // Advance the checkpoint past the user's message; the increment
@@ -218,6 +221,10 @@ async fn member_checkpoints_are_independent() {
 /// and the increment, and the increment's role arrives as the LLM role
 /// name rather than the stored code.
 ///
+/// The head is RENDERED by k10r in the requested format (ADR-0010 §5): the
+/// default is the line form, and `format=struct` hands the same answer back
+/// as data for a consumer that assembles it itself.
+///
 /// The user node is node 1 of scope 1 today (`DEFAULT_USER_NODE`), and the
 /// door passes both defaults — so a fact whose head resolves first in
 /// scope 1 is exactly what the head block must show.
@@ -252,12 +259,14 @@ async fn session_carries_the_head_block_and_named_roles() {
         .await
         .unwrap();
 
-    let head = session["head"].as_array().unwrap();
-    assert_eq!(head.len(), 1, "the user node's one fact");
-    assert_eq!(head[0]["kind"], "PREFERS");
-    assert_eq!(head[0]["src"]["name"], "用户");
-    assert_eq!(head[0]["dst"]["name"], "简洁");
-    assert_eq!(head[0]["src"]["node_id"], 1, "the default user node");
+    let head = session["head"]
+        .as_str()
+        .expect("the head is rendered text, not data");
+    assert!(
+        head.contains("用户 (person) -[PREFERS]-> 简洁"),
+        "the head renders the user node's fact: {head}"
+    );
+    assert!(head.contains("w="), "the line carries its counters: {head}");
 
     assert_eq!(session["increment"][0]["role"], "user");
     assert_eq!(session["increment"][0]["kind"], 0);
@@ -265,5 +274,37 @@ async fn session_carries_the_head_block_and_named_roles() {
     assert_eq!(
         session["increment"][0]["key"]["channel_id"], 7,
         "the key still rides every entry (a delta record is written from it)"
+    );
+
+    // `struct` is the SAME answer as data: the head becomes the fact array,
+    // and the increment stays structural either way.
+    let structured: serde_json::Value = client
+        .get(format!("{base}/channels/7/members/1/session?format=struct"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(structured["format"], "struct");
+    let facts = structured["head"].as_array().unwrap();
+    assert_eq!(facts.len(), 1, "the user node's one fact");
+    assert_eq!(facts[0]["kind"], "PREFERS");
+    assert_eq!(facts[0]["src"]["name"], "用户");
+    assert_eq!(facts[0]["dst"]["name"], "简洁");
+    assert_eq!(facts[0]["src"]["node_id"], 1, "the default user node");
+
+    // An unknown representation is the caller's bug, never a silent fallback
+    // to another one.
+    let bad = client
+        .get(format!("{base}/channels/7/members/1/session?format=json"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = bad.json().await.unwrap();
+    assert!(
+        body["error"].as_str().unwrap().contains("unknown format `json`"),
+        "{body}"
     );
 }

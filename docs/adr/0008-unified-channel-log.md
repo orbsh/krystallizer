@@ -87,7 +87,9 @@ agent B: cursor at m3 → unread [m4][m5]...
   after it. The global layer takes the head position the summary used to
   occupy alone, because it is long-horizon content riding the passive channel;
   the increment follows in key order. Assembly stays a k10r-internal detail —
-  the caller receives the projection and never composes it.
+  the caller receives the projection and never composes it, and the head
+  arrives RENDERED (ADR-0010 §5's `format` knob): the caller injects that text
+  as-is, it never assembles a head fact list of its own.
 - Read cursors `(ns, channel_id, member_id) -> last-read timestamp`
   serve BOTH the IM unread badge and the agent's incremental pull:
   one mechanism, two consumers.

@@ -11,6 +11,7 @@ pub mod code;
 pub mod config;
 pub mod embedding;
 pub mod graph;
+pub mod render;
 pub mod service;
 pub mod view;
 
@@ -41,7 +42,6 @@ pub use graph::{
     COMMUNITY_NS, ENTITY_NS, FACT_NS, FUNCTIONAL_PROP, LANDING_FLOOR, LITERAL_KIND, LPA_RADIUS,
     LPA_ROUNDS, WEIGHT_SCALE,
 };
+pub use render::{render_head, render_memory, RenderFormat};
 pub use service::{open_service, ServiceStores};
-pub use view::{
-    assemble, render_memory, role_name, Projection, DEFAULT_SCOPE, DEFAULT_USER_NODE,
-};
+pub use view::{assemble, role_name, Projection, DEFAULT_SCOPE, DEFAULT_USER_NODE};

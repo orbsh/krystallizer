@@ -53,9 +53,10 @@ point lookup (entity name / alias → node id, one prefix scan — the graph's o
 identity face) and vector top-k seeds both land; the answer is the COMMUNITY
 those seeds belong to (ADR-0010 §5): its members through the `by_community`
 face, the facts whose endpoints are both members, ranked by weight (ADR-0005)
-and rendered as id-bearing text. A landing confidence floor plus a legal
-"nothing landed" outcome (the caller injects no memory) replace the old fusion
-score.
+and rendered as id-bearing text (the representation is `?format=`:
+`plaintext` / `markdown` / `mermaid`, or `struct` for the data alone — ADR-0010
+§5). A landing confidence floor plus a legal "nothing landed" outcome (the
+caller injects no memory) replace the old fusion score.
 
 **The lexical branch is withdrawn: jieba, the inverted index, BM25, RRF and
 tantivy are all dropped.**
@@ -91,8 +92,9 @@ only complex ones (PageRank, community detection) earn a dependency.
   every write, byte-budgeted with LRU eviction), inner product over
   unit-length vectors, `LANDING_FLOOR` (0.35) and a legal empty landing —
   plus the read answer (`GraphStore::recall`, `GET /facts/{scope}/recall`):
-  the seeds, the communities they landed in, and those communities' facts
-  rendered as id-bearing text under a fact budget (ADR-0010 §3–§5).
+  the seeds, the communities they landed in, and ONE representation of those
+  communities' facts under a fact budget — the id-bearing text, or the data
+  alone under `format=struct` (ADR-0010 §3–§5).
   Weight-ordered ranking is ADR-0005's. `/search` is the ANALYSIS door (the
   landing alone, for inspection); `/recall` is the CORE door (the memory
   answer) — ADR-0007 owns the two-class split.

@@ -178,7 +178,10 @@ payload，不含 ns；Table 自行前置 `[ns 2B][slot 1B]`）。
 （gravity）持有；`fetch_full(channel_id, member_id)` →
 `SessionView { coverage_ts, summary, increment }`——投影：checkpoint +
 严格晚于 coverage 的增量，键序；`append_checkpoint(channel_id, member_id,
-coverage_ts, summary)`。
+coverage_ts, summary)`。`view::assemble(channels, graph, channel, member,
+scope, user_node)` → `Projection { head: Vec<FactView>, view: SessionView }`
+——头部是用户节点的双向关联事实（36/37），由门在出网前按请求的 `format`
+渲染（`render::render_head`）。
 
 尚未落地（后续切片）：thread、topic tag、members、读游标、压缩策略
 引擎（ADR-0008/0009）。

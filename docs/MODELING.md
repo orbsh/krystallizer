@@ -207,6 +207,10 @@ slice serving gravity Phase 0). Declared in
 `SessionView { coverage_ts, summary, increment }` — the projection:
 checkpoint + increment strictly after coverage, key order;
 `append_checkpoint(channel_id, member_id, coverage_ts, summary)`.
+`view::assemble(channels, graph, channel, member, scope, user_node)` →
+`Projection { head: Vec<FactView>, view: SessionView }` — the head is the user
+node's incident facts (36/37), which the door RENDERS (`render::render_head`)
+in the requested `format` before it goes on the wire.
 
 Not yet (later slices): threads, topic tags, members, read cursors,
 compression policy engine (ADR-0008/0009).
