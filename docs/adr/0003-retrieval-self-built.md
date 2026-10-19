@@ -1,4 +1,4 @@
-# ADR-0003: Retrieval — Built-In Embedding Model, Vector Landing + Graph Traversal
+# ADR-0003: Retrieval — Built-In Embedding Model, Vector Landing + the Landed Community
 
 **Status**: Partially landed (2026-10-17: the embedding engine — a built-in
 local model loaded in-process from a model directory — its config surface, and
@@ -48,12 +48,14 @@ and arroy is not the default shape for it: arroy 0.6 is an LMDB-backed
 second storage engine along, exactly what this ADR rules out. Not deferred
 below the threshold: dropped.
 
-**Retrieval is vector landing + graph traversal.** An exact name/alias point
-lookup (entity name / alias → node id, one prefix scan — the graph's own
-identity face) and vector top-k seeds enter ONE traversal, which expands the
-neighborhood and ranks by weight (ADR-0005, phases 3/4). A landing confidence
-floor plus a legal "nothing landed" outcome (the caller injects no memory)
-replace the old fusion score.
+**Retrieval is vector landing + the landed community.** An exact name/alias
+point lookup (entity name / alias → node id, one prefix scan — the graph's own
+identity face) and vector top-k seeds both land; the answer is the COMMUNITY
+those seeds belong to (ADR-0010 §5): its members through the `by_community`
+face, the facts whose endpoints are both members, ranked by weight (ADR-0005)
+and rendered as id-bearing text. A landing confidence floor plus a legal
+"nothing landed" outcome (the caller injects no memory) replace the old fusion
+score.
 
 **The lexical branch is withdrawn: jieba, the inverted index, BM25, RRF and
 tantivy are all dropped.**
@@ -88,9 +90,10 @@ only complex ones (PageRank, community detection) earn a dependency.
   — per-scope in-memory table (loaded from the KV on first use, dropped on
   every write, byte-budgeted with LRU eviction), inner product over
   unit-length vectors, `LANDING_FLOOR` (0.35) and a legal empty landing —
-  plus the one-hop expansion (`GraphStore::recall`,
-  `GET /facts/{scope}/recall`): seeds and every fact touching them in either
-  direction, deduplicated by edge id. Weight-ordered ranking is ADR-0005's.
+  plus the read answer (`GraphStore::recall`, `GET /facts/{scope}/recall`):
+  the seeds, the communities they landed in, and those communities' facts
+  rendered as id-bearing text under a fact budget (ADR-0010 §3–§5).
+  Weight-ordered ranking is ADR-0005's.
 - **The three costs, and the shape past the threshold (2026-10-19).** A scan
   strategy pays in compute, memory or I/O, and the choice is a MEASURED one:
   an in-memory table pays memory (~2 KB/vector) and scans in O(N·d) — at

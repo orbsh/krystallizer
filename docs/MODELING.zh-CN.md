@@ -22,11 +22,11 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
 | —   | Tasks / task_links DAG | 已声明（ADR-0001——第三个接口面；与事实同图） | ADR-0001, ADR-0002 |
 | 36  | 实体（事实图）     | 已实现（2026-10-17）      | ADR-0010 |
 | 37  | 事实（事实图边）   | 已实现（2026-10-17）      | ADR-0010 |
-| 38  | 胶囊（每社区）     | 已实现（2026-10-19）      | ADR-0010 |
+| 38  | 社区序号（发号用，每 scope 一行） | 已实现（2026-10-20） | ADR-0010 |
 | —   | 初始化记忆（人设 / 风格） | 已声明（ADR-0001） | ADR-0001 |
 
-图的读侧（LPA、分箱、胶囊）已随之落地（2026-10-19）；会话日志缺的几块、任务、
-以及 scope 级 Top-K 需要的 `[scope][weight][edge_id]` 投影表，属后续阶段；
+图的读侧（LPA、分箱、社区的渲染）已随之落地（2026-10-19/20）；会话日志缺的几块、
+任务、以及 scope 级 Top-K 需要的 `[scope][weight][edge_id]` 投影表，属后续阶段；
 上表标 `已声明` 的行是 ADR 承诺，非运行代码。
 
 ## 记忆种类（谁发起）
@@ -55,6 +55,9 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
 - `CommunityRow`（ns 38）：`[scope][community_id]` → `updated_at`、`state`
   （0 pending / 1 done）、`uncompressed`、`title`、`summary`。一个社区一行、原地
   覆盖——是缓存，不是日志。
+- `CommunitySeqRow`（ns 38）：`[scope]` → `high_water`，最后发出的社区 id。
+  每 scope 一行，原地覆写，单调递增——取代了 `HighWater` reduce 与「读现存社区
+  最大值」两种发号（ADR-0010 §1）。ns 38 曾经装的那张胶囊表已退役。
 
 ## Flat memory（ns 32）
 
@@ -303,10 +306,9 @@ pub struct EntityRow {
   事实只出现一次，归最先触到它的种子），一次返回，调用方不必拼两次调用。更深的
   walk 由调用方在 `out_edges` / `in_edges` 上组合；集合内部的按权重排序等
   ADR-0005 的写入者（每条事实带着自己声明的 `weight`，在那之前为 0）。
-- **`community_id` 与它的 `by_community` 面尚未声明。** 它们属于 ADR-0010 的
-  步骤 3–4（增量 LPA + 分箱），而今天没有任何东西读它们：没有写入者的字段和
-  没有扫描者的面，代价由每条记录承担，所以它们随消费它们的读路径一起落
-  （PLAN Phase 4/5）。ADR-0010 §1 保留设计形态。
+- **`community_id` 与它的 `by_community` 面** 属于 ADR-0010 的步骤 3–4
+  （增量 LPA + 分箱），并随之落地（2026-10-19）：读侧把这个面当作社区的桶来
+  消费。ADR-0010 §1 保留设计形态。
 
 ### 事实（ns 37）——边集合
 

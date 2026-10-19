@@ -1,25 +1,19 @@
-# PROMPTS — The Two Prompt Surfaces
+# PROMPTS — The Live Prompt Surface
 
 > **Languages:** [English](PROMPTS.md) (primary) · [中文](PROMPTS.zh-CN.md)
 
-Status: **Declared** (drafts; nothing here is wired). Prompts are text the
-caller owns; k10r holds no LLM (ADR-0007), so both prompts below run on the
-caller's side and neither is a k10r asset.
+Status: **Declared** (a draft; nothing here is wired). Prompts are text the
+caller owns; k10r holds no LLM (ADR-0007), so the prompt below runs on the
+caller's side and is not a k10r asset.
 
-Two isolated paths, and they must not be conflated (they were, in the draft
-this page is built from):
-
-1. **The live path** — the model's ACTIVE memory add: a tool in gravity's fixed
-   tool list, called during a user turn (ADR-0008: facts come
-   from the active add, not from a compression pass).
-2. **The write-side pass** — the capsule generator: it runs after a fact
-   lands, inside the same background pass as ADR-0010's write-time resolution
-   and binning. It is NOT the compression bypass: the bypass only compresses
-   (ADR-0008.
+One surface. The draft this page came from also carried a write-side
+"capsule generator" (community slice in, title + summary out); it retired with
+the capsule table (ADR-0010 §4, 2026-10-20) — the read side renders the
+community's nodes and edges instead of asking a model to summarize them.
 
 Names below follow the settled vocabulary. Where the source draft invented a
 name or a field, it is marked **[not in the design]** and left visible rather
-than silently adopted — see §4.
+than silently adopted — see §3.
 
 ## 1. Live path: the tool definition (gravity's side)
 
@@ -86,71 +80,31 @@ Notes that keep this prompt honest:
   the read-write quadrants) plus the landing confidence floor on the READ side.
   A model-declared confidence per fact is a proposal; if it lands, it is a
   declared row attribute, not a key.
-- **Nothing here says where the fact goes.** Flat memory vs graph is decided by
-  the caller's routing and by write-time fusion (ADR-0004/0007), not by the
+- **Nothing here says where the fact goes.** Where a fact is filed is decided
+  by the caller's routing and by write-time fusion (ADR-0004/0007), not by the
   model.
 
-## 2. Write-side pass: the capsule generator
-
-Input: ONE community's slice of atomic facts (a list of 8-slot tuples),
-produced by ADR-0010's incremental LPA. This prompt runs in the write-side
-background pass, after the fact write — never on the conversational critical
-path.
-
-```
-You are a graph-consolidation step inside an embedded memory core's
-write-side pass.
-
-## Input
-A raw, isolated sub-graph cluster of atomic facts in 8-slot tuple notation (one
-tuple per line): a tightly bound semantic community selected by local label
-propagation.
-
-## Tasks
-Read the triples, their properties and their timestamps. Invent nothing and
-extrapolate nothing beyond the literal assertions. Do exactly two things:
-1. Title — a concept title, at most 6 words, that names this community.
-2. Capsule — a 1–2 sentence high-density summary capturing the causality, the
-   settled choice, or the behavioral pattern. It becomes a cache anchor so
-   downstream reads do not re-traverse the whole community.
-
-## Output
-Raw JSON only — no markdown fence, no preamble, no greeting:
-
-{"title": "string (max 6 words)", "summary": "string (1-2 sentences)"}
-
-## Example
-<the tuple slice from §4's sample>
--> {"title": "K10r Core Embedded Storage Selection", "summary": "The k10r core is an embedded Rust memory system using the Fjall KV engine to eliminate runtime write-amplification; the arroy vector-search dependency was dropped to keep execution local."}
-```
-
-Where the capsule lives is ADR-0010's business (community id on the node row +
-a community reverse index + the capsule); "Layer 3" **[not in the design]** is
-the draft's numbering, not this design's vocabulary (the paradigm doc's layers
-are write / organize / retrieve).
-
-## 3. Where each block is deployed
+## 2. Where the block is deployed
 
 | Block | Owner | Where it runs | Wiring status |
 |---|---|---|---|
 | §1 tool definition | gravity (the caller) | inserted into the turn's system prompt alongside the fixed tool list | not wired (the tool list itself is still Phase 0: plain chat, no tools) |
-| §2 capsule generator | whichever consumer owns the write-side pass (gravity for chat; a memory-primary consumer's own worker otherwise) | the background pass after a fact write | not wired (ADR-0010 is Declared) |
 
-## 4. Provenance and the to-verify list
+## 3. Provenance and the to-verify list
 
 This page integrates an external AI-generated draft suite. Integration rule:
 keep the drafts' prompt TEXT (it is decent craft) but never its invented
 architecture. Items flagged, in one place:
 
 - `k10r.store()` as a tool name — not in the design; the tool faces are
-  `commit_memory` / `recall_memory`, the k10r doors are `ingest(fact)` / `store`.
+  `commit_memory` / `recall_memory`, the k10r door is `ingest(fact)`.
 - `confidence` per fact — not in the design (weight system + read-side landing
   floor instead).
 - `since` supplied by the model — the caller owns the clock; needs a ruling for
   facts.
-- "Layer 3 Semantic Capsule" — the draft's numbering; ADR-0010 names the
-  artifacts (community, capsule).
-- "the asynchronous bypass pipeline" as the capsule's home — conflated: the
-  bypass compresses; the fact write and the binning ride the write-side pass.
+- "Layer 3 Semantic Capsule" — the draft's numbering, and its whole
+  consolidation pass is retired (ADR-0010 §4): there is no capsule, and the
+  read renders the community. The draft's capsule prompt is therefore not
+  carried here at all.
 - Sample entities (`galaxy_repo`, `k10r_core`) and the dropped-dependency
   example are illustrative, not measurements.

@@ -89,7 +89,7 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   Owed: this repo's own ADR for the store, and `list()` is the declared
   bring-up posture for a resolver's pool read — the graph's retrieval
   replaces it.
-- [ ] Phase 3 — Atomic-fact graph: fact node/edge tables, ingestion of the 8-slot fact tuple (the facts arrive by the model's ACTIVE add — the caller routes that call to `ingest(fact)`; no compression pass and no trailing extraction worker, ADR-0008, write-time fusion (in-domain id / out-of-domain embedding convergence + small-candidate LLM decision — the LLM decision is gravity's, per ADR-0007's boundary), weight system (the counters on the edge row, read-write quadrants, tool_invoke_count); initialization memory (人设/风格) — a traversal from the user node, delivered at the context head; the task graph (task vertices + `task_links` dependency edges) shares that same graph — tasks are the third interface surface, their instance state structured rather than approximate. Write-time resolution (upsert on a new fact) and cognitive binning ride this side per ADR-0010 (fact node / community reverse index / capsule; ns 36/37 for the graph and 38 for the capsules). Scope note: append-first covers THIS side (node/edge rows, weights, derived entries) — the log does not (ADR-0002. Flat memory (ns 32) and its HTTP door are withdrawn in this landing: the graph is its successor (ADR-0001's carrier line, "flat memory, then the graph") — flat was the pre-graph form of the same extracted knowledge, and a text row carries no per-fact identity. What is owed with it: the fate of legacy flat rows (ADR-0002's PG migration imports them as-is) is a migration question, not a schema one. (ADR-0001, ADR-0002, ADR-0004, ADR-0005, ADR-0007, ADR-0010)
+- [ ] Phase 3 — Atomic-fact graph: fact node/edge tables, ingestion of the 8-slot fact tuple (the facts arrive by the model's ACTIVE add — the caller routes that call to `ingest(fact)`; no compression pass and no trailing extraction worker, ADR-0008, write-time fusion (in-domain id / out-of-domain embedding convergence + small-candidate LLM decision — the LLM decision is gravity's, per ADR-0007's boundary), weight system (the counters on the edge row, read-write quadrants, tool_invoke_count); initialization memory (人设/风格) — a traversal from the user node, delivered at the context head; the task graph (task vertices + `task_links` dependency edges) shares that same graph — tasks are the third interface surface, their instance state structured rather than approximate. Write-time resolution (upsert on a new fact) and cognitive binning ride this side per ADR-0010 (fact node / community reverse index / the community sequence; ns 36/37 for the graph, 38 for the sequence). Scope note: append-first covers THIS side (node/edge rows, weights, derived entries) — the log does not (ADR-0002. Flat memory (ns 32) and its HTTP door are withdrawn in this landing: the graph is its successor (ADR-0001's carrier line, "flat memory, then the graph") — flat was the pre-graph form of the same extracted knowledge, and a text row carries no per-fact identity. What is owed with it: the fate of legacy flat rows (ADR-0002's PG migration imports them as-is) is a migration question, not a schema one. (ADR-0001, ADR-0002, ADR-0004, ADR-0005, ADR-0007, ADR-0010)
   - [x] 3a. The write side's steps 1–2 LANDED (2026-10-17): the entities
     collection (ns 36) + the facts edge collection (ns 37) and the
     deterministic `ingest(fact)` path — `GraphStore` in
@@ -116,7 +116,7 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     — the LANDING part is done (2026-10-19: node vectors, `retrieve`, the
     search door; see 1c), what remains is the neighbourhood expansion and
     the weight-ordered ranking (ADR-0005) — and
-    ADR-0010's steps 3–4 (LPA, binning, capsules). The okm-side items of
+    ADR-0010's steps 3–4 (LPA, binning). The okm-side items of
     ADR-0010's owed list are all PAID (2026-10-19): the read-side load on
     probe, the generated payload decode, and `unlink_into` (a functional
     rewrite is now ONE batch).
@@ -139,27 +139,26 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     (not debts): the delta-append table (multi-writer only — a Deferred gate)
     and a scope-wide Top-K (Phase 4's read; it needs that projection table
     written on the same touch, ADR-0005).
-  - [x] 3c. Steps 3–4 LANDED 2026-10-19 (ADR-0010): `EntityRow.community_id`
-    + the `by_community` face; incremental LPA inside `ingest` (2-hop
-    subgraph, 3 rounds, vote = `weight × confidence`, ties to the smaller
-    community, one batch for every moved node and capsule); capsule
-    collection ns 38 (`updated_at` / `state` / `uncompressed` / `title` /
-    `summary`, one row per community, overwritten in place); the density
-    water line with a `DENSITY_MIN_VERTICES = 3` guard (a two-node community
-    is trivially density 1.0); the uncompressed watermark (15); the orphan
-    capsule deleted when a community's last member leaves. Doors — the caller
-    PULLS (k10r never calls out): `GET /facts/{scope}/communities?state=`,
-    `GET .../communities/{id}` (bucket: capsule + members + internal facts),
-    `GET .../{id}/packet` (canonical 8-slot lines) and `PUT .../{id}` (the
-    summary lands, `done`, counter reset; 404 on an unknown community). Read
-    side: `recall` carries the seeds' capsules and ranks by weight;
-    `GET /graph/{scope}` nodes carry `community_id`. Two real bugs the tests
-    caught and fixed: the seed watermark did not advance (every node of one
-    ingest got the same id) and a new node's capsule creation overwrote a live
-    community's uncompressed counter. Gates: mem-core graph 25/0, mem-server
-    facts 12/0, clippy 0. Follow-ups: the per-scope top-K read (Phase 4, with
-    the projection table 3b names) and the capsule summarizer, which is the
-    CALLER's (gravity's) — k10r only hands out packets.
+  - [x] 3c. Steps 3–4 LANDED 2026-10-19, RESHAPED 2026-10-20 (ADR-0010):
+    `EntityRow.community_id` + the `by_community` face; incremental LPA inside
+    `ingest` (2-hop subgraph, 3 rounds, vote = `weight × confidence`, ties to
+    the smaller community, one batch for every moved node). The id issuer is
+    the scope's SEQUENCE row (ns 38: `[scope]` → `high_water`, monotonic, so
+    an id is never reused). The read side renders instead of summarizing:
+    `recall` lands → takes the landed COMMUNITY's bucket (members through
+    `by_community`, facts whose endpoints are both members, each edge once) →
+    ranks by weight → renders id-bearing text under a fact budget (20 by
+    default, `?budget=`), and the door returns `{seeds, communities, facts,
+    text, shown, total}`. `GET /graph/{scope}` nodes carry `community_id`.
+    RETIRED in the same reshape: the capsule table (title/summary/state/
+    uncompressed), the density water line + its `DENSITY_MIN_VERTICES` guard,
+    the uncompressed watermark, the orphan-capsule deletion, and the four
+    consolidation doors (`?state=`, bucket, packet, `PUT`) — the design turned
+    the consumer into k10r's index maintainer for a lossy projection of what
+    the nodes and edges already were. Gates: mem-core 51/0 across its suites
+    (view 4, graph 25 incl. the budget and the id-monotonicity tests),
+    mem-server 21/0, clippy 0. Follow-up: the per-scope top-K read (Phase 4,
+    with the projection table 3b names).
   - [x] 3d. Flat memory (ns 32) and its HTTP door WITHDRAWN 2026-10-19: the
     table and `MemoryStore` are deleted, `POST /memory` and
     `GET /memory/{user_id}/search` are gone, and `mem-ffi` now binds
@@ -170,7 +169,7 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     withdrawn), SEAM's endpoint table, README. Legacy flat rows stay a
     migration question (ADR-0002's PG import), not a schema one. Gates:
     mem-core 47/0 across its suites, mem-server 20/0, clippy 0.
-- [ ] Phase 4 — Clustered retrieval: entity-anchored / temporal / causal-chain views; progressive loading (a scope-wide Top-K by weight — a `[scope][weight][edge_id]` projection table maintained on each touch, not a declared face; ADR-0005). Reads the write-time structure ADR-0010 lands (the node's community id + the community reverse index + capsules) instead of running a graph algorithm on the read path. (ADR-0005, ADR-0010)
+- [ ] Phase 4 — Clustered retrieval: entity-anchored / temporal / causal-chain views; progressive loading (a scope-wide Top-K by weight — a `[scope][weight][edge_id]` projection table maintained on each touch, not a declared face; ADR-0005). Reads the write-time structure ADR-0010 lands (the node's community id + the `by_community` face + the rendered community) instead of running a graph algorithm on the read path. (ADR-0005, ADR-0010)
 - [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), SKILL topological four-part nodes, Aura Actor nodes. (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.) ADR-0010 takes the incremental LOCAL form of community detection onto the write side and leaves OPEN whether that promotes a slice of Phase 5 ahead of Phase 3/4 — an open ruling, not settled.
 
 Deferred gates:

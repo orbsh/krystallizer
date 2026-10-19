@@ -22,7 +22,8 @@ so the read side runs no graph algorithm at all. It merges the two drafts
 written for the track: a loose `docs/LPA.md` (three-table schema,
 lifecycle phases, visualization extension) and a write-time-resolution
 variant (the adjudication rule, the density boundary metric, the capsule
-prompt, the read-side sketch), and corrects one thing in both: they spell
+prompt, the read-side sketch) — the first three of which this ADR then
+retired (§3–§4) — and corrects one thing in both: they spell
 the storage as string prefixes with JSON values, which okm's modeling
 rules reject (variable text in a key segment, a hand-maintained prefix
 standing in for an access method, a value as serialized text). §1 is the
@@ -55,7 +56,7 @@ What constrains every step below:
                                           │
                                     (Fjall write)
                                           ▼
-[ step 5: read side ] ◄── [ step 4: subgraph export + capsule ] ◄── [ step 3: incremental LPA ]
+[ step 5: read side ] ◄── [ step 4: the community's bucket ] ◄── [ step 3: incremental LPA ]
 ```
 
 Steps 1–2 run as the fact lands through the caller's `ingest(fact)` call, and
@@ -70,7 +71,7 @@ triples, serialized as the 8-slot tuple), and the caller hands them to the
 core through the deterministic `ingest(fact)` door; the core does not parse
 prose and does not call a model. Three collections carry the track's state; the
 okm-conformant layout is below (ns is allocated at landing: entities 36 and
-facts 37 LANDED 2026-10-17, the capsules 38 on 2026-10-19).
+facts 37 LANDED 2026-10-17, the community sequence 38 on 2026-10-19).
 
 ```text
 Entities — node collection (ns 36), one per graph
@@ -106,11 +107,10 @@ Facts — edge collection (ns 37), one ns per graph (okm ADR-0017)
   filter by the endpoints. A per-scope edge prefix would mean hand-rolling
   the collection against okm's Graph.
 
-Communities — capsule collection (ns 38, landed 2026-10-19)
-  0x0 primary        [scope u64][community_id u64]
-                     → body: title (cold TLV), summary (cold TLV),
-                       updated_at (hot), state (hot: pending / done),
-                       uncompressed (hot: facts accumulated since the summary)
+Community sequence (ns 38, one row per scope since 2026-10-19)
+  0x0 primary        [scope u64]
+                     → body: high_water (hot: the last community id issued;
+                       monotonic, so an id is never reused)
 ```
 
 `scope` leads every pkey because the corpus is per-user (ADR-0003) — the
@@ -135,10 +135,9 @@ Five points where this differs from the drafts, and why:
   vocabularies"). An entity name lives in the `by_name` face and in the
   row's cold segment, reached as `name → node_id`. The drafts'
   `community_id = hash(entity_name)` seed and `c_milkyway_2026`-style ids
-  are gone: a community is a row in the capsule collection, its id is a u64
-  read one past the scope's current maximum FROM that table (so the id always
-  owns a row and is never reused), and the human label is the capsule's
-  `title`.
+  are gone: a community exists as the value on its member nodes, its id is a
+  u64 issued by the scope's sequence row (monotonic, never reused), and its
+  human-readable face is the rendered text's header (`community c7`).
 - **Every query dimension is a declared access method, not a prefix buried
   in a key.** The community reverse index is the `by_community` face
   (`[community_id][scope][node_id]`), whose tail IS the primary-key
@@ -259,138 +258,79 @@ Mechanics:
    but okm's document overwrite leaves a stale index entry dangling (the
    entry key encodes the indexed value, so the new value lands at a new
    key) — a re-bin therefore deletes the old face entry in the SAME batch.
-   The earlier "no tombstone" claim was wrong; landing caught it. The
-   capsule row's `state` is set to `pending`. All of it rides one
-   WriteBatch (ADR-0002).
+   The earlier "no tombstone" claim was wrong; landing caught it. Nothing
+   else is written — there is no summary state to mark. All of it rides one
+   WriteBatch (ADR-0002), the sequence row included.
 
 The pass runs inside `ingest`, after the fact's own commit, so a fact that
-landed is binned before the call returns. A node landing for the first time is
-seeded with `one past the scope's current maximum`, read from the capsule table
-itself: the issued id always owns a row, the watermark needs no second counter,
-and no id is reused. A vote never degenerates into an all-zero tie — a fresh
-assertion already weighs `ln(2) × 0.5` — and ties go to the SMALLER community
-id, so the outcome does not depend on iteration order. Every node that moved is
-rewritten in one batch together with its capsule rows.
+landed is binned before the call returns. A node landing for the first time
+draws its id from the scope's SEQUENCE row (one per scope, monotonic): the
+watermark never goes down, so an id is never reused even when a community
+empties out. A vote never degenerates into an all-zero tie — a fresh assertion
+already weighs `ln(2) × 0.5` — and ties go to the SMALLER community id, so the
+outcome does not depend on iteration order. Every node that moved is rewritten
+in one batch together with the sequence row.
 
-### 3. Subgraph boundary judgment
+### 3. The community is bounded at READ time, not at write time
 
-LPA has drawn the boxes; the next question is when a box is worth
-summarizing, so that a single new fact does not trigger an API call.
+Nothing summarizes a community on the write side. The density water line and
+the uncompressed-fact watermark are retired: they existed to decide WHEN a
+community was worth an LLM summary, and there is no summary any more.
 
-**Metric — density water line:**
+What still needs bounding is the ANSWER. A community grows by accretion —
+LPA merges nodes as facts connect them — so its size is not bounded by
+construction. The read side therefore caps the answer at a fact budget
+(20 lines by default, `?budget=` on the door, 0 = no cap), drops the
+LOWEST-weight facts first (ADR-0005's order), and states the elision in the
+header (`showing 8 of 15`). A line is never cut in half: an id pointing at
+half a fact is worse than an id that is absent.
 
-`Density = 2 × |E| / (|V| × (|V| − 1))`
+If elision ever dominates a corpus — the header says so on every read — the
+fix is a write-side split rule, a follow-up that waits for that number
+rather than a threshold guessed now.
 
-where `|E|` is the number of edges inside one community and `|V|` the
-number of entity nodes in it.
+### 4. No consolidation pass: the read renders the community
 
-**Trigger.** A community is exported for consolidation when either (a) its
-density crosses the configured threshold as a new fact joins, or (b) the
-count of its uncompressed new facts crosses the watermark (15 facts in the
-draft).
+The earlier design put an LLM summary (a "capsule") on the community, pulled
+by the caller and written back with `PUT`. It is retired, for two reasons:
 
-The density trigger needs a minimum size: a two-node community is a clique
-(`density = 1.0` after a single fact), so `DENSITY_MIN_VERTICES = 3` guards it
-and below three members only the uncompressed watermark can fire. A community
-whose last member leaves has its capsule row deleted in the SAME batch, so a
-pull never hands out an empty packet.
+- **It was a chore, not a surface.** The consumer would have had to list
+  pending communities, pull a packet, run a model and write the answer back
+  — a second workload behind an interface whose only job is to serve memory.
+  The consumer already runs an LLM for its own work; making it also maintain
+  k10r's index is the wrong trade, and it is exactly the shape the ruling
+  against "internal indexing as a consumer chore" rejects.
+- **The information was already there.** A community's understanding IS its
+  nodes and its edges. A summary is a lossy projection of precisely that,
+  and it goes stale on the next fact.
 
-**Export.** One scan on the `by_community` face pulls the community's
-members; their edges arrive through the traversal faces with an in-memory
-membership filter — the community's subgraph, sliced into a plain-text packet
-of 8-slot tuples, which is the input the next step consumes.
+So there is no capsule table, no `pending` state, no packet, no write-back
+and no summarizer prompt. The community is rendered when it is read (§5).
 
-### 4. Capsule consolidation (layer 3)
+### 5. Read side: landing, then the landed community
 
-This is the bridge from layer 4 (fine-grained graph facts) to layer 3
-(macro semantic understanding).
+The read path runs no graph algorithm and no model call:
 
-**The call is the caller's, not the core's.** k10r holds no LLM and no
-transport and never calls out (ADR-0007), so its own part is the packet
-plus the `pending` mark on the community; the inference itself is drawn by
-whichever consumer produced these facts (gravity for
-chat consumers; a memory-primary consumer's single-pass worker otherwise).
-The drafts phrase it as "handed outward through the non-blocking channel
-gravity provides" — that names the carrier the caller uses, and it must not
-be read as an outbound call from mem-core.
+1. **Land** — the query embeds and the seeds come back (ADR-0003), each
+   carrying its node's `community_id`.
+2. **Take the landed community** — the seeds' communities, deduplicated in
+   seed order (the first landed community is what the query is most about).
+3. **Read the bucket** — the community's members through the `by_community`
+   face, its facts through the traversal faces with a membership filter
+   (both endpoints inside the community), each edge once.
+4. **Render** — one block per community: a header (size, plus the elision
+   when the budget cut anything), one line per node (`n12 简洁 [style]`), one
+   line per fact (`e34 n12 -[PREFERS]-> n15 · w=1.400 · c=0.90 · since=…`).
+   Every line carries the id it names, because that id is the handle a caller
+   points at — today to read one more line, later to edit that row precisely.
 
-**The carrier is a pull surface, not a callback.** The caller lists the work
-(`GET /facts/{scope}/communities?state=pending`), reads a bucket when it needs
-the members and the internal facts (`GET /facts/{scope}/communities/{id}`),
-pulls the packet (`GET /facts/{scope}/communities/{id}/packet`), and writes the
-answer back (`PUT /facts/{scope}/communities/{id}` — the summary lands, `state`
-becomes `done`, the uncompressed counter resets; an unknown community is a 404,
-never a newly created row).
+The answer is ONE door, `GET /facts/{scope}/recall?q=&k=&budget=&ts_ms=`,
+returning the seeds, the community ids, the shown facts and the rendered
+text together. There is no N-hop: a community IS the bounded slice, and a
+caller that wants a deeper walk composes it from `out_edges`/`in_edges`.
 
-The packet's lines are serialized straight from the eight slots (okm's
-`DynamicValue` carries `Serialize`), with no intermediate JSON tree; the
-`functional` flag is dropped because it is the write-time declaration, not part
-of the fact.
-
-**Prompt (carried verbatim from the draft; the packet is 8-slot tuples):**
-
-```
-你是一个图谱语义提炼器。以下输入是某个特定知识社区内的全部原子事实片段（定长 8 元组，每行一条）：
-------------------------
-${FACT_TUPLES}
-------------------------
-请不要发散，直接执行两项任务：
-1. Title: 为这个知识社区拟定一个 10 字以内的精准概念主题。
-2. Summary: 将上述零碎的三元组关系融会贯通，高度压缩提炼成 2 句话的"语义胶囊摘要"，捕获核心架构、因果决策或用户偏好。
-```
-
-**Write-back is a point overwrite of the capsule row** (one row per
-community, keyed by its own id):
-
-```text
-0x0 primary  [scope u64][community_id u64]
-             → { title, summary, updated_at, state = done }
-```
-
-The overwrite is the point: a capsule is a cache — the latest summary is
-the only one worth reading, and the history is what the facts themselves
-already are. One row per community also keeps the key count bounded by the
-number of communities instead of growing once per re-summarization.
-
-### 5. Read side (what the write-side cost buys)
-
-By the time a question arrives, conflicts were resolved at write time, the
-`by_community` face was maintained, and the macro summary is already
-materialized. So the read path is: land, read the capsule, scan the bucket,
-assemble — and every step is a named access method.
-
-```rust
-// draft sketch — the read path runs no graph algorithm
-pub fn assist_search(query: &str, top_k: usize) -> AssistantContext {
-    // 1. in-process local embedding lands the query (top-k seeds; the by_name
-    //    face is the exact entrance for identifiers — ADR-0003)
-    let landed = local_embedding_engine.seeds(query, top_k);
-    let cid = landed.community_id;                 // a declared field on the node row
-
-    // 2. the pre-computed layer-3 capsule: one point read (zero LLM cost)
-    let capsule = communities.get(CommunityKey { scope, community_id: cid });
-
-    // 3. the community bucket: one by_community scan for the members,
-    //    their edges through the traversal faces (0x7/0x9)
-    let members = entities.scan(by_community(cid));
-    let facts = edges.within(&members);
-
-    // 4. assemble as the auxiliary context injected at the caller's prompt head
-    AssistantContext::new(capsule, members, facts)
-}
-```
-
-The path is a landing plus named reads (one point get, one face scan); the
-graph topology work that would otherwise sit in front of every question is
-gone. The landed shape is ONE door, `GET /facts/{scope}/recall?q=&k=&ts_ms=`:
-the landing plus one hop in either direction (deduplicated by edge id, so a fact
-between two seeds comes back once, under the first seed that reached it), the
-seeds' capsules alongside (point reads, no algorithm), and the facts ranked by
-weight (ADR-0005). Deeper walks are the caller's composition over the traversal
-faces; the door grows no implicit N-hop. The injected packet is stable between consolidations — same facts,
-same capsule — which is what the drafts count on for provider-side
-context-cache reuse: the community's facts and capsule are unchanged until
-the next rewrite.
+The text is deterministic: the same corpus and the same budget answer
+identically, and time decay only reorders as ADR-0005 says it does.
 
 ### 6. Front-end extension (no new mechanism)
 
@@ -408,11 +348,11 @@ node; the demo page still colours by node kind.
 
 ## Consequences
 
-- **This is the live case for append-first, not append-only.** The edge body
-  and the capsule row are overwritten because keeping a superseded fact as a
-  second row costs more: it would poison both retrieval and the binning that
-  reads it. The log-shaped tables (ns 33/34) are untouched by this ADR's
-  resolution step.
+- **This is the live case for append-first, not append-only.** The edge body,
+  the node row and the sequence row are overwritten in place because keeping a
+  superseded version costs more: it would poison both retrieval and the
+  binning that reads it. The log-shaped tables (ns 33/34) are untouched by
+  this ADR's resolution step.
 - **Every read in this design is a declared access method** (okm: "access
   methods are mandatory"): the bucket is the `by_community` face, the
   resolution lookup is the 0x9 face, the exact entrance is `by_name`. No raw
@@ -421,19 +361,18 @@ node; the demo page still colours by node kind.
   labels live in payload fields and index segments, so they can be rendered
   back and listed in human terms; identities are surrogates issued by a
   watermark, never a hash into a key segment.
-- **No new retrieval mechanism.** The community index is a projection over
-  the fact graph and the capsule is a cached summary read, never a scored
-  branch; search still enters by landing or by exact name/alias lookup
-  (ADR-0003).
+- **No new retrieval mechanism.** The community is a projection over the
+  fact graph and the answer is its rendering, never a scored branch; search
+  still enters by landing or by exact name/alias lookup (ADR-0003).
 - **The vote consumes ADR-0005's weights** (`Weight(e)`, `confidence`, the
   read-write quadrants). ADR-0005 declares no weight face: a `[weight][edge_id]`
   entry would address the whole store (edge keys carry no scope — the endpoints
   do), so a scope-wide Top-K is a projection table there, not a face.
 - **Every number here is a policy parameter** and belongs in
-  `config/krystallizer.kdl` (ADR-0008's rule): the density threshold, the
-  uncompressed-fact watermark, the iteration cap, the 2-hop radius. They are
-  named constants in `graph.rs` today; promoting them to config is a
-  config-node change, not a schema change. A message-count watermark (the
+  `config/krystallizer.kdl` (ADR-0008's rule): the iteration cap, the 2-hop
+  radius, the read budget. They are named constants in `graph.rs` today
+  (`LPA_ROUNDS`, `LPA_RADIUS`, and the door's `default_budget`); promoting
+  them to config is a config-node change, not a schema change. A message-count watermark (the
   draft's 100 messages) is NOT k10r's — when to add belongs to whoever reasons
   (ADR-0007); k10r takes the facts it is given.
 - **Re-partitioning is cheap by construction.** A node changing community
@@ -444,8 +383,9 @@ node; the demo page still colours by node kind.
 ### Owed / open (not settled by this document)
 
 - **The tables:** the entities collection (ns 36) and the facts edge
-  collection (ns 37) LANDED 2026-10-17; the capsule collection (ns 38)
-  LANDED 2026-10-19.
+  collection (ns 37) LANDED 2026-10-17; ns 38 holds the community SEQUENCE
+  row (one per scope, the id issuer) since 2026-10-19 — the capsule table
+  that ns once carried is retired (§4).
 - **Functional vs multi-valued kinds — CLOSED 2026-10-17.** The caller
   declares it PER ASSERTION, in the relation's props: `{"functional": true}`
   means one value per source, so the arriving fact is adjudicated against the
@@ -462,8 +402,8 @@ node; the demo page still colours by node kind.
   vs on the entity node (their LPA and the density metric). LPA votes over nodes
   and `|V|` counts them, so the node row carries it with a `by_community` face,
   and the community's edges arrive through the traversal faces with a membership
-  filter. An edge-side face would only be needed if a packet had to be edges
-  directly.
+  filter. An edge-side face would only be needed if the read had to serve
+  edges WITHOUT their endpoint rows.
 - **Literal objects — CLOSED 2026-10-17.** A literal becomes a NODE: kind
   `literal`, its exact text in `name` (the `by_name` entrance) and its integer
   projection in the declared hot `literal_num`. Uniformity is the reason —
@@ -472,15 +412,16 @@ node; the demo page still colours by node kind.
   field, so an interval or nearest read stays an ordered key scan rather than
   a vector-distance guess. Owed within it: a canonical projection for dates
   and non-numeric strings (only integers project today).
-- **The capsule call's carrier — CLOSED 2026-10-19: the caller PULLS.**
-  Since k10r cannot call out, the doors are the pending listing, the bucket
-  read, the packet, and the write-back (`PUT`), all on the capsules ns 38.
-  What remains is the summarizer itself — a caller-side single-pass worker
-  (gravity's), a FOLLOW-UP, never a k10r chore.
-- **Community id issuance — CLOSED 2026-10-19.** The seed is one past the
-  scope's current maximum read from the capsule table itself, so the id always
-  owns a row, the watermark needs no second counter, and no id is reused. (A
-  `HighWater` reduce is the same semantics with an extra row.)
+- **The capsule call's carrier — RETIRED 2026-10-20.** There is no
+  consolidation call and no door for one: the read renders the community
+  (§4–§5). The four pull doors (pending listing, bucket, packet, `PUT`) were
+  removed with the capsule table.
+- **Community id issuance — a SEQUENCE row (2026-10-20).** One row per scope
+  (`CommunitySeqKey { scope }` → `high_water`), written into the same batch as
+  the rows carrying the ids and flushed on the single-row path too. It only
+  grows, so an id is never reused even when a community's last member leaves —
+  which is the case "the maximum of the communities that exist" gets wrong
+  (the previous issuer, retired here).
 - **Two vocabularies in one ns vs. okm's per-handle dictionary cache** (found
   the hard way 2026-10-17; RETIRED the same day by an okm ruling): the edge ns
   used to hold BOTH relation kinds (allocated by okm's `Graph` through its
@@ -543,14 +484,16 @@ node; the demo page still colours by node kind.
   after the write, which would need a worker, a lag and a retry story for a
   derivation. They run inside the same `ingest` call, after the fact's own
   commit: one local pass, and a bad derivation is a caller retry.
-- **The community id's issuer.** This ADR first named okm's `HighWater` reduce
-  (single writer, never reused). The landing reads `one past the scope's
-  current maximum` from the capsule table instead — the issued id already owns
-  a row, so the watermark needs no second counter. Same guarantees, one fewer
-  mechanism.
-- **The carrier of the capsule call.** It was left open here ("pulled by the
-  caller or marked for it"). Ruled 2026-10-19: the caller pulls, over four
-  doors on the capsules ns 38 (§4).
+- **The community id's issuer, twice.** This ADR first named okm's `HighWater`
+  reduce. The first landing replaced it with "one past the scope's current
+  maximum" read from the capsule table — one fewer mechanism, but the guarantee
+  went with it: a departed community lowers that maximum, so an id could be
+  handed out twice. The sequence row (§1) restores the guarantee in one row.
+- **The capsule, and the doors that carried it.** The design had an LLM
+  summary per community, pulled by the caller (four doors: pending listing,
+  bucket, packet, `PUT`) — landed 2026-10-19, retired 2026-10-20. It made the
+  consumer maintain k10r's index, and it re-derived information the nodes and
+  edges already were. The read now renders the community (§4–§5).
 - **"Re-binning needs no tombstone."** Wrong under okm's overwrite semantics,
   and corrected in §2: the old face entry survives the rewrite, so a re-bin
   deletes it explicitly in the same batch.

@@ -29,16 +29,12 @@ primitives in `crates/mem-core/src/`.
 | ~~`GET /memory/{user_id}/search?q=`~~ | ~~`MemoryStore::search`~~ | flat memory (32) | **withdrawn 2026-10-19** |
 | ~~`MemoryStore::forget` / `list` / `stats`~~ | — | flat memory (32) | **withdrawn 2026-10-19** |
 | `POST /facts/{scope}/edges/{id}/touch` | `GraphStore::touch` (a caller-reported TOOL consult: counters bump, weight folds; 404 for an unknown edge or another scope's) | facts (37) | landed (2026-10-19) |
-| `GET /facts/{scope}/communities?state=` | `GraphStore::communities` (capsule listing + member count; `state=pending\|done`) | capsules (38) | landed (2026-10-19) |
-| `GET /facts/{scope}/communities/{id}` | bucket read: capsule + member nodes + the facts inside the community | capsules (38) + entities (36) | landed (2026-10-19) |
-| `GET /facts/{scope}/communities/{id}/packet` | the consolidation pull (canonical 8-slot tuple lines) | capsules (38) | landed (2026-10-19) |
-| `PUT /facts/{scope}/communities/{id}` | `GraphStore::complete_community` (summary lands, state `done`, uncompressed resets; 404 for an unknown community) | capsules (38) | landed (2026-10-19) |
 | `POST /facts/{scope}` | `GraphStore::ingest` (the body IS the 8-slot tuple; `scope` is the path) | fact graph — entities (36) + facts (37) | landed (2026-10-17) |
 | `GET /facts/{scope}/entities/{name}` | `GraphStore::entity_by_name` (the exact name/alias entrance; 404 on an unknown name) | entities (36) | landed (2026-10-17) |
 | `GET /facts/{scope}/entities/{node_id}/edges` | `GraphStore::out_facts` (one hop, both endpoints resolved) | facts (37) + entities (36) | landed (2026-10-17) |
 | `GET /graph/{scope}` | `GraphStore::scope_entities` + `scope_facts` (one scope as nodes + links — the renderer's bulk read) | entities (36) + facts (37) | landed (2026-10-17) |
 | `GET /facts/{scope}/search?q=&k=` | `GraphStore::retrieve` (the landing: node vectors, inner product, the 0.35 floor; no engine = 200 + `[]`) | entities (36) | landed (2026-10-19) |
-| `GET /facts/{scope}/recall?q=&k=&ts_ms=` | `GraphStore::recall` (landing + ONE hop in either direction, deduped by edge id; the seeds' capsules; facts ranked by weight) | entities (36) + facts (37) + capsules (38) | landed (2026-10-19) |
+| `GET /facts/{scope}/recall?q=&k=&budget=&ts_ms=` | `GraphStore::recall` (landing → the landed COMMUNITY's bucket → the rendered, id-bearing text; facts ranked by weight, capped by `budget`; no engine = an empty answer) | entities (36) + facts (37) | landed (2026-10-20) |
 | — no route | `entity` / `entity_props` / `fact` / `fact_props` / `typed_out` (the rest of the core's reads), and a scope-wide weight Top-K | fact graph (36/37) | core landed, no route; the scope-wide Top-K is a FOLLOW-UP (Phase 4 — it needs a `[scope][weight][edge_id]` projection, ADR-0005) |
 | — no route | initialization-memory assembly (traversal from the user node) | initialization memory | Declared (ADR-0001, no ns yet) |
 | — no route | task vertices + `task_links` edges (the third interface surface — a graph, sharing the facts' graph) | task graph | Declared (ADR-0001, no ns yet) |
@@ -55,9 +51,8 @@ the single cross-process form (ADR-0007 as revised).
 | Turn-start projection read | `MemorySurface::fetch_session` | `GET /channels/{c}/members/{m}/session` | `ChannelStore::fetch_full` | landed |
 | Turn-end delta append (user + reply, one `ts_ms`, `sub` 0/1) | `MemorySurface::append_message` | `POST /channels/{c}/messages` | `ChannelStore::append` | landed |
 | Compression landing (summarize) | not wired | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint` | door landed, gravity side owed (Phase 2/2.6) |
-| Capsule summarization (the write-side capsule generator) | not wired | pull `GET /facts/{scope}/communities?state=pending` then `GET .../{id}/packet`; write back `PUT .../{id}` | `GraphStore::communities` / `community_packet` / `complete_community` | doors landed (2026-10-19); the gravity side is a FOLLOW-UP (k10r never calls out, ADR-0007) |
 | Task progress (one task row per step; read with the turn-start projection, completion written at the call site) | ADR-0003 §3/§4 | read side rides `GET /channels/{c}/members/{m}/session`; the write face has no route yet | task vertices + `task_links` edges in the same graph as the facts | Declared — the third interface surface (ADR-0001; gravity Phase 2.6 |
-| `recall_memory` — long-term facts | tool face (not in code yet) | `GET /facts/{scope}/recall?q=` (landing + one hop) beside `GET /facts/{scope}/entities/{name}` (the exact entrance) | `GraphStore::recall` / `entity_by_name` | graph doors landed (2026-10-19); the tool face is a FOLLOW-UP (gravity side) |
+| `recall_memory` — long-term facts | tool face (not in code yet) | `GET /facts/{scope}/recall?q=` (landing + the landed community, rendered) beside `GET /facts/{scope}/entities/{name}` (the exact entrance) | `GraphStore::recall` / `entity_by_name` | graph doors landed (2026-10-20); the tool face is a FOLLOW-UP (gravity side) |
 | `commit_memory` — write facts | tool face | `POST /facts/{scope}` | `GraphStore::ingest(fact)` | door landed (2026-10-17); the tool itself is a FOLLOW-UP (gravity side) |
 | `resolve_skills` — the selectable skill list | tool face | `GET /code` (bring-up: the pool read) | `CodeStore::list` | bring-up form landed; the skill NODE (preconditions / steps / experience / verification) is Phase 5+ deferred |
 | `invoke_skill` — plan step: fetch the code row | tool face | `GET /code/{id}` | `CodeStore::get` | landed |

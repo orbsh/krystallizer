@@ -23,11 +23,11 @@ One entity class = one ns (OKM rule). Current state:
 | —   | Tasks / task_links DAG | Declared (ADR-0001 — the third interface surface; same graph as the facts) | ADR-0001, ADR-0002 |
 | 36  | Entities (fact graph) | Implemented (2026-10-17) | ADR-0010 |
 | 37  | Facts (fact graph edges) | Implemented (2026-10-17) | ADR-0010 |
-| 38  | Capsules (per community) | Implemented (2026-10-19) | ADR-0010 |
+| 38  | Community sequence (the id issuer, one row per scope) | Implemented (2026-10-20) | ADR-0010 |
 | —   | Initialization memory (persona / style) | Declared (ADR-0001) | ADR-0001 |
 
-The graph's read side (LPA, binning, the capsules) landed with it
-(2026-10-19); the session log's missing slices, the tasks, and the
+The graph's read side (LPA, binning, the rendered community) landed with it
+(2026-10-19/20); the session log's missing slices, the tasks, and the
 scope-wide Top-K's `[scope][weight][edge_id]` projection table land in later
 phases; a row above marked `Declared` is an ADR commitment rather than
 working code.
@@ -60,9 +60,10 @@ naming is 被动 / 主动, with 短期 / 长期 as the content horizon:
   formula in milli-units. Its three declared faces (`by_since` /
   `by_confidence` / `by_weight`) are NOT declared: nothing scans them, and
   every touch would maintain them for no reader (ADR-0005).
-- `CommunityRow` (ns 38): `[scope][community_id]` → `updated_at`, `state`
-  (0 pending / 1 done), `uncompressed`, `title`, `summary`. One row per
-  community, overwritten in place — a cache, not a log.
+- `CommunitySeqRow` (ns 38): `[scope]` → `high_water`, the last community id
+  issued. One row per scope, overwritten in place, monotonic — the issuer that
+  replaced both the `HighWater` reduce and the "max of the live community ids"
+  reading (ADR-0010 §1). The capsule table that ns once carried is retired.
 
 ## Flat memory (ns 32)
 
@@ -343,18 +344,18 @@ pub struct EntityRow {
   LRU eviction, and the scan is `Flat` (brute force) — the bucketed form is
   the documented next step, taken only when one scope's table no longer fits
   (ADR-0003's measured threshold).
-- **`GraphStore::recall` (`GET /facts/{scope}/recall`)** is that landing plus
-  ONE hop: the seeds, then every fact touching them in EITHER direction,
-  deduplicated by edge id (a fact between two seeds appears once, under the
-  first seed that reached it), returned together so the caller stitches
-  nothing. Deeper walks are the caller's composition over `out_edges` /
-  `in_edges`; the weight-ordered ranking inside the set waits for ADR-0005's
-  writer (each fact carries its declared `weight`, 0 until then).
-- **`community_id` and its `by_community` face are NOT declared yet.**
-  They belong to ADR-0010's steps 3–4 (the incremental LPA + binning), and
-  nothing reads them today: a field with no writer and a face with no
-  scanner are paid for by every record, so they land with the read path
-  that consumes them (PLAN Phase 4/5). ADR-0010 §1 keeps the design.
+- **`GraphStore::recall` (`GET /facts/{scope}/recall?q=&k=&budget=&ts_ms=`)**
+  is that landing plus the landed COMMUNITY: the seeds' `community_id`s are
+  read as buckets (the `by_community` face for members, the traversal faces for
+  the facts whose endpoints are both members), ranked by weight (ADR-0005),
+  capped at `budget` fact lines, and rendered as id-bearing text — one header,
+  one line per node, one line per fact. An empty landing is an empty answer
+  (no seeds, no text), never an error. Deeper walks are the caller's
+  composition over `out_edges` / `in_edges`.
+- **`community_id` and its `by_community` face** belong to ADR-0010's steps
+  3–4 (the incremental LPA + binning) and landed with them (2026-10-19): the
+  read side consumes the face as the community bucket. ADR-0010 §1 keeps the
+  design.
 
 ### Facts (ns 37) — edge collection
 
