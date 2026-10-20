@@ -156,8 +156,15 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     user bursts merge into one turn, every line `[name(id=N)]`, order = key
     order, tool rows skipped). Tests: the merge + the mid-generation ordering,
     and the seed. Wire (session DTO carrying turns) is still owed.
-  - [ ] 2.7c. The member's PROFILE node: `member_id → graph node`, profile
-    facts as edges, and the head traversal pulling the channel's members.
+  - [x] 2.7c. THE MEMBER → NODE MAPPING LANDED 2026-10-20:
+    `channel::member_node(channel, member)` = `member-{channel}-{member}` (a
+    NAMING RULE, not a table — a rename moves no fact), `view::member_memory`
+    (the head is EVERY member's incident facts, both directions, deduped by edge
+    id, weight-descending), and `assemble` loses its `user_node` parameter —
+    `DEFAULT_USER_NODE` is gone with the placeholder it was. Tests: the head
+    union over two members; the HTTP head test now ingests on `member-7-1`.
+    Gates: 111/0, clippy 0. The profile EXTRACTION (who writes those facts) is
+    the reasoning layer's, not this repo's.
 - [ ] Phase 2.8 — Code store: the delivered script's home, and the one
   table an executor's call reads (gravity ADR-0001/0003 — the script
   travels as a call argument, so identity is a bare surrogate id: no

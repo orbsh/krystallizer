@@ -139,9 +139,10 @@ pub struct MessageKey {
 | `open_checkpoint(channel, pointer, head)` | 在切分点上放下**空摘要**的节点（正在压的标记），带着冻结的头部 edge id；读仍由它下面那个节点作答 |
 | `complete_checkpoint(channel, summary)` | 把摘要填进最新的未完成节点——门唯一的 checkpoint 写 |
 | `append_checkpoint(channel, pointer, summary, head)` | 裸的一次性写（测试、回填）——门不调它 |
+| `channel::member_node(channel, member)` | 成员事实所挂的图节点名——`member-{channel}-{member}`，是规则不是表（改名不动任何事实） |
 | `note_read(channel, member, read_at)` / `read_at` | 盖 / 读读时钟（游标行是多方形才有的；不存位置） |
 
-`view::assemble(channels, graph, channel, scope, user_node)` 返回
+`view::assemble(channels, graph, channel, member, scope)` 返回
 `Projection { head, view }`——头部是用户节点的双向关联事实（36/37），门在出网前按
 `?format=` 渲染它。
 

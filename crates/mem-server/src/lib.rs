@@ -375,7 +375,6 @@ async fn fetch_session(
         channel_id,
         member_id,
         mem_core::view::DEFAULT_SCOPE,
-        mem_core::view::DEFAULT_USER_NODE,
     );
     let assembled = assembled_bytes(&projection);
     // The clock is the caller's (`query.ts_ms`); the POSITION is k10r's. The

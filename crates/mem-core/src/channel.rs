@@ -179,6 +179,17 @@ pub mod checkpoint_field {
     pub const HEAD: &str = "head";
 }
 
+/// The graph node name a channel member's facts hang on (ADR-0009 §1).
+///
+/// Identity is `member_id → node`, and the mapping is a NAMING RULE, not a table:
+/// deterministic, derived from the ids, stable across renames (a display name is
+/// presentation — renaming a member must not move a single fact). The channel is
+/// in the name because member 7 of channel 2 is a different person from member 7
+/// of channel 3, and a scope can hold many channels.
+pub fn member_node(channel_id: u64, member_id: u64) -> String {
+    format!("member-{channel_id}-{member_id}")
+}
+
 /// The member whose projection the reads assemble. Single-member shape
 /// (ADR-0008 §5: the single-user form needs nothing extra); the id is
 /// fixed so callers need not thread it through Phase 0's turn loop.

@@ -263,19 +263,18 @@ async fn member_checkpoints_are_independent() {
 /// default is the line form, and `format=struct` hands the same answer back
 /// as data for a consumer that assembles it itself.
 ///
-/// The user node is node 1 of scope 1 today (`DEFAULT_USER_NODE`), and the
-/// door passes both defaults — so a fact whose head resolves first in
-/// scope 1 is exactly what the head block must show.
+/// A member's facts hang on the node named `member-{channel}-{id}`
+/// (ADR-0009 §1), so a fact written on channel 7's member 1 node is exactly
+/// what that channel's head must show.
 #[tokio::test]
 async fn session_carries_the_head_block_and_named_roles() {
     let (base, _dir) = spawn_server().await;
     let client = reqwest::Client::new();
 
-    // The first entity scope 1 resolves takes node id 1.
     let status = client
         .post(format!("{base}/memories/1"))
         .json(&json!([
-            "用户",
+            "member-7-1",
             "person",
             {},
             "PREFERS",
@@ -310,8 +309,8 @@ async fn session_carries_the_head_block_and_named_roles() {
         .as_str()
         .expect("the head is rendered text, not data");
     assert!(
-        head.contains("用户 (person) -[PREFERS]-> 简洁"),
-        "the head renders the user node's fact: {head}"
+        head.contains("member-7-1 (person) -[PREFERS]-> 简洁"),
+        "the head renders the member node's fact: {head}"
     );
     assert!(head.contains("w="), "the line carries its counters: {head}");
 
@@ -337,7 +336,7 @@ async fn session_carries_the_head_block_and_named_roles() {
     let facts = structured["head"].as_array().unwrap();
     assert_eq!(facts.len(), 1, "the user node's one fact");
     assert_eq!(facts[0]["kind"], "PREFERS");
-    assert_eq!(facts[0]["src"]["name"], "用户");
+    assert_eq!(facts[0]["src"]["name"], "member-7-1");
     assert_eq!(facts[0]["dst"]["name"], "简洁");
     assert_eq!(facts[0]["src"]["node_id"], 1, "the default user node");
 

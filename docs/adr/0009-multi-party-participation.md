@@ -70,6 +70,12 @@ this ADR picks.
   weighting and enumerating them per fact are all out of reach, where an
   edge does all three.
 
+  The node's NAME is a rule, not a stored mapping: `member-{channel}-{member}`
+  (`channel::member_node`). Derived from the ids, so it survives a rename — a
+  display name is presentation, and renaming a member must not move a single
+  fact. The channel is in the name because member 7 of one channel is not member
+  7 of another, and one scope holds many channels.
+
 The two layers stay separate because they change for different reasons:
 identity is admin-time and deterministic; profiles are run-time and
 extracted. Merging them would put extracted, revisable content into a

@@ -26,17 +26,12 @@ use crate::channel::{role, ChannelStore, SessionView};
 use crate::graph::{FactView, GraphStore};
 use std::collections::BTreeSet;
 
-/// The corpus the head reads, and which node inside it is the user.
+/// The corpus the head reads.
 ///
-/// Both default to 1 for the same reason [`DEFAULT_MEMBER`] does: the
-/// single-member shape carries no member→node mapping yet (ADR-0008 §5).
-/// Phase 2.7's members layer replaces them with a resolution; until then
-/// the door passes these defaults and a caller that knows better states
-/// its own values.
-///
-/// [`DEFAULT_MEMBER`]: crate::channel::DEFAULT_MEMBER
+/// Defaults to 1 because a fresh scope starts at one and the door rarely knows
+/// better; the NODE inside it is no longer a default — it is resolved from the
+/// channel's members (ADR-0009 §1).
 pub const DEFAULT_SCOPE: u64 = 1;
-pub const DEFAULT_USER_NODE: u64 = 1;
 
 /// The assembled projection. The order is the field order: head, then the
 /// checkpoint (coverage point + summary), then the increment.
@@ -75,7 +70,6 @@ pub fn assemble(
     channel_id: u64,
     member_id: u64,
     scope: u64,
-    user_node: u64,
 ) -> Projection {
     let view = channels.fetch_full(channel_id, member_id);
     // The head is the FROZEN set the checkpoint recorded (ADR-0008 §2): the
@@ -83,10 +77,10 @@ pub fn assemble(
     // time and re-rendered per request, so `?format=` still picks the
     // representation while the head's bytes stay stable between compressions.
     // Before the first compression there is no snapshot, so the live traversal
-    // answers.
+    // answers — over EVERY member of the channel (ADR-0009 §1).
     let head = match &view.head {
         Some(ids) => ids.iter().filter_map(|id| graph.fact_view(*id)).collect(),
-        None => initialization_memory(graph, scope, user_node),
+        None => member_memory(channels, graph, scope, channel_id),
     };
     Projection { head, view }
 }
@@ -160,17 +154,39 @@ pub fn turns_of(
     turns
 }
 
-/// The facts incident to `user_node`, both directions, each edge once.
-fn initialization_memory(graph: &mut GraphStore, scope: u64, user_node: u64) -> Vec<FactView> {
-    let out = graph.out_edges(scope, user_node);
-    let incoming = graph.in_edges(scope, user_node);
+/// The facts incident to EVERY member of the channel, both directions, each edge
+/// once — the head before the first compression.
+///
+/// ADR-0009 §1: a member's facts live on the node `member-{channel}-{id}`, and
+/// the head is what that node touches, for all of them (the agent included: its
+/// facts are as much initialization memory as the user's). Member order is the
+/// store's (by id); the sort is weight-descending, ties by edge id, so repeated
+/// reads of one corpus answer identically.
+pub fn member_memory(
+    channels: &mut ChannelStore,
+    graph: &mut GraphStore,
+    scope: u64,
+    channel_id: u64,
+) -> Vec<FactView> {
+    let members = channels.members(channel_id);
     let mut seen = BTreeSet::new();
-    let mut head: Vec<FactView> = out
-        .into_iter()
-        .chain(incoming)
-        .filter(|edge_id| seen.insert(*edge_id))
-        .filter_map(|edge_id| graph.fact_view(edge_id))
-        .collect();
+    let mut head: Vec<FactView> = Vec::new();
+    for (key, _) in members {
+        let name = crate::channel::member_node(channel_id, key.member_id);
+        let Some((node, _)) = graph.entity_by_name(scope, &name) else {
+            continue; // no facts hang on this member yet
+        };
+        let edges = graph.out_edges(scope, node);
+        let incoming = graph.in_edges(scope, node);
+        for edge_id in edges.into_iter().chain(incoming) {
+            if !seen.insert(edge_id) {
+                continue;
+            }
+            if let Some(fact) = graph.fact_view(edge_id) {
+                head.push(fact);
+            }
+        }
+    }
     head.sort_by(|a, b| {
         b.edge
             .weight

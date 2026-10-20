@@ -33,7 +33,7 @@ pub const KEYSPACE_MEMORY: &str = "memory";
 
 pub use channel::{
     kind, role, ChannelStore, CheckpointKey, CheckpointRow, CursorKey, CursorRow,
-    MemberKey, MemberRow, MessageKey, MessageRow, SessionView, DEFAULT_MEMBER, member_role,
+    MemberKey, MemberRow, MessageKey, MessageRow, SessionView, DEFAULT_MEMBER, member_node, member_role,
 };
 pub use code::{CodeKey, CodeRow, CodeStore};
 pub use compress::{
@@ -54,4 +54,4 @@ pub use log::{
 };
 pub use render::{render_head, render_memory, RenderFormat};
 pub use service::{open_service, ServiceStores};
-pub use view::{assemble, role_name, Projection, DEFAULT_SCOPE, DEFAULT_USER_NODE};
+pub use view::{assemble, member_memory, role_name, Projection, DEFAULT_SCOPE};

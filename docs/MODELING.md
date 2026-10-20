@@ -164,9 +164,10 @@ pub struct MessageKey {
 | `open_checkpoint(channel, pointer, head)` | put the EMPTY-summary node at the split (the "compressing" marker) carrying the frozen head edge ids; the read keeps answering from the node below |
 | `complete_checkpoint(channel, summary)` | fill the newest open node — the only checkpoint write a door makes |
 | `append_checkpoint(channel, pointer, summary, head)` | raw single-shot write (tests, backfill) — the door does NOT call it |
+| `channel::member_node(channel, member)` | the graph node name a member's facts hang on — `member-{channel}-{member}`, a rule not a table (a rename moves no fact) |
 | `note_read(channel, member, read_at)` / `read_at` | stamp / read the read clock (a cursor row is the multi-party shape's; no position is stored) |
 
-`view::assemble(channels, graph, channel, scope, user_node)` returns
+`view::assemble(channels, graph, channel, member, scope)` returns
 `Projection { head, view }` — the head is the user node's incident facts
 (36/37), which the door renders per `?format=` before it goes on the wire.
 

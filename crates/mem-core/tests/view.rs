@@ -11,7 +11,7 @@
 
 use mem_core::channel::{kind, role};
 use mem_core::graph::FactTuple;
-use mem_core::view::{assemble, role_name, Projection, DEFAULT_SCOPE, DEFAULT_USER_NODE};
+use mem_core::view::{assemble, role_name, Projection, DEFAULT_SCOPE};
 use mem_core::{open_service, ServiceStores};
 
 fn tuple(text: &str) -> FactTuple {
@@ -31,7 +31,6 @@ fn projection(stores: &mut ServiceStores) -> Projection {
         7,
         1,
         DEFAULT_SCOPE,
-        DEFAULT_USER_NODE,
     )
 }
 
@@ -54,12 +53,12 @@ fn an_empty_projection_is_empty_not_wrong() {
 fn head_is_both_directions_deduplicated() {
     let (_d, mut stores) = open();
     let scope = DEFAULT_SCOPE;
-    // "用户" resolves first → node 1 (the default user node).
+    // "member-7-1" resolves first → node 1 (the default user node).
     stores
         .graph
         .ingest(
             scope,
-            &tuple(r#"["用户","person",{},"PREFERS",{},"简洁","style",{}]"#),
+            &tuple(r#"["member-7-1","person",{},"PREFERS",{},"简洁","style",{}]"#),
         )
         .unwrap();
     // Same node as the TAIL: an incoming edge.
@@ -67,7 +66,7 @@ fn head_is_both_directions_deduplicated() {
         .graph
         .ingest(
             scope,
-            &tuple(r#"["k10r","system",{},"OWNED_BY",{},"用户","person",{}]"#),
+            &tuple(r#"["k10r","system",{},"OWNED_BY",{},"member-7-1","person",{}]"#),
         )
         .unwrap();
     // A second outgoing edge.
@@ -75,7 +74,7 @@ fn head_is_both_directions_deduplicated() {
         .graph
         .ingest(
             scope,
-            &tuple(r#"["用户","person",{},"WRITES",{},"Rust","language",{}]"#),
+            &tuple(r#"["member-7-1","person",{},"WRITES",{},"Rust","language",{}]"#),
         )
         .unwrap();
 
@@ -152,7 +151,7 @@ fn the_head_is_frozen_at_the_compression() {
         .graph
         .ingest(
             scope,
-            &tuple(r#"["用户","person",{},"PREFERS",{},"简洁","style",{}]"#),
+            &tuple(r#"["member-7-1","person",{},"PREFERS",{},"简洁","style",{}]"#),
         )
         .unwrap();
 
@@ -190,7 +189,7 @@ fn the_head_is_frozen_at_the_compression() {
         .graph
         .ingest(
             scope,
-            &tuple(r#"["用户","person",{},"PREFERS",{},"浓咖啡","drink",{}]"#),
+            &tuple(r#"["member-7-1","person",{},"PREFERS",{},"浓咖啡","drink",{}]"#),
         )
         .unwrap();
 
@@ -290,4 +289,38 @@ fn the_default_member_is_seeded_on_first_touch() {
         turns[0].text,
         format!("[{}(id=1)] hi", mem_core::channel::DEFAULT_MEMBER_NAME)
     );
+}
+
+/// The head is EVERY member's facts, not one user node's (ADR-0009 §1): a
+/// member's facts hang on `member-{channel}-{id}`, so two members bring two sets,
+/// deduplicated by edge id and sorted by weight.
+#[test]
+fn the_head_comes_from_every_member_of_the_channel() {
+    let (_d, mut stores) = open();
+    let scope = DEFAULT_SCOPE;
+    for (member, name, drink) in [(10u64, "小王", "美式"), (11u64, "小李", "拿铁")] {
+        stores
+            .channels
+            .put_member(7, member, name, mem_core::member_role::HUMAN);
+        let node = mem_core::channel::member_node(7, member);
+        stores
+            .graph
+            .ingest(
+                scope,
+                &tuple(&format!(
+                    r#"["{node}","person",{{}},"PREFERS",{{}},"{drink}","drink",{{}}]"#
+                )),
+            )
+            .unwrap();
+    }
+
+    let p = projection(&mut stores);
+    let names: Vec<&str> = p.head.iter().map(|f| f.src.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["member-7-10", "member-7-11"],
+        "both members' facts, in member-id order at equal weight"
+    );
+    assert_eq!(p.head[0].dst.name, "美式");
+    assert_eq!(p.head[1].dst.name, "拿铁");
 }
