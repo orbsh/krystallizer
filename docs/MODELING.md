@@ -217,7 +217,9 @@ pub struct LogRow { pub level: u8, pub event: String }   // + the dynamic segmen
 The delivered script's home — the one table an executor's call reads.
 Declared in `crates/mem-core/src/code.rs`; the design is gravity's
 (ADR-0001/0003: the node mount reads a script that travels as a call
-argument), and this repo's own ADR for the store is owed.
+argument), and this repo's own decision is ADR-0012 — a bare surrogate id
+(no name, no hash), the language as data that never defaults, and a row
+that is code rather than a skill.
 
 ### Key: `CodeKey` (`KeyEncode`)
 

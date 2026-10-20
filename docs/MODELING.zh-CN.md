@@ -184,7 +184,8 @@ pub struct LogRow { pub level: u8, pub event: String }   // 另有动态段
 
 交付脚本的家——执行方的调用会读的那唯一一张表。声明在
 `crates/mem-core/src/code.rs`；设计在 gravity（ADR-0001/0003：节点 mount
-读的脚本以调用参数形态走），本仓为这张表自己的 ADR 仍欠。
+读的脚本以调用参数形态走），本仓自己的裁决是 ADR-0012——裸代理 id（没有名字、
+没有哈希）、语言是永不默认的数据、一行是代码而不是 skill。
 
 ### Key：`CodeKey`（`KeyEncode`）
 
