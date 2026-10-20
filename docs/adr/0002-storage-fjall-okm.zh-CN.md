@@ -28,8 +28,9 @@ graph-memory 设计（wiki）已给出原子图的 KV 编码模式；剩余的 c
 - 消息（ns 33）：key `(ns, channel_id, ts_ms + 决胜段)`——排序用 gravity
   打的时间戳（ADR-0008）。回复可证明晚于它所回应的内容，所以物理时钟能
   保住因果序，而共享 seq 计数器不能；同一毫秒的并发用决胜段分开。
-  prefix checkpoint 模型要求的稳定全序照旧成立，checkpoint 本身
-  （ns 34，按成员）不可变。
+  prefix checkpoint 模型要求的稳定全序照旧成立；checkpoint 立在日志**旁边**，
+  是 channel 指向某一条记录的指针（latest-wins），所以不可变的是日志自己的行
+  （ADR-0008 §2）。
 - 任务与事实图是**同一张图**（ADR-0001：第三个接口面与事实同图——任务
   顶点 + `task_links` 依赖边）。旧 PG schema 的 `(task_id, seq)` 复合主键
   留档为迁移映射。
@@ -46,8 +47,8 @@ graph-memory 设计（wiki）已给出原子图的 KV 编码模式；剩余的 c
   写竞态、可重放、坏派生只是一次重试），不是因为更纯。
 - 一个 WriteBatch = 一个事务：checkpoint 写入 + 事实入库 + 权重 delta 原子
   提交，要么全落要么全不落。
-- 没有任何东西截断日志：压缩点住在自己的表里（ns 34），用 `coverage_ts`
-  指向日志——那里的一行是 latest-wins，这种可变性被关在它自己的表内。
+- 没有任何东西截断日志：压缩点住在自己的表里（ns 34），是指向**某一条**日志记录的
+  `(ts_ms, sub)` 指针——那里的一行是 latest-wins，这种可变性被关在它自己的表内。
   坏摘要是一次重试，不是损失。
 - 存储永不分裂成两个真相：视图裁剪只在读侧，且谁拥有写谁拥有记录。
 - SlateDB+S3 后端藏在同一 engine trait 后面，等跨机共享成为真实需求

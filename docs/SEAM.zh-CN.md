@@ -35,8 +35,8 @@ community id），但**维护**那个结构从来不是消费方的活儿。所�
 | 门（HTTP） | mem-core 原语 | 表（ns） | 状态 |
 |---|---|---|---|
 | `POST /channels/{c}/messages` | `ChannelStore::append` | messages (33) | 已落 |
-| `GET /channels/{c}/members/{m}/session?format=&ts_ms=` | `channel::fetch_full` + `view::assemble`（头部 → 压缩点 → 增量）+ `render::render_head`；读取时跑 `compress::evaluate`，判词随 `compress: {checkpoint, prompt}` 出行；`note_read` 用 `ts_ms` 盖游标（不给 = 不盖） | messages + checkpoints (33/34) + cursors (39) + 决策日志 (40) + 头部的那些事实 (36/37) | 已落（视图形状 2026-10-20；压缩判词 2026-10-20） |
-| `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint_from_verdict`（正文只有摘要；覆盖点取 k10r 交付过的切分点；没有未了判词 = 400） | checkpoints (34) + 决策日志 (40) | 已落（2026-10-20） |
+| `GET /channels/{c}/session?format=&ts_ms=` | `channel::fetch_full` + `view::assemble`（头部 → 压缩点 → 增量）+ `render::render_head`；读取时跑 `compress::evaluate`，判词随 `compress: {checkpoint, prompt}` 出行——引擎先在那个切分点上开出「正在压」的行（空摘要 = 标记）；缓存钟量的是读位置（单人形态 = 日志最后一条；多方 = 游标行） | messages (33) + checkpoints (34) + cursors (39，仅多方) + 头部的那些事实 (36/37) | 已落（视图形状 2026-10-20；压缩判词 2026-10-20）；成员段随 ADR-0008 的指针裁决从路径里退出（代码仍带 `{m}`） |
+| `POST /channels/{c}/checkpoint` | `ChannelStore::complete_checkpoint`（正文只有摘要；填进 k10r 开出的那一行；没有开着的行 = 400） | checkpoints (34) | 已落（2026-10-20）；同样待去掉成员段 |
 | `POST /memories/{scope}` | `GraphStore::ingest`（请求体就是 8 元组；`scope` 走路径） | 实体（36）+ 事实（37） | 已落（2026-10-17） |
 | `GET /memories/{scope}/recall?q=&k=&budget=&ts_ms=&format=` | `GraphStore::recall`（落点 → 着陆到的**社区**的桶 → 一种表示：渲染好的带 id 文本，或 `format=struct` 时只给数据；按权重排序、受 `budget` 封顶；无 engine = 空答案） | 实体（36）+ 事实（37） | 已落（2026-10-20） |
 | `GET /memories/{scope}/entities/{name}` | `GraphStore::entity_by_name`（名/别名精确入口；未知名字 404） | 实体（36） | 已落（2026-10-17） |
@@ -52,6 +52,9 @@ community id），但**维护**那个结构从来不是消费方的活儿。所�
 已声明、尚无门（核心侧，后续阶段）：初始化记忆装配（随会话投影的头部到达，
 ADR-0001/0008）、任务顶点 + `task_links` 边与任务实例态（第三个接口面，
 ADR-0001；gravity ADR-0003 §3/§4）。
+
+**内部诊断没有门。** 结构化日志（ns 41，ADR-0011）由 k10r 自己写，只能通过将来
+analysis 类的门读；它永不在消费者的回合路径上，也永不作为工具出现。
 
 ### 1b. 分析 API——`/graph`
 
@@ -73,10 +76,10 @@ in-process 不是第二道门：`InProcessSurface` 在调用方进程内链接�
 
 | gravity 操作 | gravity 侧名称 | 门 | mem-core 原语 | 状态 |
 |---|---|---|---|---|
-| 轮首取投影（头部是 k10r 渲染的文本，格式由 gravity 配置给出；`struct` 被拒） | `MemorySurface::fetch_session` | `GET /channels/{c}/members/{m}/session?format=` | `ChannelStore::fetch_full` + `render::render_head` | 已落 |
+| 轮首取投影（头部是 k10r 渲染的文本，格式由 gravity 配置给出；`struct` 被拒） | `MemorySurface::fetch_session` | `GET /channels/{c}/session?format=` | `ChannelStore::fetch_full` + `render::render_head` | 已落；路径里的 `{m}` 随 ADR-0008 的指针裁决退出，gravity 的 `fetch_session(channel_id, member_id)` 跟着改 |
 | 轮末追加 delta（用户消息 + 回复，同一个 `ts_ms`，`sub` 0/1） | `MemorySurface::append_message` | `POST /channels/{c}/messages` | `ChannelStore::append` | 已落 |
-| 压缩落地（summarize） | 未接 | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint` | 门已落，gravity 侧欠（Phase 2/2.6） |
-| 任务进度（一步一 task 行；读随轮首投影，完成在执行点写） | ADR-0003 §3/§4 | 读侧随 `GET /channels/{c}/members/{m}/session`；写侧尚无路由 | 任务顶点 + `task_links` 边，与事实同图 | 已声明——第三个接口面（ADR-0001）；gravity Phase 2.6 |
+| 压缩落地（summarize） | 未接 | `POST /channels/{c}/checkpoint` | `ChannelStore::append_checkpoint_from_verdict` | 门已落，gravity 侧欠（Phase 2/2.6） |
+| 任务进度（一步一 task 行；读随轮首投影，完成在执行点写） | ADR-0003 §3/§4 | 读侧随 `GET /channels/{c}/session`；写侧尚无路由 | 任务顶点 + `task_links` 边，与事实同图 | 已声明——第三个接口面（ADR-0001）；gravity Phase 2.6 |
 | `recall_memory`——长期事实 | 工具面（未进代码） | `GET /memories/{scope}/recall?q=`（落点 + 着陆到的社区，已渲染）与 `GET /memories/{scope}/entities/{name}`（精确入口） | `GraphStore::recall` / `entity_by_name` | 图的门已落（2026-10-20）；工具面是后续件（gravity 侧） |
 | `commit_memory`——写事实 | 工具面 | `POST /memories/{scope}` | `GraphStore::ingest(fact)` | 门已落（2026-10-17）；工具本身是后续件（gravity 侧） |
 | `resolve_skills`——可选 skills 列表 | 工具面 | `GET /code`（bring-up：池读） | `CodeStore::list` | bring-up 形态已落；skill 节点（前置 / 步骤 / 经验 / 后验）是 Phase 5+ deferred |
@@ -100,8 +103,8 @@ k10r 的任何路由都不会成为 LLM 的工具目标，k10r 也从不回调�
 - **追加优先是**图**的规则；会话日志只追加**（ADR-0002）：凡
   承载知识或数据的表（节点/边行、权重、派生项、code 行）默认追加——无读改
   写竞态、可重放、坏派生只是一次重试——并在「禁令比更新本身更贵」的地方允许
-  修改。日志不属此列：它保持只追加，压缩点住在自己的表里、用 `coverage_ts`
-  指向日志。
+  修改。日志不属此列：它保持只追加，压缩点住在自己的表里，是指向某一条记录的
+  `(ts_ms, sub)` 指针。
 - **调用方持时钟。** `ts_ms` / `sub` 随请求走；服务端从不分配
   （ADR-0008 §3）。任何新门都带同一条规则。
 - **一库两 keyspace，按写形态分**（每进程一个、一把锁）：`channel`

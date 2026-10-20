@@ -12,12 +12,12 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   - [x] 1c. In-memory vector search LANDED (2026-10-19, on the GRAPH's nodes — the graph is the successor of flat memory): the entity row carries `embedding: Vector<f32>` (empty is legal → skipped), `GraphStore::retrieve(scope, q, k)` loads the scope's rows from the KV on first use into `okm-vector`'s `ExactIndex` (the scan is okm's; k10r owns only when to rebuild and the memory budget), drops everything under `LANDING_FLOOR` (0.35 cosine, i.e. `dist2 <= 2 - 2*cos`) and returns top-k seeds; the table is derived state (dropped on every write) and byte-budgeted with LRU eviction. Door: `GET /graph/{scope}/search?q=&k=` (empty landing = 200 + `[]`). Gates: mem-core 15/0 for the graph suite (3 retrieval — exact-name lands at score 1.0, the table follows writes, no engine lands nothing), mem-server facts 9/0. Followed the same day by the ONE-HOP expansion: `GraphStore::recall` + `GET /memories/{scope}/recall` (seeds + every fact touching them in either direction, deduped by edge id; an empty landing returns both empty). Gates: mem-core graph 16/0, mem-server facts 10/0. Paid inside this item: the weight-ordered ranking (ADR-0005 — 2026-10-19, see 3b). Not this repo's items by design: deeper-than-one-hop walks (the caller composes them); the index's own form — exact or approximate — is `okm-vector`'s call, adopted from that crate, never a phase or a threshold parameter here (ADR-0003).
   - [x] 1d. Recall gate LANDED (2026-10-19) as a MEASURED BASELINE, not the PG comparison: `crates/mem-core/tests/recall_gate.rs` builds a 14-node corpus (k10r's own vocabulary) + a fixed 14-query set, each query naming the node it must reach, and prints/asserts the numbers — **precision@1 = 13/14 (0.929), precision@3 = 14/14 (1.000), lowest true-hit score 0.637 against the 0.35 floor, and the off-corpus query ("今天北京天气怎么样，要不要带伞") lands nothing**. The one p@1 miss is "记忆图谱" → `用户记忆` (0.680) over `事实图谱` (0.661) — two memory concepts, not a failure of landing. The gate asserts p@1 ≥ 0.85, p@3 ≥ 0.95, every true hit above the floor, and the empty landing; it skips when the machine has no model artifact. Open (a follow-up, not a debt — that stack is not runnable here): the comparison against the legacy pgvector + pdb.bm25 + RRF stack; the fixture above is what a future comparison is measured against.
   - [x] 1e. HTTP face for the 主动面 LANDED (2026-10-16): `POST /memory` (`MemoryStore::store` — the store assigns the id, the caller's `created_at` rides the request) and `GET /memory/{user_id}/search?q=` (`MemoryStore::search` — one user's key range; an empty result is legal). `forget` / `list` / `stats` still have no route. This is the tool face gravity and other agents read and write through (ADR-0001; the graph's door (`ingest(fact)`) is Phase 3. Gates: mem-server 12/0 (4 in `tests/memory_surface.rs` — round trip, user-scoped scan, legal empty result, flat memory + code sharing one keyspace without leaking into each other), mem-core 22/0 untouched, clippy 0, fmt clean. Transitional: this door is withdrawn together with the table when the fact graph lands (Phase 3).
-- [ ] Phase 2 — Channel log & agent projection: messages / members /
-  cursors / checkpoints (per member) tables with gravity-assigned
+- [ ] Phase 2 — Channel log & agent projection: messages / cursors /
+  checkpoints tables with gravity-assigned
   timestamp ordering; session-control primitives (tail / summarize-as-
   append) over the projection; thread = parented sub-channel; topic tag
-  index. The compression point is its OWN table (ns 34) pointing into the
-  log by `coverage_ts` — latest-wins inside that table — while the log
+  index. The compression point is its OWN table (ns 34), a `(ts_ms, sub)`
+  pointer at ONE log record — latest-wins inside that table — while the log
   itself stays append-only (ADR-0002 / ADR-0008).
   (ADR-0001, ADR-0002, ADR-0008)
   - [x] Minimal slice LANDED (2026-10-09): ns 33 messages + ns 34
@@ -41,22 +41,25 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   detail (ADR-0008. (ADR-0006, ADR-0008)
 - [ ] Phase 2.6 — Compression policy engine: parameterized triggers
   (cache-clock, budget percentage, max-gap split — all from
-  `krystallizer.kdl`, per-user override layer reserved), structured
-  decision logs; regression tuning deferred until feedback labels exist.
+  `krystallizer.kdl`, per-user override layer reserved); NO decision log
+  (2.6d: the checkpoint row itself answers which span was compressed, and
+  tuning needs labels that do not exist yet).
   The engine owns its inputs (the log's timestamps, the assembled
-  context's size, the member's read cursor) and evaluates at the
+  context's size, the channel's read position) and evaluates at the
   projection read; its verdict rides the projection as a control field
   (`compress: { checkpoint, prompt }`) — there is NO agent-side
   compression interface. The caller runs the extra branch turn and
-  returns the summary; k10r derives coverage from the compressed span.
-  Owed with it: the decision-log table + its ns, and the tail prompt's
-  text in PROMPTS. Lands with/after 2.5 — its budget signal measures
-  the assembled view. (ADR-0008)
+  returns the summary; k10r fills it into the checkpoint row it opened.
+  Owed with it: the tail prompt's text in PROMPTS (§2, landed). Lands
+  with/after 2.5 — its budget signal measures the assembled view.
+  (ADR-0008)
   - [x] 2.6a. The STATE side LANDED 2026-10-20: `CursorRow` (ns 39,
     `[channel][member] → last-read ts`, latest-wins and never rewinding) and
     `DecisionRow` (ns 40, keyed by the proposed SPLIT so re-reads refresh one
     row), both in the CHANNEL keyspace because a summary landing and its
     decision closing commit in ONE batch (`append_checkpoint_from_verdict`).
+    The decision log was WITHDRAWN the same day (2.6d): the checkpoint row
+    carries that state itself.
   - [x] 2.6b. The ENGINE LANDED 2026-10-20: `crates/mem-core/src/compress.rs`
     — pure functions, the three heuristic signals (budget mid-band, cache
     clock, max-gap split), no LLM and no timer; the numbers are the
@@ -74,12 +77,36 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     gravity Phase 3 (its PLAN records the seam half). Gates: mem-server 25/0
     (the summary→coverage loop is `compression_surface`'s 4th test),
     gravity-core 17/0 after the seam change.
+  - [ ] 2.6d. The POINTER + STATE rulings (2026-10-20, ADR-0008 §2/§4):
+    (a) the checkpoint is the CHANNEL's pointer — key `[channel][ts][sub]`, the
+    key IS the pointer at one log record, so the increment reads rows strictly
+    after it in `(ts, sub)` order and same-millisecond messages are not
+    swallowed by a millisecond-granular cut; no member segment anywhere (one
+    channel, one voice; an agent's boundary moves with its long-term memory).
+    (b) The compression state lives in the CHECKPOINT TABLE ALONE: rows
+    accumulate (duplicates are idempotent, an earlier pointer's late summary is
+    free history), an EMPTY summary is the "compressing" marker the engine
+    skips, and the initial prompt rides each row as `prompt_snapshot` — stored,
+    never recomputed, so the context prefix stays byte-stable for the prompt
+    cache. The decision log (ns 40) is WITHDRAWN: it served "tune later" with no
+    labels and no reader, while the checkpoint row already answers which span was
+    compressed. The cursor stays `[channel][member] → (ts, sub)` and only in the
+    multi-party shape (single user + agent: the log's newest record IS the read
+    position, so no row and no cache-clock storage).
+    Docs are synced in this pass (ADR-0008 pair, ADR-0001/0009 pairs, MODELING
+    pair, SEAM pair); the CODE still carries `DEFAULT_MEMBER`, the ts-only
+    coverage point and a standalone decision-log table. Touches `channel.rs`
+    (three keys, the increment filter, `open`/`complete` checkpoint writes),
+    `mem-server` (door paths lose `{m}`, the DTOs lose the member field, the
+    checkpoint door fills the open row), `view::assemble` + `view.rs`'s
+    placeholder constants (the head becomes the row's snapshot), and gravity's
+    `MemorySurface` plus its prism/booth callers.
 - [ ] Phase 2.7 — Multi-party participation: member display-name/role
   fields + per-message attribution in serialization; profile knowledge as
   graph facts (a member node plus its edges — the `kind=profile` flat category
   is withdrawn, ADR-0009; interrupt
-  trigger (seconds-scale passive window) with silent outcomes in the
-  decision log. (ADR-0009)
+  trigger (seconds-scale passive window); interrupt outcomes are not recorded.
+  (ADR-0009)
 - [ ] Phase 2.8 — Code store: the delivered script's home, and the one
   table an executor's call reads (gravity ADR-0001/0003 — the script
   travels as a call argument, so identity is a bare surrogate id: no
@@ -111,6 +138,13 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   Owed: this repo's own ADR for the store, and `list()` is the declared
   bring-up posture for a resolver's pool read — the graph's retrieval
   replaces it.
+- [ ] Phase 2.9 — Structured log (ADR-0011): one append-only table at ns 41,
+  keyed `[ts_ms][seq]` (k10r's own clock; `seq` seeded from the last key at
+  open), declared `level` + `event` from vocabulary constants and NO faces yet,
+  locator (`channel` / `scope` / `entity` / `edge` / `msg`) + payload in the
+  dynamic segment, `logs { max-rows }` trimming oldest-first in the SAME batch,
+  trimming never logged, no HTTP door. First writer: the compression verdict
+  with its parameter/signal snapshot.
 - [ ] Phase 3 — Atomic-fact graph: fact node/edge tables, ingestion of the 8-slot fact tuple (the facts arrive by the model's ACTIVE add — the caller routes that call to `ingest(fact)`; no compression pass and no trailing extraction worker, ADR-0008, write-time fusion (in-domain id / out-of-domain embedding convergence + small-candidate LLM decision — the LLM decision is gravity's, per ADR-0007's boundary), weight system (the counters on the edge row, read-write quadrants, tool_invoke_count); initialization memory (人设/风格) — a traversal from the user node, delivered at the context head; the task graph (task vertices + `task_links` dependency edges) shares that same graph — tasks are the third interface surface, their instance state structured rather than approximate. Write-time resolution (upsert on a new fact) and cognitive binning ride this side per ADR-0010 (fact node / community reverse index / the community sequence; ns 36/37 for the graph, 38 for the sequence). Scope note: append-first covers THIS side (node/edge rows, weights, derived entries) — the log does not (ADR-0002. Flat memory (ns 32) and its HTTP door are withdrawn in this landing: the graph is its successor (ADR-0001's carrier line, "flat memory, then the graph") — flat was the pre-graph form of the same extracted knowledge, and a text row carries no per-fact identity. What is owed with it: the fate of legacy flat rows (ADR-0002's PG migration imports them as-is) is a migration question, not a schema one. (ADR-0001, ADR-0002, ADR-0004, ADR-0005, ADR-0007, ADR-0010)
   - [x] 3a. The write side's steps 1–2 LANDED (2026-10-17): the entities
     collection (ns 36) + the facts edge collection (ns 37) and the

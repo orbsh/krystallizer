@@ -34,7 +34,8 @@ macros.**
   answers, so a physical clock preserves causal order where a shared seq
   counter does not; same-millisecond bursts are resolved by the tiebreaker
   segment. The prefix-checkpoint model keeps its stable total order, and the
-  checkpoint itself (ns 34, per member) is immutable.
+  checkpoint lives BESIDE the log as the channel's pointer at one record
+  (latest-wins), so what stays immutable is the log's own rows (ADR-0008 §2).
 - Tasks and the fact graph are ONE graph (ADR-0001: the third interface
   surface shares the facts' graph — task vertices plus `task_links`
   dependency edges). The legacy PG schema's `(task_id, seq)` composite stays
@@ -59,7 +60,7 @@ macros.**
   weight deltas commit atomically or not at all; a batch that fails leaves
   nothing.
 - Nothing truncates the log: the compression point lives in its own table
-  (ns 34), pointing into the log by `coverage_ts` — latest-wins there, that
+  (ns 34), a `(ts_ms, sub)` pointer at ONE log record — latest-wins there, that
   mutability confined to that table. A bad summary is a retry, not a loss.
 - The store never splits into two truths: view trimming is read-side only,
   and whoever owns the write owns the record.

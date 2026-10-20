@@ -84,7 +84,8 @@ long-horizon content travelling on the passive channel.
 Three kinds:
 
 - **被动 (short-term)** — the loop's own current context: the channel log plus
-  its per-member projection. The session itself is the memory; retrieval is not
+  its checkpoint (a pointer into the log + that span's summary). The session
+  itself is the memory; retrieval is not
   involved, and the model never touches it.
 - **主动 (long-term)** — facts outside the context, queried by the model AS A
   TOOL: `store` / `search` / `forget` over the fact graph. Flat memory — the

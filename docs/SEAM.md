@@ -42,8 +42,8 @@ sit here were exactly that (retired 2026-10-20).
 | Door (HTTP) | mem-core primitive | Table (ns) | Status |
 |---|---|---|---|
 | `POST /channels/{c}/messages` | `ChannelStore::append` | messages (33) | landed |
-| `GET /channels/{c}/members/{m}/session?format=&ts_ms=` | `channel::fetch_full` + `view::assemble` (head → checkpoint → increment) + `render::render_head`; `compress::evaluate` runs at the read and its verdict rides `compress: {checkpoint, prompt}`; `note_read` stamps the cursor from `ts_ms` (absent = nothing stamped) | messages + checkpoints (33/34) + cursors (39) + the decision log (40) + the head's facts (36/37) | landed (view shape 2026-10-20; compression verdict 2026-10-20) |
-| `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint_from_verdict` (the body is the SUMMARY alone; the coverage point is the split k10r served; 400 when no verdict is open) | checkpoints (34) + the decision log (40) | landed (2026-10-20) |
+| `GET /channels/{c}/session?format=&ts_ms=` | `channel::fetch_full` + `view::assemble` (head → checkpoint → increment) + `render::render_head`; `compress::evaluate` runs at the read and its verdict rides `compress: {checkpoint, prompt}` — the engine first opens the in-flight checkpoint row at that split (empty summary = the marker); the cache clock measures against the read position (single-user shape: the log's last record; multi-party: the cursor row) | messages (33) + checkpoints (34) + cursors (39, multi-party only) + the head's facts (36/37) | landed (view shape 2026-10-20; compression verdict 2026-10-20); the member segment leaves the path with ADR-0008's pointer ruling (code still carries `{m}`) |
+| `POST /channels/{c}/checkpoint` | `ChannelStore::complete_checkpoint` (the body is the SUMMARY alone; it fills the open row at the split k10r served; 400 when no row is open) | checkpoints (34) | landed (2026-10-20); same member segment to drop |
 | `POST /memories/{scope}` | `GraphStore::ingest` (the body IS the 8-slot tuple; `scope` is the path) | entities (36) + facts (37) | landed (2026-10-17) |
 | `GET /memories/{scope}/recall?q=&k=&budget=&ts_ms=&format=` | `GraphStore::recall` (landing → the landed COMMUNITY's bucket → one representation: the rendered, id-bearing text or, under `format=struct`, the data alone; ranked by weight, capped by `budget`; no engine = an empty answer) | entities (36) + facts (37) | landed (2026-10-20) |
 | `GET /memories/{scope}/entities/{name}` | `GraphStore::entity_by_name` (the exact name/alias entrance; 404 on an unknown name) | entities (36) | landed (2026-10-17) |
@@ -60,6 +60,10 @@ Declared, not yet a door (core side, later phases): initialization-memory
 assembly (rides the session projection's head, ADR-0001/0008), task vertices +
 `task_links` edges and task instance state (the third interface surface,
 ADR-0001; gravity ADR-0003 §3/§4).
+
+**Internal diagnostics have NO door.** The structured log (ns 41, ADR-0011) is
+written by k10r itself and read only through a future analysis-class door; it is
+never on a consumer's turn path and never a tool.
 
 ### 1b. Analysis API — `/graph`
 
@@ -82,10 +86,10 @@ Every operation in this table rides a CORE door (§1a); the analysis class
 
 | gravity operation | gravity-side name | Door | mem-core primitive | Status |
 |---|---|---|---|---|
-| Turn-start projection read (the head is TEXT k10r rendered, in the format gravity's config names; `struct` is refused there) | `MemorySurface::fetch_session` | `GET /channels/{c}/members/{m}/session?format=` | `ChannelStore::fetch_full` + `render::render_head` | landed |
+| Turn-start projection read (the head is TEXT k10r rendered, in the format gravity's config names; `struct` is refused there) | `MemorySurface::fetch_session` | `GET /channels/{c}/session?format=` | `ChannelStore::fetch_full` + `render::render_head` | landed; the door's `{m}` segment goes with ADR-0008's pointer ruling, and gravity's `fetch_session(channel_id, member_id)` follows it |
 | Turn-end delta append (user + reply, one `ts_ms`, `sub` 0/1) | `MemorySurface::append_message` | `POST /channels/{c}/messages` | `ChannelStore::append` | landed |
-| Compression landing (summarize) | not wired | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint` | door landed, gravity side owed (Phase 2/2.6) |
-| Task progress (one task row per step; read with the turn-start projection, completion written at the call site) | ADR-0003 §3/§4 | read side rides `GET /channels/{c}/members/{m}/session`; the write face has no route yet | task vertices + `task_links` edges in the same graph as the facts | Declared — the third interface surface (ADR-0001; gravity Phase 2.6 |
+| Compression landing (summarize) | not wired | `POST /channels/{c}/checkpoint` | `ChannelStore::append_checkpoint_from_verdict` | door landed, gravity side owed (Phase 2/2.6) |
+| Task progress (one task row per step; read with the turn-start projection, completion written at the call site) | ADR-0003 §3/§4 | read side rides `GET /channels/{c}/session`; the write face has no route yet | task vertices + `task_links` edges in the same graph as the facts | Declared — the third interface surface (ADR-0001; gravity Phase 2.6 |
 | `recall_memory` — long-term facts | tool face (not in code yet) | `GET /memories/{scope}/recall?q=` (landing + the landed community, rendered) beside `GET /memories/{scope}/entities/{name}` (the exact entrance) | `GraphStore::recall` / `entity_by_name` | graph doors landed (2026-10-20); the tool face is a FOLLOW-UP (gravity side) |
 | `commit_memory` — write facts | tool face | `POST /memories/{scope}` | `GraphStore::ingest(fact)` | door landed (2026-10-17); the tool itself is a FOLLOW-UP (gravity side) |
 | `resolve_skills` — the selectable skill list | tool face | `GET /code` (bring-up: the pool read) | `CodeStore::list` | bring-up form landed; the skill NODE (preconditions / steps / experience / verification) is Phase 5+ deferred |
@@ -114,7 +118,7 @@ an actor (ADR-0007).
   read-modify-write race, replayable, a bad derivation is a retry — and a
   modification is allowed where the ban would cost more than the update itself.
   The log is not that case: it stays append-only, and the compression point
-  lives in its own table pointing into the log by `coverage_ts`.
+  lives in its own table as a `(ts_ms, sub)` pointer at one record.
 
 - **The caller owns the clock.** `ts_ms` / `sub` ride the request; the server
   never assigns (ADR-0008 §3). Any new door carries the same rule.

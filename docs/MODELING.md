@@ -16,12 +16,14 @@ One entity class = one ns (OKM rule). Current state:
 | ns  | Entity        | Status                  | ADR      |
 |-----|---------------|-------------------------|----------|
 | 33  | Channel messages | Implemented (minimal slice, 2026-10-09) | ADR-0008 |
-| 34  | Checkpoints (per member) | Implemented (minimal slice, 2026-10-09) | ADR-0008 |
+| 34  | Checkpoint (channel pointer → summary + persona snapshot) | Implemented (minimal slice, 2026-10-09) | ADR-0008 |
 | 35  | Code (delivered scripts) | Implemented (bring-up slice, 2026-10-15) | gravity ADR-0001/0003 |
 | —   | Tasks / task_links DAG | Declared (ADR-0001 — the third interface surface; same graph as the facts) | ADR-0001, ADR-0002 |
 | 36  | Entities (fact graph) | Implemented (2026-10-17) | ADR-0010 |
 | 37  | Facts (fact graph edges) | Implemented (2026-10-17) | ADR-0010 |
 | 38  | Community sequence (the id issuer, one row per scope) | Implemented (2026-10-20) | ADR-0010 |
+| 39  | Read cursor (a channel pointer; multi-party only) | Implemented (2026-10-20) | ADR-0008 §2 |
+| 41  | Structured log (diagnostics; internal, no door) | Declared | ADR-0011 |
 | —   | Initialization memory (persona / style) | Declared (ADR-0001) | ADR-0001 |
 
 The graph's read side (LPA, binning, the rendered community) landed with it
@@ -36,8 +38,8 @@ Three kinds, split by who drives them (ADR-0001; the
 naming is 被动 / 主动, with 短期 / 长期 as the content horizon:
 
 - **被动 (short-term)** — the current context: the channel log (ns 33) plus
-  its per-member projection (ns 34). The loop fetches and appends; never a
-  tool.
+  its checkpoint (ns 34: a pointer into the log + that span's summary). The loop
+  fetches and appends; never a tool.
 - **主动 (long-term)** — facts outside the context, reached as a TOOL by
   any agent. The carrier is the fact graph (ns 36/37). Raw conversation is not
   this kind's business: the channel log (ns 33) already holds every message.
@@ -62,8 +64,10 @@ Current standing:
 - Channel messages (ns 33): a **named face** — prefix scan by
   `[channel_id][ts_ms][sub]`: replay, increment and max-gap reads are one prefix
   scan, and the interval rides the main table's own sort segment (sequential, no
-  fetch-back), per ADR-0008 §3. Checkpoints (ns 34): point reads by
-  `[channel_id][member_id]`.
+  fetch-back), per ADR-0008 §3. The checkpoint (ns 34) is read in KEY ORDER —
+  `[channel_id][ts_ms][sub]`, newest = the last key of one prefix range — so
+  "the latest compression" costs no sort; ns 40 (the withdrawn decision log) is
+  free.
 - Code (ns 35): `get(code_id)` is a **point read**; `list()` is a **declared
   degenerate path** (the whole table in id order, for resolving or linking,
   replaced by graph retrieval — ADR-0003/0018).
@@ -83,17 +87,23 @@ payload without the ns; the Table prepends `[ns 2B][slot 1B]`).
 
 ## Channel log (ns 33)
 
-The append-only message table plus the three per-member tables the projection
-and the compression engine read (ADR-0008). Declared in
+The append-only message table plus the three tables the projection and the
+compression engine read (ADR-0008). Declared in
 `crates/mem-core/src/channel.rs`.
 
-**What `member_id` is.** A member is one consumer's projection IDENTITY on one
-channel: the agent (or human) whose view of the shared log this is. The three
-per-member tables below are keyed `[channel_id][member_id]` and nothing else,
-and a MESSAGE has no member at all — a message belongs to the log, not to
-anyone's view. There is no members TABLE yet (display name and role are Phase
-2.7); the single-member shape fixes `id = 1` (`DEFAULT_MEMBER`), so today every
-projection on a channel is that one member.
+**No member dimension, and no third table.** The two tables here belong to the
+CHANNEL, not to a reader: the checkpoint (the channel's pointer + that span's
+summary + the persona snapshot) and — only in the MULTI-PARTY shape — the read
+cursor. One log has no second compression subject: an agent's boundary moves with
+its long-term memory, and one channel has one voice, so a member segment could
+only be a constant, and a constant is not a dimension (ADR-0008 §2 and its Why
+Not). A MESSAGE has no member either: a message belongs to the log. A member is a
+SENDER (display name / role, Phase 2.7) — a ROW FIELD plus serialization
+attribution, never a key here. The decision log that used to sit beside these was
+WITHDRAWN (2026-10-20): the checkpoint row already answers "which span was
+compressed", and the parameter snapshots it kept had no reader (no labels → no
+fitting). `DEFAULT_MEMBER = 1` is the placeholder the code still carries and is
+on its way out.
 
 ### `MessageKey` / `MessageRow` (ns 33)
 
@@ -116,53 +126,83 @@ pub struct MessageKey {
   tool_call/tool_result reserved for view-layer pruning), `content String`.
   Storage always holds the full row — pruning is the view's job (ADR-0006).
 
-### `CheckpointKey` / `CheckpointRow` (ns 34)
+### `CheckpointKey` / `CheckpointRow` (ns 34) — the channel's pointer
 
-- Key `[channel_id 8B][member_id 8B]` — one checkpoint per (channel, member),
-  LATEST-WINS: the projection reads only the newest, and a compression's audit
-  trail is the decision log below rather than this row.
-- Row: `coverage_ts u64` (the increment starts STRICTLY after it),
-  `summary String`.
+- Key `[channel_id 8B][ts_ms 8B][sub 2B]` — the KEY IS THE POINTER: one row per
+  compression, naming the log record its summary ends at. Reads take the
+  HIGHEST-keyed row that carries a summary — byte order is `(ts, sub)` order, so
+  "the latest compression" is a key comparison, never a sort.
+- Row: `summary String` (EMPTY = a compression in flight; that row is what tells
+  the engine to propose nothing on the next read) and `prompt_snapshot String`
+  (the initial prompt / persona text as of that compression — stored, not
+  recomputed, so the context prefix stays byte-stable and the prompt cache
+  holds).
+- Rows accumulate instead of overwriting: a span compressed twice writes its own
+  rows at the same pointer (same read result, one wasted model call), and a
+  summary returning for an EARLIER pointer lands below the newest row —
+  invisible to reads, kept as free history, never deleted.
 
 ### `CursorKey` / `CursorRow` (ns 39)
 
-- Key `[channel_id 8B][member_id 8B]` — the member's last-read instant, stamped
-  from the caller's clock at a projection read: ADR-0008 §2's read cursor, the
-  cache clock's only observable. Latest-wins, and a read carrying an older
-  instant leaves it alone — the cursor never rewinds.
-- Row: `ts_ms u64`.
-
-### `DecisionKey` / `DecisionRow` (ns 40) — the decision log
-
-What it is for: it records what the compression policy PROPOSED and whether the
-summary of that span ever came back. Two uses — (1) the summary the caller
-returns must land on the split it was handed, and this row is where that
-coverage point comes from; (2) tuning later reads these real records (measured
-signals + parameter snapshot) instead of adjusting numbers by feel.
-
-- Key `[channel_id 8B][member_id 8B][checkpoint_ts 8B]` — one row per SPLIT the
-  policy proposed, not per read, so re-reading an unchanged projection refreshes
-  one row instead of growing the log.
-- Row: `state u8` (PENDING → DONE), `trigger u8`, and the verdict's whole
-  parameter/signal snapshot: `assembled_bytes`, `context_bytes`,
-  `budget_percent`, `cache_ttl_ms`, `idle_ms`, `max_gap_ms`.
+- Key `[channel_id 8B][member_id 8B]` — a participant's read position, stamped
+  from the caller's clock at a projection read: ADR-0008 §2's cursor, the cache
+  clock's only observable. A row exists only in the MULTI-PARTY shape; with a
+  single user + agent the cursor is safely the log's newest record, so nothing is
+  stored and the idle time is "now − the last record's ts" outright. Latest-wins,
+  and a read carrying an older position leaves it alone — the cursor never
+  rewinds.
+- Row: `ts_ms u64` + `sub u16` — the pointer, again naming a record.
 
 ### Access (`ChannelStore`)
 
 | Call | What it does |
 |---|---|
 | `append(channel, ts_ms, sub, role, kind, content)` | one log entry; returns its key |
-| `fetch_full(channel, member)` | `SessionView { coverage_ts, summary, increment, last_read }` |
-| `append_checkpoint(channel, member, coverage_ts, summary)` | raw checkpoint write — the door does NOT call it |
-| `note_read` / `read_cursor` | stamp / read the read cursor |
-| `note_verdict` / `pending_verdict` | log what the policy proposed / read the newest open proposal |
-| `append_checkpoint_from_verdict(channel, member, summary)` | land a summary on the served split; checkpoint + decision in ONE batch; `None` when nothing is open |
+| `fetch_full(channel)` | `SessionView { coverage, summary, increment, last_read }` — coverage/summary from the newest checkpoint row |
+| `open_checkpoint(channel, pointer, snapshot)` | write the IN-FLIGHT row at the split: empty summary (the "compressing" marker) + the persona snapshot |
+| `complete_checkpoint(channel, summary)` | fill the newest open row's summary — the only checkpoint write a door makes |
+| `append_checkpoint(channel, pointer, summary)` | raw single-shot write (tests, re-derivation) — the door does NOT call it |
+| `note_read(channel, position)` / `read_cursor` | stamp / read the read cursor (a cursor row is the multi-party shape's) |
 
-`view::assemble(channels, graph, channel, member, scope, user_node)` returns
+`view::assemble(channels, graph, channel, scope, user_node)` returns
 `Projection { head, view }` — the head is the user node's incident facts
 (36/37), which the door renders per `?format=` before it goes on the wire.
 
-Not yet: threads, topic tags, the members table (ADR-0008/0009).
+Not yet: threads, topic tags, the members table (ADR-0008/0009) — that table is
+what finally gives the cursor its people.
+
+The CODE still carries the pre-ruling shapes (a constant `member` segment on all
+three tables, a ts-only coverage point); aligning it is ADR-0008's landing work,
+not a schema question.
+
+## Structured log (ns 41) — diagnostics, no door
+
+ADR-0011. Landed in `crates/mem-core/src/log.rs` when the phase runs; nothing
+writes it yet.
+
+### `LogKey` / `LogRow` (ns 41)
+
+```rust
+pub struct LogKey { pub ts_ms: u64, pub seq: u64 }
+pub struct LogRow { pub level: u8, pub event: String }   // + the dynamic segment
+```
+
+- Key `[ts_ms 8B][seq 8B]` — BE fixed width, so byte order IS time order: "the
+  last N rows", "the window around T" and a replay are prefix/range scans.
+  `ts_ms` is k10r's OWN clock (the writer is the process; ADR-0008 §3's
+  caller-clock rule governs caller data, not the process's observations). `seq`
+  is a process-local monotonic counter seeded at open from the last key (the
+  id-recovery pattern), so a restart continues instead of overwriting.
+- Row: `level u8` (trace/debug/info/warn/error) and `event String`, both from
+  vocabulary constants, both DECLARED and NEITHER carrying a 0x1 face — a face is
+  one extra index write per row for a query nobody issues yet; add it when a query
+  turns hot.
+- Everything variable rides slot 1's dynamic segment: the LOCATOR (`channel` /
+  `scope` / `entity` / `edge` / `msg`, whichever applies) and the PAYLOAD
+  (parameter snapshots, measured signals, the split point, error text). Nested
+  values go through `put_frame_named`.
+- Bounded by `logs { max-rows }`: a write trims oldest-first in the SAME batch,
+  and the trim is never logged (trimming would emit rows that trigger trimming).
 
 ## Code store (ns 35)
 

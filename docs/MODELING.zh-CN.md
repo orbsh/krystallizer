@@ -15,12 +15,14 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
 | ns  | 实体              | 状态                     | ADR      |
 |-----|-------------------|--------------------------|----------|
 | 33  | Channel 消息日志   | 已实现（最小切片，2026-10-09） | ADR-0008 |
-| 34  | Checkpoint（每成员）| 已实现（最小切片，2026-10-09） | ADR-0008 |
+| 34  | Checkpoint（channel 的指针 → 摘要 + 人设快照）| 已实现（最小切片，2026-10-09） | ADR-0008 |
 | 35  | Code（交付的脚本） | 已实现（bring-up 切片，2026-10-15） | gravity ADR-0001/0003 |
 | —   | Tasks / task_links DAG | 已声明（ADR-0001——第三个接口面；与事实同图） | ADR-0001, ADR-0002 |
 | 36  | 实体（事实图）     | 已实现（2026-10-17）      | ADR-0010 |
 | 37  | 事实（事实图边）   | 已实现（2026-10-17）      | ADR-0010 |
 | 38  | 社区序号（发号用，每 scope 一行） | 已实现（2026-10-20） | ADR-0010 |
+| 39  | 读游标（channel 的指针；仅多方） | 已实现（2026-10-20） | ADR-0008 §2 |
+| 41  | 结构化日志（诊断用；内部，无门） | 已声明 | ADR-0011 |
 | —   | 初始化记忆（人设 / 风格） | 已声明（ADR-0001） | ADR-0001 |
 
 图的读侧（LPA、分箱、社区的渲染）已随之落地（2026-10-19/20）；会话日志缺的几块、
@@ -32,8 +34,8 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
 三种，按谁驱动分（ADR-0001）；命名是 被动 / 主动，
 短期 / 长期 作内容时程的定语：
 
-- **被动（短期）**——当前上下文：channel 日志（ns 33）+ 每成员投影
-  （ns 34）。循环自己取、自己追加，从不作为工具。
+- **被动（短期）**——当前上下文：channel 日志（ns 33）+ 它的 checkpoint
+  （ns 34：指向日志的指针 + 那一段的摘要）。循环自己取、自己追加，从不作为工具。
 - **主动（长期）**——不在上下文里的事实，以**工具**形式到达，任何 agent 都能
   用。载体是事实图（ns 36/37）。原始对话不归这一类：channel 日志（ns 33）已经
   收了每一条消息。
@@ -55,7 +57,9 @@ okm 的纪律：查询只走声明过的路径——没有通用全表扫描的�
 
 - Channel 消息（ns 33）：**具名面**——`[channel_id][ts_ms][sub]` 前缀扫描：回放、
   increment、max-gap 读都是一次前缀扫描，且区间就落在主表自己的排序段上（顺序扫、
-  无回表），见 ADR-0008 §3。checkpoint（ns 34）：按 `[channel_id][member_id]` 点读。
+  无回表），见 ADR-0008 §3。checkpoint（ns 34）按**键序读**——`[channel_id][ts_ms][sub]`，
+  最新 = 一次前缀区间扫描的最后一个键，所以「最近一次压缩」不需要排序；ns 40
+  （已撤除的决策日志）空出。
 - Code（ns 35）：`get(code_id)` 是**点读**；`list()` 是**声明的退化路径**（全表按
   id 序，供解析与关联挑选，由图谱检索取代——ADR-0003/0018）。
 - Fact graph：OKM 节点 collection（entities）+ 边 collection（facts）带声明面，
@@ -73,14 +77,18 @@ payload，不含 ns；Table 自行前置 `[ns 2B][slot 1B]`）。
 
 ## Channel 日志（ns 33）
 
-一张只追加的消息表，加三张每成员表（投影与压缩引擎读它们），ADR-0008。声明在
+一张只追加的消息表，加三张投影与压缩引擎读的表（ADR-0008）。声明在
 `crates/mem-core/src/channel.rs`。
 
-**`member_id` 是什么。** 成员 = 某个消费者在这个 channel 上的**投影身份**：这份
-共享日志的「谁在看」的那一个（一个 agent，或一个人）。下面三张每成员表只用
-`[channel_id][member_id]` 定位，仅此而已；**消息没有成员**——消息属于日志，不属于
-任何人的视图。members 表（显示名 / 角色）还没落地（Phase 2.7），单成员形态把 id 定
-成 `1`（`DEFAULT_MEMBER`），所以今天一个 channel 上的投影都是这一个成员。
+**没有成员维度，也没有第三张表。** 这里的两张表属于 **channel**，不属于某个读者：
+checkpoint（channel 的指针 + 那一段的摘要 + 人设快照）与——只在**多方**形态才有的
+——读游标。一份日志上不存在第二个压缩主体：agent 的边界随长期记忆流动，一条
+channel 也只有一道声音——所以成员段只能是一段恒量，而恒量不是维度（ADR-0008 §2
+及其 Why Not）。**消息也没有成员**：消息属于日志。成员是**发送者**（显示名 /
+角色，Phase 2.7）——以**行字段**加序列化归属的形式进来，不进这里的键。原先立在
+旁边的决策日志已撤除（2026-10-20）：「哪一段被压过」checkpoint 行自己就答了，而
+它存的参数快照没有读者（没有标签就没有拟合）。`DEFAULT_MEMBER = 1` 是代码仍带着、
+正在去掉的占位。
 
 ### `MessageKey` / `MessageRow`（ns 33）
 
@@ -101,48 +109,71 @@ pub struct MessageKey {
 - 行：`role u8`（user/assistant/tool/system）、`kind u8`（text；tool_call/tool_result
   预留给视图层剪枝）、`content String`。存储永远持有完整行，剪枝归视图（ADR-0006）。
 
-### `CheckpointKey` / `CheckpointRow`（ns 34）
+### `CheckpointKey` / `CheckpointRow`（ns 34）——channel 的指针
 
-- 键 `[channel_id 8B][member_id 8B]`——每 (channel, member) 一条 checkpoint，
-  **覆盖写（latest-wins）**：投影只读最新这一条，一次压缩的审计史是下面的决策
-  日志，不是这一行。
-- 行：`coverage_ts u64`（增量严格晚于此点）、`summary String`。
+- 键 `[channel_id 8B][ts_ms 8B][sub 2B]`——**键就是指针**：一次压缩一行，指向它的
+  摘要覆盖到的那条日志记录。读投影取**键序最大的、带摘要的那一行**——字节序就是
+  `(ts, sub)` 序，所以「最近一次压缩」是一次键比较，不用排序。
+- 行：`summary String`（**空 = 正在压**；引擎看到它就下一轮放过）与
+  `prompt_snapshot String`（那次压缩时的人设/初始提示词文本——存快照而不是每次
+  重算，前缀才字节稳定，prompt cache 才留得住）。
+- 行是**累积**的，不覆盖：同一段压两次各写一行（读出来一样，代价一次多余的模型
+  调用）；更早指针的摘要晚回来时落在最大行之下——读路径看不见，也不必删，那是
+  免费的历史。
 
 ### `CursorKey` / `CursorRow`（ns 39）
 
-- 键 `[channel_id 8B][member_id 8B]`——成员的最近一次读取时刻，由投影读取时用
-  调用方的钟盖上：ADR-0008 §2 的读游标，也是缓存钟唯一的可观测物。latest-wins，
-  带更早时刻的读取不会改动它——游标永不倒退。
-- 行：`ts_ms u64`。
-
-### `DecisionKey` / `DecisionRow`（ns 40）——决策日志
-
-干什么的：记下压缩策略**提议过什么**，以及那份摘要到底回没回来。两个用途——(1) 调用方
-回的摘要要落在它当初收到的那个切分点上，覆盖点由这一行派生；(2) 将来有反馈标签时，
-调参读的是这些真实记录（信号实测值 + 参数快照），而不是凭印象改数字。
-
-- 键 `[channel_id 8B][member_id 8B][checkpoint_ts 8B]`——一行 = 策略提议过的
-  一个**切分点**（不是一次读取），所以同一投影重复读取只刷新一行，日志不膨胀。
-- 行：`state u8`（PENDING → DONE）、`trigger u8`，以及判词的整份参数/信号快照：
-  `assembled_bytes`、`context_bytes`、`budget_percent`、`cache_ttl_ms`、
-  `idle_ms`、`max_gap_ms`。
+- 键 `[channel_id 8B][member_id 8B]`——某个参与者的读位置，由投影读取时用调用方
+  的钟盖上：ADR-0008 §2 的读游标，也是缓存钟唯一的可观测物。只有**多方**形态才有
+  这一行；单人与 agent 时游标可以安全地当作日志最新的一条，于是不存，空闲时长直接
+  是「现在 − 最后一条的 ts」。latest-wins，带更早位置的读取不会改动它——游标永不
+  倒退。
+- 行：`ts_ms u64` + `sub u16`——指针，同样指向一条记录。
 
 ### 访问面（`ChannelStore`）
 
 | 调用 | 做什么 |
 |---|---|
 | `append(channel, ts_ms, sub, role, kind, content)` | 追加一条，返回它的键 |
-| `fetch_full(channel, member)` | `SessionView { coverage_ts, summary, increment, last_read }` |
-| `append_checkpoint(channel, member, coverage_ts, summary)` | 裸的 checkpoint 写——门不调它 |
-| `note_read` / `read_cursor` | 盖 / 读读游标 |
-| `note_verdict` / `pending_verdict` | 记下策略的提议 / 取最新未了的提议 |
-| `append_checkpoint_from_verdict(channel, member, summary)` | 把摘要落在交付过的切分点上；checkpoint 与决策同一批；没有未了判词返回 `None` |
+| `fetch_full(channel)` | `SessionView { coverage, summary, increment, last_read }`——覆盖点与摘要取最新那行 checkpoint |
+| `open_checkpoint(channel, pointer, snapshot)` | 在切分点上开一行**正在压**的行：空摘要（标记）+ 人设快照 |
+| `complete_checkpoint(channel, summary)` | 把摘要填进最新那行未完成的行——门唯一的 checkpoint 写 |
+| `append_checkpoint(channel, pointer, summary)` | 裸的一次性写（测试、重派生）——门不调它 |
+| `note_read(channel, position)` / `read_cursor` | 盖 / 读读游标（游标行是多方形才有的） |
 
-`view::assemble(channels, graph, channel, member, scope, user_node)` 返回
+`view::assemble(channels, graph, channel, scope, user_node)` 返回
 `Projection { head, view }`——头部是用户节点的双向关联事实（36/37），门在出网前按
 `?format=` 渲染它。
 
-尚未落地：thread、topic tag、members 表（ADR-0008/0009）。
+尚未落地：thread、topic tag、members 表（ADR-0008/0009）——游标的「人」那一维
+正是随这张表才回来。
+
+代码里还带着裁决前的形状（三张表都有一段恒为 1 的 `member` 段，覆盖点只有一个
+`coverage_ts`）；对齐它是 ADR-0008 的落地件，不是 schema 问题。
+
+## 结构化日志（ns 41）——诊断用，没有门
+
+ADR-0011。该阶段落地时声明在 `crates/mem-core/src/log.rs`；目前没有写者。
+
+### `LogKey` / `LogRow`（ns 41）
+
+```rust
+pub struct LogKey { pub ts_ms: u64, pub seq: u64 }
+pub struct LogRow { pub level: u8, pub event: String }   // 另有动态段
+```
+
+- 键 `[ts_ms 8B][seq 8B]`——BE 定宽，字节序即时间序：「最近 N 条」「T 附近的窗口」
+  与回放都是前缀/区间扫。`ts_ms` 是 **k10r 自己的钟**（写者就是进程；ADR-0008 §3
+  的「调用方持钟」管的是调用方数据，不是进程自己的观察）。`seq` 是进程内单调计数，
+  开库时从最后一个键续上（与 id 恢复同一套做法），所以重启是接着写而不是覆盖。
+- 行：`level u8`（trace/debug/info/warn/error）与 `event String`，两个都取自常量
+  词汇表，都是声明字段，且**都不挂 0x1 面**——面是每行多一条索引写，换来一个当前
+  没人发的查询；等某个查询成了热路径再加。
+- 变的部分全在槽 1 的动态段：**定位**（`channel` / `scope` / `entity` / `edge` /
+  `msg`，哪个适用记哪个）与**载荷**（参数快照、信号实测值、切分点、错误原文）。
+  嵌套值走 `put_frame_named`。
+- 由 `logs { max-rows }` 封顶：写一行时在同一 batch 里从最老的键开始删。裁剪本身
+  不记日志（否则裁剪产生日志、日志触发裁剪）。
 
 ## Code 存储（ns 35）
 

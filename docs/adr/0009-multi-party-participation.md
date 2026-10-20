@@ -94,16 +94,18 @@ in latency budget:
 - **Compression**: the ADR-0008 clock (cache-expiry aligned), unchanged.
 
 **Silence is the common outcome, not the failure case.** Most passive
-triggers should end without speaking. Interrupt decisions therefore log
-too — signal values, the decision, and the reason — because the
-negative samples ("did not speak") are exactly the data future tuning
-of the speak/annoy tradeoff needs. The decision log from ADR-0008 §4
-extends to this trigger unchanged.
+triggers should end without speaking. No interrupt decision is recorded today —
+the decision log was withdrawn with ADR-0008 §4: the negative samples ("did not
+speak") only pay off once tuning exists and labels do, so what to record is a
+question for that day, not storage paid for now.
 
 ### 3. What does NOT change
 
-- One container: the multi-party channel is the same messages table;
-  members and cursors are already per-member keyed (ADR-0008 §1/§2).
+- One container: the multi-party channel is the same messages table. The members
+  table is keyed by member id, and the read cursor is `[channel][member]` — the
+  cursor's people dimension is exactly what this table finally supplies
+  (ADR-0008 §2). The CHECKPOINT does not gain one: it is the channel's pointer at
+  one record, and the summary it holds belongs to the one voice on that log.
 - The projection contract: assembly reads checkpoint + increment + the
   member-attributed view; attribution is a serialization concern, never
   written back into the log.
@@ -140,7 +142,7 @@ extends to this trigger unchanged.
 - Profile knowledge lands in the graph (a member node plus its edges); the
   `kind=profile` flat category and its extraction routing do not exist —
   neither was ever built.
-- The policy engine gains the interrupt trigger (seconds-scale window)
-  and the decision log gains silent outcomes.
+- The policy engine gains the interrupt trigger (seconds-scale window). No
+  interrupt outcome is recorded (the decision log is withdrawn, ADR-0008 §4).
 - Single-user mode needs no new mechanism: it is the multi-party shape
   with one member and every trigger firing on the turn boundary.

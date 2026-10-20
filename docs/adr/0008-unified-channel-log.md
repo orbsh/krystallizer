@@ -1,6 +1,6 @@
 # ADR-0008: Unified Channel Log — Agent Context as a Projection, Heuristic Compression
 
-**Status**: Partially landed (2026-10-09: the minimal slice — channel messages ns 33 + per-member checkpoints ns 34, `ChannelStore::append`/`fetch_full`/`append_checkpoint`, serving gravity Phase 0; 2026-10-20: the read cursor (ns 39) and the compression policy engine (§4, decision log ns 40); pending: threads, topic tags, members, and the checkpoint door's derived coverage)
+**Status**: Partially landed (2026-10-09: the minimal slice — channel messages ns 33 + checkpoint ns 34, `ChannelStore::append`/`fetch_full`/`append_checkpoint`, serving gravity Phase 0; 2026-10-20: the compression policy engine (§4); the same day, two rulings: the checkpoint is the CHANNEL's POINTER (no member segment in its key), and the compression state lives in the CHECKPOINT TABLE ALONE — the initial prompt's snapshot rides the row, and no decision log exists; pending: threads, topic tags, members, and the code's constant member segment + folding the decision log into the checkpoint)
 **Date**: 2026-09-22
 **Chinese**: [0008-unified-channel-log.zh-CN.md](0008-unified-channel-log.zh-CN.md)
 **Amends**: ADR-0001 (summarize's truncation step), ADR-0002 (session message key), ADR-0006 (session read/write shape)
@@ -40,10 +40,11 @@ The human chat and the LLM conversation share ONE storage primitive:
 an **append-only channel log**, keyed `(ns, channel_id, timestamp)`.
 Nothing else is a container.
 
-- Private chat = a channel with two members. A group chat = N members.
-- An agent's "session" is NOT a container. It is the agent's **own
-  projection** onto the channel: its checkpoint records + the
-  increment after its coverage point + its unread tail.
+- Private chat = a channel with two members. A group chat = N members
+  (members are SENDERS — §5 and ADR-0009).
+- An agent's "session" is NOT a container. It is the **channel's own
+  projection**: the channel's checkpoint (pointer + summary) + the
+  increment after that pointer.
 - Threads are sub-channels anchored at `(channel_id, timestamp)` — the
   same messages table with a parent pointer, a public second dimension.
   They are NOT agent branches.
@@ -55,44 +56,95 @@ Nothing else is a container.
 ### 2. The agent's context is a projection
 
 The agent never owns, truncates, or rewrites the log. Its context is
-assembled at read time:
+assembled at read time, for one purpose only: letting the conversation
+continue without managing context length. What must be remembered across
+sessions goes to the long-term side (the graph, the active surface); the
+context side keeps just "one summary + the initial prompt + the most recent
+raw messages". The checkpoint is the carrier of that seam: it records up to
+WHICH record of the log the span has already been turned into a paragraph.
 
 ```text
 channel:  [m1][m2][m3][m4][m5][m6][m7]...
                         ^
-agent A: checkpoint(c1: summary of m1..m4) + [m5][m6][m7]
-agent B: cursor at m3 → unread [m4][m5]...
+checkpoint: pointer → m4; content = summary(m1..m4) + the persona snapshot of that moment
+projection: [persona snapshot][summary] + [m5][m6][m7]
 ```
 
 - **Compression is append, never truncate.** summarize = run the
-  summary through a tail (ADR-0001's single-turn branch) → append a
-  checkpoint record (coverage point + summary text) → the projection
-  now reads checkpoint + post-coverage increment. The log itself
-  never shrinks; a bad summary can be re-run, and history can be
-  re-segmented and re-compressed at any time. This breaks the
-  "compression must swallow all history" convention: each compression
-  covers a bounded span, so summary quality stays bounded.
+  summary through a tail (ADR-0001's single-turn branch) → land a
+  checkpoint (pointer + summary text) → the projection now reads the
+  newest checkpoint + the increment after its pointer. The log itself never
+  shrinks; a bad summary can be re-run, and history can be re-segmented and
+  re-compressed at any time. This breaks the "compression must swallow all
+  history" convention: each compression covers a bounded span, so summary
+  quality stays bounded.
+- **The seam is SOFT, not a hard cut.** The tail prompt (§4) makes the
+  summary read as a continuation — the span's own account, not an outline —
+  so the two sides of the point read continuously. That is why the
+  experience is better than a hard split: what the seam gives up is
+  phrasing and repetition, never facts, decisions or open questions. And
+  because the seam is soft, small errors at the boundary are not fatal (a
+  span compressed twice, or one round late, costs one model call — not a
+  broken context).
 - **The compression point stands BESIDE the log, not inside it.** The
-  checkpoint lives in its OWN table (ns 34), pointing into the log by
-  `coverage_ts` — latest-wins inside that table, so the overwrite's
+  checkpoint lives in its OWN table (ns 34), pointing into the log — its
   mutability never touches a log row. Append-first (ADR-0002) covers the
-  graph and the data side; it does not apply to the log, which is
-  append-only outright.
-- Checkpoints are keyed per member — `(ns, channel_id, member_id)` — they
-  are private projection state, not shared log content, and the row is
-  latest-wins: a checkpoint is a cache, not an audit log (history is the
-  log). Two agents on one channel compress independently.
-- **Assembly is ordered, head first**: the global layer (persona / style —
-  the initialization memory, ADR-0001) → the compression point → the messages
-  after it. The global layer takes the head position the summary used to
-  occupy alone, because it is long-horizon content riding the passive channel;
-  the increment follows in key order. Assembly stays a k10r-internal detail —
-  the caller receives the projection and never composes it, and the head
-  arrives RENDERED (ADR-0010 §5's `format` knob): the caller injects that text
-  as-is, it never assembles a head fact list of its own.
-- Read cursors `(ns, channel_id, member_id) -> last-read timestamp`
-  serve BOTH the IM unread badge and the agent's incremental pull:
-  one mechanism, two consumers.
+  graph and the data side; it does not apply to the log, which is append-only
+  outright.
+- **The checkpoint is the CHANNEL's pointer, and the table is keyed by the
+  pointer** (`[channel][ts_ms][sub]`). A row holds three things: the summary
+  of the span that pointer ends, the SNAPSHOT of the initial prompt taken at
+  that compression, and the state "no summary yet" (a compression in flight).
+  Reading the projection = take the highest-keyed row that HAS a summary, then
+  cut the increment from the record it points at. The pointer must name a
+  RECORD, not a millisecond: one millisecond can hold several records (§3's
+  `sub` exists for that), and a ts-only pointer silently drops the
+  same-millisecond records that sort after the cut — out of the increment and
+  out of the summary at once.
+- **The initial prompt rides the checkpoint as a snapshot, never recomputed
+  per read.** The persona/style is assembled from the graph, and this round's
+  memory add may change it — recomputing per read means it can change per
+  read, while the prompt cache's premise is a BYTE-STABLE prefix: one wobble
+  in the head re-prices the whole context and gives back what compression
+  saved. So the snapshot is produced at the compression and stored with the
+  checkpoint; every read until the next compression uses it. The cost is that
+  persona updates lag to the next compression — freshness traded for cache
+  stability, deliberately.
+- **Rows accumulate; reads take the newest.** A duplicate compression (the
+  same span compressed twice) writes its own row pointing at the same node —
+  idempotent by construction, the price being one wasted model call, which is
+  acceptable. A summary that comes back for an EARLIER pointer lands below the
+  newest row, invisible to reads — and is NOT deleted: it is free history
+  (which span was compressed when), and deleting it would cost a write. No
+  arbitration of arrival order, no lock.
+- **The "compression in flight" marker is simply a row without a summary.**
+  Seeing a row newer than the current coverage that carries no summary, the
+  engine proposes nothing on that read. The system runs without the marker
+  too — compression is usually faster than the conversation — it only saves
+  one wasted request.
+- **No member segment in the key.** A channel has ONE voice (§3's "one writer
+  at a time" is the same fact stated differently), so a single log has no
+  second compression subject; and an agent is not the holder of a fixed
+  identity — its boundary moves with its long-term memory, and the head is
+  replaced after the next compression (serving liquid organisations is one of
+  k10r's founding goals). The extra key segment could only be a constant, and
+  a constant is not a dimension.
+- **Assembly is ordered, head first**: the initial prompt's snapshot
+  (persona / style — the initialization memory, ADR-0001) → the compression
+  point → the messages after it. The snapshot takes the head position the
+  summary used to occupy alone, because it is long-horizon content riding the
+  passive channel; the increment follows in key order. Assembly stays a
+  k10r-internal detail — the caller receives the projection and never composes
+  it, and the head arrives RENDERED (ADR-0010 §5's `format` knob): the caller
+  injects that text as-is, it never assembles a head fact list of its own.
+- **The read cursor is the CHANNEL's pointer too** (`ts_ms + sub`, again naming
+  a record). It is needed only for multi-party channels (two included): there
+  "how far I have read" differs per participant and is each participant's own
+  fact, so the cursor gains a person dimension only with the members table
+  (ADR-0009 / Phase 2.7). In the single-user + agent shape the cursor can safely
+  be assumed to be the newest record — the agent reads every turn, so the log's
+  last record IS where it read — and nothing needs storing: the cache clock's
+  idle time is "now − the log's last record ts" outright.
 
 This amends ADR-0006: "fetch full session, write back session"
 becomes "append own messages, read own projection". The stateless-loop
@@ -167,22 +219,26 @@ Per-user overrides are a reserved second layer (a lookup before the
 global default) — reserved structurally now, populated manually or by
 future tuning.
 
-**Decision logging over model fitting.** A regression model needs
-labels ("was this compression good?") that do not exist yet; fitting
-without them fits noise. Every compression decision therefore logs a
-structured record — parameter snapshot, trigger signal values, split
-position, pre/post token counts — which is the future training set.
-The learning loop closes when real feedback signals exist; the engine's
-"engine" today means parameterizable + auditable, not adaptive.
+**No pre-paid training set.** A regression fit needs labels ("was this compression
+good?"), and there are none; fitting without them fits noise. The one question
+that MUST be answered — which span was compressed — is answered by the
+checkpoint's own row (its pointer, plus whether a summary is there). So there
+is NO decision-log table: parameter snapshots, trigger values and split
+positions are recorded when tuning actually exists and labels actually exist —
+as a new table at that point, not as storage and writes paid for today. The
+verdict rides the projection and serves only the current opportunity; the
+verdict AND the three signals' measured values also land one structured-log row
+(ADR-0011 — that table already has a debugging reader).
 
 **The engine's inputs are k10r's own, and the verdict rides the
 projection.** There is no compression interface on the agent's side —
 the caller has no door that requests compression, and the judgment is
 not the caller's. The signals are the ones k10r holds: the increment's
 timestamps (max-gap), the assembled context's size (the budget
-percentage and the floor), and the member's read cursor (the cache
-clock — the prompt cache sits idle exactly while the member's
-projection has not been read, and §2's cursor IS that timestamp). The
+percentage and the floor), and the channel's read position (the cache
+clock — the prompt cache sits idle exactly while this projection has not
+been read). In the single-user + agent shape the read position IS the log's
+last record (§2); multi-party channels are where a cursor row exists. The
 evaluation point is therefore the projection READ: the engine runs
 while the assembly is produced and returns its verdict WITH the
 assembly, never through a second call.
@@ -207,36 +263,39 @@ branch beside the user's turn: the user's interaction neither waits for
 it nor sees it. That turn's answer IS the summary and comes back
 through the ordinary append path; k10r takes the compressed span's own
 last record as the compression point, so the caller never states a
-coverage timestamp. This is §2's "tail (single-turn branch)" written
+coverage point. This is §2's "tail (single-turn branch)" written
 concretely, not a second mechanism.
 
 **Landed 2026-10-20.** The engine is `mem-core/src/compress.rs`: pure
 functions, no LLM, no timer, and the verdict shape the paragraph above declares.
-Its state is two tables beside the checkpoint — `CursorRow` (ns 39,
-`[channel][member] → last-read ts`, latest-wins and never rewinding) and
-`DecisionRow` (ns 40, keyed by the proposed SPLIT, carrying the whole
-parameter/signal snapshot and a PENDING/DONE state) — in the CHANNEL keyspace,
-because a summary landing and its decision closing must commit in one batch.
 The numbers are `compression { context-bytes budget-percent cache-ttl-ms
-floor-bytes }` in `krystallizer.kdl`; `cache-ttl-ms` is the FIRE point, set
-below the provider's real TTL (that is exactly what the "50 idle minutes of a
-1-hour cache" example above means), and a test asserts the file's numbers equal
+floor-bytes }` in `krystallizer.kdl`; `cache-ttl-ms` is the FIRE point, set below
+the provider's real TTL (that is exactly what the "50 idle minutes of a 1-hour
+cache" example above means), and a test asserts the file's numbers equal
 `Params::default()`. The door is `GET …/session?ts_ms=`: the idle time is
-measured against the cursor the member had BEFORE this read, and only then is
-the cursor stamped — reading is the cache clock's only observable, so the order
-is the signal — while no clock means the read is served with nothing stamped
-(the same rule as recall's "no clock, no count"). Keying the decision log by
-the split keeps the log honest without growing it: re-reading an unchanged
-projection refreshes one row.
+measured against the read position of §2 (the log's last record in the
+single-user shape), and only then is the new read position stamped — reading is
+the cache clock's only observable, so the order is the signal — while no clock
+means the read is served with nothing stamped (the same rule as recall's "no
+clock, no count"). The engine's state rides the checkpoint table itself (§2's
+pointer rows); no extra log exists.
+
+The code differs from this section in two places, and removing that gap is this
+ruling's landing work: the three tables (checkpoint / cursor / the decision log)
+still carry a constant `member` segment (`DEFAULT_MEMBER`), the checkpoint's
+coverage point is a bare `coverage_ts` with no `sub`, and the decision log
+(ns 40) still stands on its own. Target: the checkpoint keyed
+`[channel][ts][sub]` with summary + persona snapshot on the row, a cursor row
+only in the multi-party shape, and ns 40 withdrawn.
 
 **The checkpoint door takes the summary ALONE (2026-10-20).** No caller states
-a coverage point: `POST …/checkpoint` carries `{ summary }`, k10r lands it on the
-split it served (`append_checkpoint_from_verdict`, checkpoint + decision closed
-in one batch), and a summary with no open verdict is a 400 — there is nothing to
-derive a coverage point from, and inventing one would make this side guess what
-it is supposed to own. The consumer's half moved in the same pass: gravity's
-`SessionProjection.compress` carries the directive through both surfaces, so the
-seam is closed at both ends; running the branch turn is gravity's Phase 3.
+a coverage point: `POST …/checkpoint` carries `{ summary }`, k10r fills it into
+the row it opened (that pointer is the split it served; a summary with no open
+row is a 400) — there is nothing to derive a coverage point from, and inventing
+one would make this side guess what it is supposed to own. The consumer's half
+moved in the same pass: gravity's `SessionProjection.compress` carries the
+directive through both surfaces, so the seam is closed at both ends; running the
+branch turn is gravity's Phase 3.
 
 ### 5. Division of labor with the memory add
 
@@ -255,16 +314,21 @@ merge:
   obliges them to be one pass.
 
 The root cause of keeping them separate: different quality/latency
-budgets (summary in-turn, the fact's producer is whoever is reasoning).
+budgets (summary in-turn, the fact's producer is whoever is reasoning) — and
+different acts: compression turns a span into a paragraph (continuity), the
+memory add turns what was just said into retrievable facts (recall).
 
 **Multi-party participation** — member identity (display name / role
 in the members table, attribution applied at serialization), profile
 knowledge (graph facts about a member — a member node plus its type label
 and edges; there is no `kind=profile` flat category, ADR-0009), and the
 interrupt policy (seconds-scale passive trigger through the same policy
-engine, silent outcomes logged) — is specified in ADR-0009. The
-single-user shape needs nothing extra: one member, every trigger on the
-turn boundary.
+engine) — is specified in ADR-0009. Members are the SENDERS' dimension: they
+ride a message row's fields and the serialization's attribution, never the
+checkpoint's key. The single-user shape needs nothing extra: one channel, one
+voice, every trigger on the turn boundary. A SILENT decision is not recorded —
+there is no decision-log table; what to record is a question for the day tuning
+becomes real.
 
 ## Why Not
 
@@ -280,9 +344,25 @@ turn boundary.
 - **Truncating compression (mainstream shape)**: destroys re-run
   ability. A bad summary over a truncated log is permanent; over an
   append-only log it is a retry. Rejected.
-- **Fit the policy parameters now (regression on logged decisions)**:
-  no labels yet; the fit would track noise. Decision logging is the
-  cheap, correct first half. Deferred with a reserved structure.
+- **Keying the CHECKPOINT by member (the earlier draft)**: its
+  argument was "two agents on one channel each compress their own copy". That
+  scenario does not exist — an agent's boundary moves with its long-term memory,
+  so there is no fixed identity to key by, and one channel has one voice. An
+  extra constant segment would only add a field no one can explain to every
+  table. Rejected. The CURSOR is the other case: it records "how far has this
+  person read", which matters only with several participants, so it keeps its
+  member segment (§2).
+- **A separate decision-log table (parameter snapshots + signal values)**: it
+  serves "tune the policy later", and no labels exist, so today it has no
+  reader — while the real question ("up to which record is this compressed")
+  is answered by the checkpoint's own pointer row. The table is withdrawn; add
+  it when tuning needs it.
+- **Recomputing the initial prompt on every read**: byte-unstable → the prompt
+  cache misses every time and gives back what compression saved. The snapshot
+  rides the checkpoint.
+- **Fit the policy parameters now**: no labels yet; the fit would track noise.
+  What to record, and where, is settled when labels actually appear — as a new
+  table at that point, not storage paid for today.
 
 ## Consequences
 
@@ -295,8 +375,15 @@ turn boundary.
   (public sub-channel) — both are parented logs differing in visibility.
 - The agent loop's contract (ADR-0006) restates as: append own records,
   read own projection; scale-to-zero and statelessness carry over.
-- New tables: messages, members, cursors, checkpoints (per member),
-  message tag index. All OKM declares; hex stability tests lock layouts.
+- New tables: messages, checkpoints (keyed by the channel's pointer),
+  cursors (multi-party only), members (sender identity), message tag index. All
+  OKM declares; hex stability tests lock layouts. ns 40 is free again (36/37/38
+  are the graph's, 39 is the cursor).
 - The policy engine is pure functions in k10r (threshold evaluation,
-  max-gap split, decision log records); LLM calls (summary) stay on
-  gravity's side per ADR-0007.
+  max-gap split); LLM calls (summary) stay on gravity's side per ADR-0007.
+- With `sub` in the pointer, WHICH record the cut lands on is determinate: the
+  increment reads the rows strictly after the coverage pointer in `(ts, sub)`
+  order, so same-millisecond messages are never silently swallowed.
+- The persona snapshot parks updates at "the next compression" granularity; what
+  it buys is a byte-identical prefix between two compressions, so the cache
+  holds.
