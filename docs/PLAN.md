@@ -52,6 +52,28 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   Owed with it: the decision-log table + its ns, and the tail prompt's
   text in PROMPTS. Lands with/after 2.5 — its budget signal measures
   the assembled view. (ADR-0008)
+  - [x] 2.6a. The STATE side LANDED 2026-10-20: `CursorRow` (ns 39,
+    `[channel][member] → last-read ts`, latest-wins and never rewinding) and
+    `DecisionRow` (ns 40, keyed by the proposed SPLIT so re-reads refresh one
+    row), both in the CHANNEL keyspace because a summary landing and its
+    decision closing commit in ONE batch (`append_checkpoint_from_verdict`).
+  - [x] 2.6b. The ENGINE LANDED 2026-10-20: `crates/mem-core/src/compress.rs`
+    — pure functions, the three heuristic signals (budget mid-band, cache
+    clock, max-gap split), no LLM and no timer; the numbers are the
+    `compression { }` node, and a test asserts the node equals
+    `CompressionParams::default()`. Door: `GET …/session?ts_ms=` measures the
+    idle time against the PREVIOUS cursor, stamps, evaluates, records, and
+    returns `compress: { checkpoint, prompt }`. Gates: mem-core 72/0
+    (compress 9, channel 10), mem-server 25/0 (compression_surface 4).
+  - [x] 2.6c. The checkpoint door takes the SUMMARY alone LANDED 2026-10-20:
+    the body is `{ summary }`, `append_checkpoint_from_verdict` lands it on the
+    split k10r served (checkpoint + decision closed in one batch), and a summary
+    with no open verdict is a 400. The consumer's half moved with it — gravity's
+    `SessionProjection.compress` carries `{checkpoint, prompt}` through both
+    surfaces — so the seam is closed at both ends; firing the branch turn is
+    gravity Phase 3 (its PLAN records the seam half). Gates: mem-server 25/0
+    (the summary→coverage loop is `compression_surface`'s 4th test),
+    gravity-core 17/0 after the seam change.
 - [ ] Phase 2.7 — Multi-party participation: member display-name/role
   fields + per-message attribution in serialization; profile knowledge as
   graph facts (a member node plus its edges — the `kind=profile` flat category

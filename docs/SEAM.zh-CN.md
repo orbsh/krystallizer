@@ -35,8 +35,8 @@ community id），但**维护**那个结构从来不是消费方的活儿。所�
 | 门（HTTP） | mem-core 原语 | 表（ns） | 状态 |
 |---|---|---|---|
 | `POST /channels/{c}/messages` | `ChannelStore::append` | messages (33) | 已落 |
-| `GET /channels/{c}/members/{m}/session?format=` | `channel::fetch_full` + `view::assemble`（头部 → 压缩点 → 增量）+ `render::render_head` | messages + checkpoints (33/34) + 头部的那些事实 (36/37) | 已落（视图形状 2026-10-20；头部按格式渲染 2026-10-20） |
-| `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint` | checkpoints (34) | 已落 |
+| `GET /channels/{c}/members/{m}/session?format=&ts_ms=` | `channel::fetch_full` + `view::assemble`（头部 → 压缩点 → 增量）+ `render::render_head`；读取时跑 `compress::evaluate`，判词随 `compress: {checkpoint, prompt}` 出行；`note_read` 用 `ts_ms` 盖游标（不给 = 不盖） | messages + checkpoints (33/34) + cursors (39) + 决策日志 (40) + 头部的那些事实 (36/37) | 已落（视图形状 2026-10-20；压缩判词 2026-10-20） |
+| `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint_from_verdict`（正文只有摘要；覆盖点取 k10r 交付过的切分点；没有未了判词 = 400） | checkpoints (34) + 决策日志 (40) | 已落（2026-10-20） |
 | `POST /memories/{scope}` | `GraphStore::ingest`（请求体就是 8 元组；`scope` 走路径） | 实体（36）+ 事实（37） | 已落（2026-10-17） |
 | `GET /memories/{scope}/recall?q=&k=&budget=&ts_ms=&format=` | `GraphStore::recall`（落点 → 着陆到的**社区**的桶 → 一种表示：渲染好的带 id 文本，或 `format=struct` 时只给数据；按权重排序、受 `budget` 封顶；无 engine = 空答案） | 实体（36）+ 事实（37） | 已落（2026-10-20） |
 | `GET /memories/{scope}/entities/{name}` | `GraphStore::entity_by_name`（名/别名精确入口；未知名字 404） | 实体（36） | 已落（2026-10-17） |

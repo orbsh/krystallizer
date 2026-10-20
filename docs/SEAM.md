@@ -42,8 +42,8 @@ sit here were exactly that (retired 2026-10-20).
 | Door (HTTP) | mem-core primitive | Table (ns) | Status |
 |---|---|---|---|
 | `POST /channels/{c}/messages` | `ChannelStore::append` | messages (33) | landed |
-| `GET /channels/{c}/members/{m}/session?format=` | `channel::fetch_full` + `view::assemble` (head → checkpoint → increment) + `render::render_head` | messages + checkpoints (33/34) + the head's facts (36/37) | landed (view shape 2026-10-20; head rendered 2026-10-20) |
-| `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint` | checkpoints (34) | landed |
+| `GET /channels/{c}/members/{m}/session?format=&ts_ms=` | `channel::fetch_full` + `view::assemble` (head → checkpoint → increment) + `render::render_head`; `compress::evaluate` runs at the read and its verdict rides `compress: {checkpoint, prompt}`; `note_read` stamps the cursor from `ts_ms` (absent = nothing stamped) | messages + checkpoints (33/34) + cursors (39) + the decision log (40) + the head's facts (36/37) | landed (view shape 2026-10-20; compression verdict 2026-10-20) |
+| `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::append_checkpoint_from_verdict` (the body is the SUMMARY alone; the coverage point is the split k10r served; 400 when no verdict is open) | checkpoints (34) + the decision log (40) | landed (2026-10-20) |
 | `POST /memories/{scope}` | `GraphStore::ingest` (the body IS the 8-slot tuple; `scope` is the path) | entities (36) + facts (37) | landed (2026-10-17) |
 | `GET /memories/{scope}/recall?q=&k=&budget=&ts_ms=&format=` | `GraphStore::recall` (landing → the landed COMMUNITY's bucket → one representation: the rendered, id-bearing text or, under `format=struct`, the data alone; ranked by weight, capped by `budget`; no engine = an empty answer) | entities (36) + facts (37) | landed (2026-10-20) |
 | `GET /memories/{scope}/entities/{name}` | `GraphStore::entity_by_name` (the exact name/alias entrance; 404 on an unknown name) | entities (36) | landed (2026-10-17) |

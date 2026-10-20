@@ -156,3 +156,144 @@ fn channels_are_isolated() {
     assert_eq!(v2.increment.len(), 1);
     assert_eq!(v2.increment[0].1.content, "ch2");
 }
+
+/// The read cursor (ADR-0008 §2) is the cache clock's only observable:
+/// it stamps the caller's clock at a read, never rewinds, and is per
+/// member. No stamp = no cursor, which is what keeps an unknown idle
+/// time from reading as an idle of zero.
+#[test]
+fn the_read_cursor_stamps_advances_and_never_rewinds() {
+    let (_d, mut store) = open();
+    const CH: u64 = 1;
+    store.append(CH, 100, 0, role::USER, 0, "m1");
+
+    assert_eq!(store.read_cursor(CH, DEFAULT_MEMBER), None, "never read");
+    assert_eq!(store.fetch_full(CH, DEFAULT_MEMBER).last_read, None);
+
+    store.note_read(CH, DEFAULT_MEMBER, 1_000);
+    assert_eq!(store.read_cursor(CH, DEFAULT_MEMBER), Some(1_000));
+    assert_eq!(
+        store.fetch_full(CH, DEFAULT_MEMBER).last_read,
+        Some(1_000),
+        "the projection carries it, so the engine needs no second read"
+    );
+
+    store.note_read(CH, DEFAULT_MEMBER, 900);
+    assert_eq!(
+        store.read_cursor(CH, DEFAULT_MEMBER),
+        Some(1_000),
+        "an older read must not move the clock backwards"
+    );
+    store.note_read(CH, DEFAULT_MEMBER, 2_000);
+    assert_eq!(store.read_cursor(CH, DEFAULT_MEMBER), Some(2_000));
+
+    assert_eq!(
+        store.read_cursor(CH, 2),
+        None,
+        "another member's cursor is its own"
+    );
+    assert_eq!(
+        store.read_cursor(2, DEFAULT_MEMBER),
+        None,
+        "another channel's"
+    );
+}
+
+fn verdict(checkpoint_ts: u64) -> mem_core::compress::Verdict {
+    mem_core::compress::Verdict {
+        checkpoint_ts,
+        trigger: mem_core::compress::Trigger::Budget,
+        assembled_bytes: 60_000,
+        context_bytes: 131_072,
+        budget_percent: 50,
+        cache_ttl_ms: 300_000,
+        idle_ms: Some(1_000),
+        max_gap_ms: Some(700),
+    }
+}
+
+/// The compression contract (ADR-0008 §4): k10r serves the verdict,
+/// remembers the span, and DERIVES the coverage point when the summary
+/// comes back — the caller never states one. The decision closes in the
+/// same batch as the checkpoint.
+#[test]
+fn a_summary_lands_on_the_derived_coverage_point() {
+    let (_d, mut store) = open();
+    const CH: u64 = 1;
+    for (ts, text) in [(100, "m1"), (200, "m2"), (900, "m3")] {
+        store.append(CH, ts, 0, role::USER, 0, text);
+    }
+
+    store.note_verdict(CH, DEFAULT_MEMBER, &verdict(200));
+    let (key, row) = store
+        .pending_verdict(CH, DEFAULT_MEMBER)
+        .expect("the verdict is pending");
+    assert_eq!(key.checkpoint_ts, 200);
+    assert_eq!(row.state, mem_core::decision_state::PENDING);
+    assert_eq!(row.trigger, mem_core::compress::Trigger::Budget.code());
+    assert_eq!(row.max_gap_ms, 700, "the gap the split was chosen on");
+
+    let coverage = store
+        .append_checkpoint_from_verdict(CH, DEFAULT_MEMBER, "m1 and m2")
+        .expect("a pending verdict exists");
+    assert_eq!(
+        coverage, 200,
+        "the span's last record, not a caller's number"
+    );
+
+    let view = store.fetch_full(CH, DEFAULT_MEMBER);
+    assert_eq!(view.coverage_ts, 200);
+    assert_eq!(view.summary.as_deref(), Some("m1 and m2"));
+    assert_eq!(view.increment.len(), 1, "m3 is after the coverage point");
+    assert!(
+        store.pending_verdict(CH, DEFAULT_MEMBER).is_none(),
+        "the decision closed with the summary"
+    );
+}
+
+/// No verdict, no derivation: a summary with nothing pending has no
+/// coverage point to land on, so the store refuses rather than inventing
+/// one (the door turns this into a 400).
+#[test]
+fn a_summary_without_a_verdict_is_refused() {
+    let (_d, mut store) = open();
+    const CH: u64 = 1;
+    store.append(CH, 100, 0, role::USER, 0, "m1");
+
+    assert_eq!(
+        store.append_checkpoint_from_verdict(CH, DEFAULT_MEMBER, "orphan"),
+        None
+    );
+    let view = store.fetch_full(CH, DEFAULT_MEMBER);
+    assert_eq!(view.coverage_ts, 0, "no checkpoint was written");
+    assert!(view.summary.is_none());
+}
+
+/// Re-reading an unchanged projection proposes the same split, so the
+/// decision log does not grow per read — and when two splits are open,
+/// the summary lands on the NEWEST proposal.
+#[test]
+fn repeated_reads_refresh_one_row_and_the_newest_split_wins() {
+    let (_d, mut store) = open();
+    const CH: u64 = 1;
+
+    store.note_verdict(CH, DEFAULT_MEMBER, &verdict(200));
+    store.note_verdict(CH, DEFAULT_MEMBER, &verdict(200));
+    assert_eq!(
+        store.pending_verdict(CH, DEFAULT_MEMBER).map(|(k, _)| k),
+        Some(mem_core::DecisionKey {
+            channel_id: CH,
+            member_id: DEFAULT_MEMBER,
+            checkpoint_ts: 200,
+        })
+    );
+
+    store.note_verdict(CH, DEFAULT_MEMBER, &verdict(500));
+    let (key, _) = store.pending_verdict(CH, DEFAULT_MEMBER).unwrap();
+    assert_eq!(key.checkpoint_ts, 500, "the newest proposal is pending");
+
+    assert_eq!(
+        store.append_checkpoint_from_verdict(CH, DEFAULT_MEMBER, "s"),
+        Some(500)
+    );
+}

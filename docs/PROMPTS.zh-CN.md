@@ -1,16 +1,20 @@
-# PROMPTS — 唯一的提示词面
+# PROMPTS — 提示词面
 
 > **语言：** [English](PROMPTS.md)（主文档）· [中文](PROMPTS.zh-CN.md)
 
 状态：**Declared**（草案；这里还没有任何一处接线）。提示词是调用方持有的文本；
 k10r 不持 LLM（ADR-0007），所以下面这套在调用方一侧跑，不是 k10r 的资产。
 
-只剩一个面。本页整合的那份草案还带了一套写侧「胶囊生成器」（社区切片进，标题 +
+两个面。§1 是调用方的工具定义；§2 是 k10r 随压缩判词一起下发的尾提示词
+（ADR-0008 §4）——它的文本是 k10r 的资产，服务的那一份就是
+`crates/mem-core/src/compress.rs` 里的 `TAIL_PROMPT`，与下面那段逐字一致。
+
+本页整合的那份草案还带了一套写侧「胶囊生成器」（社区切片进，标题 +
 摘要出）；它随胶囊表一起退役（ADR-0010 §4，2026-10-20）——读侧直接把社区的节点
 与边渲染出来，不再请模型替它总结。
 
 下面的命名一律按已定的词汇。源草案自造的名字或字段，标成 **[不在设计里]**、就
-地留着，而不是悄悄采纳——见 §3。
+地留着，而不是悄悄采纳——见 §4。
 
 ## 1. 实时路径：工具定义（gravity 那一侧）
 
@@ -68,13 +72,31 @@ head / rel / tail 顺序排列——head / tail 是 `[值, 类型, 属性]`，�
 - **这里不说事实去哪。** 事实进哪张表（现在是事实图），由调用方的路由与写时 fusion
   （ADR-0004/0007）决定，不由模型决定。
 
-## 2. 这块部署在哪
+## 2. 压缩尾提示词（k10r 那一侧）
+
+随判词以 `compress: { checkpoint, prompt }` 下发：调用方把它接在那段记录后面，
+作为与用户那一轮并行的分支轮跑——那一轮的答案**就是**摘要，k10r 把它落在自己
+提议过的切分点上，所以调用方从不声明覆盖时间戳。
+
+```text
+Summarize the conversation span above so that an agent can continue from your
+summary alone. Keep: decisions and their reasons, facts, names, numbers,
+identifiers and code verbatim, open questions, and what the user is trying to
+achieve. Drop: politeness, repetition, and reasoning that led nowhere. Write the
+summary only — do not answer the last message, do not ask questions, do not
+invent anything that is not in the span.
+```
+
+（服务出去的是单行字符串；上面按本页宽度折行。）
+
+## 3. 这些块部署在哪
 
 | 块 | 归属 | 跑在哪 | 接线状态 |
 |---|---|---|---|
 | §1 工具定义 | gravity（调用方） | 插进轮内的 system prompt，与固定工具清单并列 | 未接线（工具清单本身还在 Phase 0：纯聊天、无工具） |
+| §2 压缩尾提示词 | k10r（随判词下发） | 调用方把它接在那段记录后面，作为与用户那一轮并行的分支轮跑 | k10r 侧已落（`GET …/session` 的 `compress`）；调用方的分支轮归 gravity，未接线 |
 
-## 3. 来源与待核实清单
+## 4. 来源与待核实清单
 
 本页整合了一份外部 AI 生成的提示词草案。整合规则：**留它的提示词文本**（写得
 不差），**绝不采纳它自造的架构**。被标出的事项集中在这里：

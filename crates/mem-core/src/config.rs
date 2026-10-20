@@ -17,6 +17,52 @@ pub struct KrystallizerConfig {
     /// (ADR-0003: in-process, no endpoint, no key).
     #[knus(child)]
     pub embedding: EmbeddingConfig,
+    /// `compression { ... }` — the Phase 2.6 policy engine's numbers
+    /// (ADR-0008 §4: every threshold is a parameter, never a constant).
+    #[knus(child)]
+    pub compression: CompressionConfig,
+}
+
+/// The compression policy engine's numbers (ADR-0008 §4). Tuning is
+/// deferred until feedback labels exist — with no labels, fitting the
+/// policy to traces fits noise — so these are defaults a deployment
+/// overrides, not constants in code.
+///
+/// ```kdl
+/// compression {
+///     context-bytes 131072
+///     budget-percent 50
+///     cache-ttl-ms 300000
+///     floor-bytes 2048
+/// }
+/// ```
+#[derive(Decode, Debug, Clone)]
+pub struct CompressionConfig {
+    /// The consumer's model window in BYTES (k10r holds no tokenizer for
+    /// another model, so bytes are the honest unit).
+    #[knus(child, unwrap(argument))]
+    pub context_bytes: usize,
+    /// Fire at this share of the window — a mid band, not 90%.
+    #[knus(child, unwrap(argument))]
+    pub budget_percent: u8,
+    /// The provider's prompt-cache lifetime.
+    #[knus(child, unwrap(argument))]
+    pub cache_ttl_ms: u64,
+    /// Below this the view is too small for a summary to buy anything.
+    #[knus(child, unwrap(argument))]
+    pub floor_bytes: usize,
+}
+
+impl CompressionConfig {
+    /// The engine's parameter set.
+    pub fn params(&self) -> crate::compress::Params {
+        crate::compress::Params {
+            context_bytes: self.context_bytes,
+            budget_percent: self.budget_percent,
+            cache_ttl_ms: self.cache_ttl_ms,
+            floor_bytes: self.floor_bytes,
+        }
+    }
 }
 
 /// The local embedding artifact's DIRECTORY. The three files inside are
@@ -134,6 +180,12 @@ embedding {
     dimensions 512
     metric "cosine"
 }
+compression {
+    context-bytes 131072
+    budget-percent 50
+    cache-ttl-ms 300000
+    floor-bytes 2048
+}
 "#;
 
     #[test]
@@ -142,6 +194,19 @@ embedding {
         assert_eq!(cfg.embedding.model_dir, "/models/bge-small-zh-v1.5");
         assert_eq!(cfg.embedding.dimensions, 512);
         assert_eq!(cfg.embedding.metric, "cosine");
+    }
+
+    /// The policy numbers decode as parameters and reach the engine as
+    /// one `Params` — the mid-band trigger is derived, not stored.
+    #[test]
+    fn decodes_compression_node() {
+        let cfg = parse(FULL).unwrap().compression;
+        assert_eq!(cfg.context_bytes, 131_072);
+        assert_eq!(cfg.budget_percent, 50);
+        assert_eq!(cfg.cache_ttl_ms, 300_000);
+        assert_eq!(cfg.floor_bytes, 2_048);
+        let params = cfg.params();
+        assert_eq!(params.budget_bytes(), 65_536, "half the window");
     }
 
     /// ONE test owns `MODEL_DIR_ENV`: the environment is process-wide, so
@@ -231,5 +296,10 @@ embedding {
         let cfg = KrystallizerConfig::load(&path).expect("repo config decodes");
         assert_eq!(cfg.embedding.metric, "cosine");
         assert_eq!(cfg.embedding.dimensions, 512);
+        assert_eq!(
+            cfg.compression.params(),
+            crate::CompressionParams::default(),
+            "the file's numbers and the built-in defaults must not drift"
+        );
     }
 }

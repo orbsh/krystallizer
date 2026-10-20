@@ -8,6 +8,7 @@
 
 pub mod channel;
 pub mod code;
+pub mod compress;
 pub mod config;
 pub mod embedding;
 pub mod graph;
@@ -30,11 +31,15 @@ pub const KEYSPACE_CHANNEL: &str = "channel";
 pub const KEYSPACE_MEMORY: &str = "memory";
 
 pub use channel::{
-    kind, role, ChannelStore, CheckpointKey, CheckpointRow, MessageKey, MessageRow, SessionView,
-    DEFAULT_MEMBER,
+    decision_state, kind, role, ChannelStore, CheckpointKey, CheckpointRow, CursorKey, CursorRow,
+    DecisionKey, DecisionRow, MessageKey, MessageRow, SessionView, DEFAULT_MEMBER,
 };
 pub use code::{CodeKey, CodeRow, CodeStore};
-pub use config::{ConfigError, EmbeddingConfig, KrystallizerConfig};
+pub use compress::{
+    evaluate as evaluate_compression, Params as CompressionParams, Trigger as CompressionTrigger,
+    Verdict as CompressionVerdict, TAIL_PROMPT,
+};
+pub use config::{CompressionConfig, ConfigError, EmbeddingConfig, KrystallizerConfig};
 pub use embedding::{EmbedError, Embedder};
 pub use graph::{
     CommunitySeqKey, CommunitySeqRow, CommunitySlice, EntityKey, EntityRow, FactBody, FactEdge,

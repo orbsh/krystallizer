@@ -1,6 +1,6 @@
 # ADR-0008: 统一 channel 日志——agent 上下文是投影，启发式压缩
 
-**状态**：部分落地（2026-10-09：最小切片——channel 消息 ns 33 + 每成员 checkpoint ns 34，`ChannelStore::append`/`fetch_full`/`append_checkpoint`，服务 gravity Phase 0；压缩点是**自己的表**（ns 34），用 `coverage_ts` 指向日志、在该表内 latest-wins，而日志本身保持只追加（ADR-0002）；待办：thread、topic tag、members、读游标、策略引擎）
+**状态**：部分落地（2026-10-09：最小切片——channel 消息 ns 33 + 每成员 checkpoint ns 34，`ChannelStore::append`/`fetch_full`/`append_checkpoint`，服务 gravity Phase 0；2026-10-20：读游标（ns 39）与压缩策略引擎（§4，决策日志 ns 40）；待办：thread、topic tag、members，以及 checkpoint 门的派生覆盖点）
 **日期**：2026-09-22
 **英文版**：[0008-unified-channel-log.md](0008-unified-channel-log.md)
 **修订**：ADR-0001（summarize 的截断步骤）、ADR-0002（session 消息键）、ADR-0006（session 读写形态）
@@ -159,6 +159,27 @@ prompt: "…" } }`）：把注解抹进日志行既乱，又没给同一个字�
 就是摘要，走普通追加路径回来；压缩点由 k10r 取被压那段的最后一条记录，
 调用方从不自己声明 coverage 时间戳。这是 §2「经 tail（单回合分支）」的
 具体写法，不是第二个机制。
+
+**2026-10-20 落地。** 引擎是 `mem-core/src/compress.rs`：纯函数，不调 LLM、
+不定时，判词形状就是上一段声明的那一个。它的状态是 checkpoint 旁边的两张表——
+`CursorRow`（ns 39，`[channel][member] → last-read ts`，latest-wins 且永不倒退）
+与 `DecisionRow`（ns 40，键用提议的**切分点**，带整份参数/信号快照与
+PENDING/DONE 状态）——都在 **channel** keyspace，因为摘要落地与决策收尾必须
+同批提交。数值是 `krystallizer.kdl` 的 `compression { context-bytes
+budget-percent cache-ttl-ms floor-bytes }`；`cache-ttl-ms` 是**开火点**，设在
+真实 TTL 之下（上面那个「1 小时缓存里空转 50 分钟」的例子说的正是这件事），
+并且有测试断言文件里的数值等于 `Params::default()`。门是
+`GET …/session?ts_ms=`：先用本次读取之前的游标量空闲时长，再盖游标——读取是
+缓存钟唯一的可观测物，所以顺序就是信号本身——不给钟就照常出答案、什么也不盖
+（与 recall 的「无钟不计」同一条规矩）。决策日志的键用切分点，于是重复读取同一
+投影只刷新一行，日志既诚实又不膨胀。
+
+**checkpoint 门只收摘要（2026-10-20）。** 调用方从不声明覆盖点：
+`POST …/checkpoint` 的正文是 `{ summary }`，k10r 把它落在自己交付过的切分点上
+（`append_checkpoint_from_verdict`，checkpoint 与决策同批收尾），没有未了判词时
+是 400——没有可派生的覆盖点，凭空造一个就是让这边去猜本该它自己拥有的东西。
+消费方那一半同批动了：gravity 的 `SessionProjection.compress` 把判词在两个
+surface 上都带过去，缝两头都闭上了；跑分支轮是 gravity Phase 3 的事。
 
 ### 5. 与记忆添加的分工
 

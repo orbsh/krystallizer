@@ -44,6 +44,9 @@ pub struct MemState {
     /// opened without an engine lands empty vector frames instead (a legal
     /// row, which is what the storage tests take).
     graph: tokio::sync::Mutex<GraphStore>,
+    /// The compression policy's numbers (ADR-0008 §4). The engine is
+    /// pure, so the parameters are the whole of its deployment state.
+    compression: mem_core::CompressionParams,
 }
 
 /// Open the database at `path` and build the router WITHOUT an embedding
@@ -54,7 +57,9 @@ pub fn open(path: PathBuf) -> Result<Router, fjall::Error> {
 }
 
 /// Open the database at `path` and build the router, optionally with an
-/// embedding engine attached.
+/// embedding engine attached. The compression numbers are the config's
+/// defaults (`CompressionParams::default()`); a deployment that loaded
+/// `config/krystallizer.kdl` passes them through `open_with_compression`.
 ///
 /// One database per process (one directory, one lock file): mem-core's
 /// service assembly attaches every table group to it, so mem-server holds
@@ -62,6 +67,17 @@ pub fn open(path: PathBuf) -> Result<Router, fjall::Error> {
 pub fn open_with(
     path: PathBuf,
     embedder: Option<Arc<mem_core::Embedder>>,
+) -> Result<Router, fjall::Error> {
+    open_with_compression(path, embedder, mem_core::CompressionParams::default())
+}
+
+/// `open_with`, with the compression policy's numbers stated (ADR-0008
+/// §4: every threshold is a parameter, so the serving process hands the
+/// engine the ones its config file carries).
+pub fn open_with_compression(
+    path: PathBuf,
+    embedder: Option<Arc<mem_core::Embedder>>,
+    compression: mem_core::CompressionParams,
 ) -> Result<Router, fjall::Error> {
     let stores = mem_core::open_service(&path)?;
     let graph = match &embedder {
@@ -75,6 +91,7 @@ pub fn open_with(
         store: tokio::sync::Mutex::new(stores.channels),
         code: tokio::sync::Mutex::new(stores.code),
         graph: tokio::sync::Mutex::new(graph),
+        compression,
     });
     Ok(Router::new()
         .route("/channels/{channel_id}/messages", post(append_message))
@@ -173,6 +190,19 @@ pub enum HeadDto {
     Facts(Vec<FactViewDto>),
 }
 
+/// The compression verdict as the caller receives it (ADR-0008 §4): the
+/// record to summarize UP TO, and the tail prompt to append to that span.
+/// It rides the projection as a CONTROL FIELD beside the records — never
+/// as a marker written into a log row.
+#[derive(Serialize)]
+pub struct CompressDto {
+    /// The span's last record. The summary that comes back covers
+    /// everything at or before it: k10r derives the checkpoint's
+    /// coverage point from that, so the caller never states one.
+    pub checkpoint: u64,
+    pub prompt: &'static str,
+}
+
 /// Wire shape of the assembled projection (ADR-0008 §2): head first, then
 /// the compression point, then the increment. Structure, not a rendered
 /// prompt — except the head, which k10r renders in the requested format.
@@ -186,10 +216,18 @@ pub struct SessionDto {
     pub coverage_ts: u64,
     pub summary: Option<String>,
     pub increment: Vec<IncrementEntry>,
+    /// The policy's verdict when one fired (ADR-0008 §4). Absent = the
+    /// caller builds its context from the records alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compress: Option<CompressDto>,
 }
 
 impl SessionDto {
-    fn new(p: mem_core::view::Projection, format: mem_core::RenderFormat) -> Self {
+    fn new(
+        p: mem_core::view::Projection,
+        format: mem_core::RenderFormat,
+        compress: Option<mem_core::CompressionVerdict>,
+    ) -> Self {
         let head = if format.renders_text() {
             HeadDto::Text(mem_core::render::render_head(&p.head, format))
         } else {
@@ -211,15 +249,25 @@ impl SessionDto {
                     content: row.content,
                 })
                 .collect(),
+            compress: compress.map(|v| CompressDto {
+                checkpoint: v.checkpoint_ts,
+                prompt: mem_core::TAIL_PROMPT,
+            }),
         }
     }
 }
 
-/// `GET /channels/{c}/members/{m}/session?format=` — the answer's
-/// representation (ADR-0010 §5); absent = `plaintext`.
+/// `GET /channels/{c}/members/{m}/session?format=&ts_ms=` — the answer's
+/// representation (ADR-0010 §5; absent = `plaintext`) and, optionally,
+/// the caller's clock for this read.
 #[derive(Deserialize)]
 pub struct SessionQuery {
     pub format: Option<String>,
+    /// ADR-0008 §3's rule carried onto the read side: the CALLER owns the
+    /// clock, so no clock means the read is served with nothing stamped —
+    /// the read cursor does not move and the cache clock stays silent
+    /// (the same discipline as recall's "no clock, no count").
+    pub ts_ms: Option<u64>,
 }
 
 /// Parse the caller's `format` value. Absent is the default
@@ -241,7 +289,14 @@ fn parse_format(raw: Option<&str>) -> Result<mem_core::RenderFormat, FactError> 
 /// `GET /channels/{id}/members/{member}/session` — the projection read:
 /// the head (initialization memory) + the latest checkpoint + the log
 /// increment strictly after its coverage point, assembled in that order
-/// by `mem_core::view::assemble`.
+/// by `mem_core::view::assemble`, with the compression policy's verdict
+/// beside them (ADR-0008 §4).
+///
+/// The engine evaluates HERE, and the order inside this handler IS the
+/// signal: measure the idle time against the cursor the member had
+/// BEFORE this read, stamp the cursor with this read's clock, then
+/// evaluate and record the verdict. Reading is the cache clock's only
+/// observable, so stamping first would measure zero every time.
 ///
 /// The graph and the channel locks are taken in ONE order (channel, then
 /// graph) — both are needed to answer this door.
@@ -251,7 +306,7 @@ async fn fetch_session(
     Query(query): Query<SessionQuery>,
 ) -> Result<Json<SessionDto>, FactError> {
     let format = parse_format(query.format.as_deref())?;
-    let channels = state.store.lock().await;
+    let mut channels = state.store.lock().await;
     let mut graph = state.graph.lock().await;
     let projection = mem_core::view::assemble(
         &channels,
@@ -261,27 +316,70 @@ async fn fetch_session(
         mem_core::view::DEFAULT_SCOPE,
         mem_core::view::DEFAULT_USER_NODE,
     );
-    Ok(Json(SessionDto::new(projection, format)))
+    let assembled = assembled_bytes(&projection);
+    let idle_ms = query
+        .ts_ms
+        .zip(projection.view.last_read)
+        .map(|(now, last_read)| now.saturating_sub(last_read));
+    if let Some(ts_ms) = query.ts_ms {
+        channels.note_read(channel_id, member_id, ts_ms);
+    }
+    let verdict =
+        mem_core::compress::evaluate(&projection.view, assembled, idle_ms, &state.compression);
+    if let Some(v) = &verdict {
+        channels.note_verdict(channel_id, member_id, v);
+    }
+    Ok(Json(SessionDto::new(projection, format, verdict)))
 }
 
-/// Request body of `POST .../checkpoint` — `append_checkpoint`'s
-/// parameters minus path-carried ids.
+/// The assembled context's size in bytes — what the budget trigger
+/// measures. The head is counted in `plaintext` whatever `?format=`
+/// asked for: the budget is about how much conversation the caller's
+/// window holds, and a rendering's own markup is second-order against
+/// the conversation it wraps.
+fn assembled_bytes(p: &mem_core::view::Projection) -> usize {
+    let head = mem_core::render::render_head(&p.head, mem_core::RenderFormat::Plaintext);
+    head.len()
+        + p.view.summary.as_deref().map_or(0, str::len)
+        + p.view
+            .increment
+            .iter()
+            .map(|(_, row)| row.content.len())
+            .sum::<usize>()
+}
+
+/// Request body of `POST .../checkpoint` — the summary itself.
+///
+/// No coverage timestamp: ADR-0008 §4 has k10r derive it from the split it
+/// served, so the caller never computes or states one. The store's
+/// `append_checkpoint_from_verdict` is the only path that lands a summary.
 #[derive(Deserialize, Serialize)]
 pub struct AppendCheckpoint {
-    pub coverage_ts: u64,
     pub summary: String,
 }
 
-/// `POST /channels/{id}/members/{member}/checkpoint` — record (or
-/// advance) the member's checkpoint (same-key overwrite, ADR-0008).
+/// `POST /channels/{id}/members/{member}/checkpoint` — land the summary for
+/// the compression verdict k10r served: the checkpoint takes that verdict's
+/// split as its coverage point and the decision closes in the same batch.
+///
+/// 400 when no verdict is open. A summary with nothing to land on is the
+/// caller's bug (the same class as a malformed fact tuple), and inventing a
+/// coverage point here would make k10r guess what it is supposed to own.
 async fn append_checkpoint(
     State(state): State<Arc<MemState>>,
     Path((channel_id, member_id)): Path<(u64, u64)>,
     Json(body): Json<AppendCheckpoint>,
-) -> StatusCode {
+) -> Result<StatusCode, FactError> {
     let mut store = state.store.lock().await;
-    store.append_checkpoint(channel_id, member_id, body.coverage_ts, &body.summary);
-    StatusCode::NO_CONTENT
+    store
+        .append_checkpoint_from_verdict(channel_id, member_id, &body.summary)
+        .map(|_coverage_ts| StatusCode::NO_CONTENT)
+        .ok_or_else(|| FactError {
+            error: "no open compression verdict for this member: the coverage point comes \
+                    from the verdict k10r served, so read the session first"
+                .into(),
+            status: StatusCode::BAD_REQUEST,
+        })
 }
 
 // ---- the code store (gravity ADR-0001/0003) --------------------------

@@ -4,7 +4,7 @@ The memory core's schemas in one place: what tables exist today, the key
 and row shapes, and which access methods are declared. Generic OKM
 modeling rules (four layers, access-method discipline, key-tail rules)
 are NOT repeated here — they live in okm's
-[MODELING.md](../../../okm/docs/MODELING.md) and are normative for this
+[MODELING.md](https://github.com/orbsh/okm/blob/main/docs/MODELING.md) and are normative for this
 repo too. Design decisions behind each table live in the ADRs.
 
 > **Languages:** [English](MODELING.md) (primary) · [中文](MODELING.zh-CN.md)
@@ -15,11 +15,9 @@ One entity class = one ns (OKM rule). Current state:
 
 | ns  | Entity        | Status                  | ADR      |
 |-----|---------------|-------------------------|----------|
-| 32  | Flat memory   | **Withdrawn 2026-10-19** (the block below is history) | ADR-0002 |
 | 33  | Channel messages | Implemented (minimal slice, 2026-10-09) | ADR-0008 |
 | 34  | Checkpoints (per member) | Implemented (minimal slice, 2026-10-09) | ADR-0008 |
 | 35  | Code (delivered scripts) | Implemented (bring-up slice, 2026-10-15) | gravity ADR-0001/0003 |
-| —   | Session messages | superseded by the channel log | ADR-0008 |
 | —   | Tasks / task_links DAG | Declared (ADR-0001 — the third interface surface; same graph as the facts) | ADR-0001, ADR-0002 |
 | 36  | Entities (fact graph) | Implemented (2026-10-17) | ADR-0010 |
 | 37  | Facts (fact graph edges) | Implemented (2026-10-17) | ADR-0010 |
@@ -41,91 +39,10 @@ naming is 被动 / 主动, with 短期 / 长期 as the content horizon:
   its per-member projection (ns 34). The loop fetches and appends; never a
   tool.
 - **主动 (long-term)** — facts outside the context, reached as a TOOL by
-  any agent. The carrier is the fact graph; flat memory (ns 32) WAS its
-  pre-graph form — the same knowledge held as text rows, which is why it went
-  away when the graph landed (a text blob has no per-fact identity: it cannot
-  be updated, weighted or enumerated per fact). Withdrawn 2026-10-19. Raw content never needed it — the
-  channel log (ns 33) already holds every message.
+  any agent. The carrier is the fact graph (ns 36/37). Raw conversation is not
+  this kind's business: the channel log (ns 33) already holds every message.
 - **初始化 (persona / style)** — graph-derived: a traversal from the user
   node, delivered at the head of the projection. No ns assigned yet.
-
-## Fact-graph additions (2026-10-19)
-
-- `EntityRow` gained `community_id` (declared hot, `#[ok_default(0)]`;
-  payload layout v2) and its `by_community` face
-  (`[community_id][scope][node_id]`) — the bucket read is a face scan, never
-  a table filter (ADR-0010 §2).
-- `FactEdge` carries the weight system's inputs (`read_count`, `write_count`,
-  `tool_count`, `last_read`, `last_write`; layout v2). `weight` is the folded
-  formula in milli-units. Its three declared faces (`by_since` /
-  `by_confidence` / `by_weight`) are NOT declared: nothing scans them, and
-  every touch would maintain them for no reader (ADR-0005).
-- `CommunitySeqRow` (ns 38): `[scope]` → `high_water`, the last community id
-  issued. One row per scope, overwritten in place, monotonic — the issuer that
-  replaced both the `HighWater` reduce and the "max of the live community ids"
-  reading (ADR-0010 §1). The capsule table that ns once carried is retired.
-
-## Flat memory (ns 32)
-
-**WITHDRAWN 2026-10-19** — the graph landed and took the carrier with it (ADR-0001's "flat memory, then the graph"; PLAN Phase 3): the table, `MemoryStore` and the `/memory` door are deleted, and ns 32 is free. The schema below is kept as the historical record of the pre-graph form — legacy rows are a migration question (ADR-0002's PG import), not a live table.
-
-### Key: `MemoryKey` (`KeyEncode`)
-
-```rust
-#[derive(KeyEncode, ...)]
-#[kv_ns(32)] // legacy: declared on the key (pre row-as-declaration-point)
-pub struct MemoryKey {
-    pub user_id: u64,
-    pub id: u64,
-}
-```
-
-Physical layout: `[user_id 8B BE][id 8B BE]` = 16 bytes, zero padding.
-`user_id` is the organizational prefix (user-scoped scans); `id` is a
-surrogate identity — attributes are payload, never key.
-
-### Row: `MemoryRow` (`DocumentEncode`)
-
-```rust
-#[derive(DocumentEncode, ...)]
-#[ok_ref(MemoryKey)]
-#[ok_ns(32)] // the row is the table's declaration point
-pub struct MemoryRow {
-    pub text: String,           // cold TLV segment
-    pub created_at: u64,        // hot segment (fixed width)
-    pub embedding: Vector<f32>, // cold frame, ANY length — the row's vector
-}
-```
-
-- ns 32 is declared on the row (`#[ok_ns]`); the key type carries none (the
-  collection takes no ns: assembly is
-  `<MemoryRow as Document>::collection(store)`).
-- Payload: fixed-width fields contiguous (hot), variable text as TLV
-  (cold). Layout version defaults to 1. `embedding` is appended at the tail
-  of the cold segment — new fields go at the tail (okm's schema-evolution
-  rule).
-- `embedding` is the built-in engine's output (ADR-0003), L2-normalized at
-  the source so the contract's `cosine` is an inner product. The frame
-  carries its own count, so a model swap changes the DATA, not the wire; an
-  EMPTY frame is a row written without an engine (legal, and the retrieval
-  side skips it — it is not a zero vector).
-- No `#[ok_index]` access methods yet — retrieval is the Phase 0
-  brute-force substring scan (`scan_keys` + filter). This is the
-  declared bring-up posture (ADR-0003), not the end state; Phase 1
-  searches the built-in local embedding model's vectors (`Vector<f32>`
-  frames, read into an in-memory table) + name/alias point lookup
-  + weight metadata (ADR-0005). The lexical branch (jieba / inverted
-  index / BM25 / RRF / arroy) is withdrawn — ADR-0003
-  2026-10-14.
-
-### Identity generation
-
-`id` is an auto-increment surrogate assigned by `MemoryStore`. The
-counter is NOT persisted: `open()` recovers it by scanning the last key
-in table order (`[user_id][id]` BE → the last key carries the global
-max id) and continuing past it. Consequence: ids are unique but not
-contiguous per user, and the counter is global across users — do not
-assume per-user id density.
 
 ## Access-method inventory
 
@@ -142,12 +59,6 @@ full-table scan query face. This inventory states which KIND each path is:
 
 Current standing:
 
-- Flat memory (ns 32): a **declared degenerate path** — the `[user_id]` prefix
-  scan plus an in-table substring filter (ADR-0003's bring-up posture). The table
-  WAS the pre-graph carrier of long-term memory and went with the graph's
-  landing (ADR-0001, withdrawn 2026-10-19), so the vector landing and the
-  name/alias point lookup ADR-0003 specifies are declared on the graph's
-  collections, not here.
 - Channel messages (ns 33): a **named face** — prefix scan by
   `[channel_id][ts_ms][sub]`: replay, increment and max-gap reads are one prefix
   scan, and the interval rides the main table's own sort segment (sequential, no
@@ -167,53 +78,91 @@ Current standing:
 
 Key layouts are locked by each suite's own hex test — `key_layout_is_hex_locked`
 in `tests/channel.rs` and `tests/code.rs`, `entity_key_layout_is_hex_locked` and
-`edge_payload_layout_is_locked` in `tests/graph.rs`; the flat-memory lock went
-with its table (2026-10-19). ns header excluded (`KeyEncode::encode()` returns
+`edge_payload_layout_is_locked` in `tests/graph.rs`. ns header excluded (`KeyEncode::encode()` returns
 payload without the ns; the Table prepends `[ns 2B][slot 1B]`).
 
-## Channel log (ns 33) + checkpoints (ns 34)
+## Channel log (ns 33)
 
-The unified channel log and the agent's projection (ADR-0008, minimal
-slice serving gravity Phase 0). Declared in
+The append-only message table plus the three per-member tables the projection
+and the compression engine read (ADR-0008). Declared in
 `crates/mem-core/src/channel.rs`.
 
-### Keys
+**What `member_id` is.** A member is one consumer's projection IDENTITY on one
+channel: the agent (or human) whose view of the shared log this is. The three
+per-member tables below are keyed `[channel_id][member_id]` and nothing else,
+and a MESSAGE has no member at all — a message belongs to the log, not to
+anyone's view. There is no members TABLE yet (display name and role are Phase
+2.7); the single-member shape fixes `id = 1` (`DEFAULT_MEMBER`), so today every
+projection on a channel is that one member.
 
-- `MessageKey` (ns 33): `[channel_id 8B][ts_ms 8B][sub 2B]` — BE,
-  byte order == `(ts_ms, sub)` order; the log IS the index (no sort, no
-  secondary index). `sub` = same-millisecond tiebreaker (single writer,
-  sequential; u16 overflow at 65 536 msgs/ms is pathological). ns/slot
-  join at entry time per ADR-0011.
-- `CheckpointKey` (ns 34): `[channel_id 8B][member_id 8B]` — one
-  checkpoint per (channel, member), OVERWRITTEN (same-key RMW): the
-  projection reads only the latest; audit history belongs to Phase
-  2.6's decision log. If re-segmentation later needs checkpoint
-  history, this becomes an append-only log keyed by coverage point —
-  a pre-production schema change.
+### `MessageKey` / `MessageRow` (ns 33)
 
-### Rows
+```rust
+#[derive(KeyEncode, ...)]
+#[ok_ns(33)]
+pub struct MessageKey {
+    pub channel_id: u64,
+    pub ts_ms: u64,
+    pub sub: u16,
+}
+```
 
-- `MessageRow`: `role u8` (user/assistant/tool/system), `kind u8`
-  (text; tool_call/tool_result reserved for view-layer pruning),
-  `content String`. Storage always holds full rows; pruning is view
-  side (ADR-0006).
-- `CheckpointRow`: `coverage_ts u64` (the projection's increment starts
-  STRICTLY after), `summary String`.
+- Key `[channel_id 8B][ts_ms 8B][sub 2B]`, BE fixed width, so byte order IS
+  `(ts_ms, sub)` order: replay, the increment and the max-gap read are one
+  prefix scan in the log's own sort order — no sort step, no secondary index.
+- `ts_ms` is the CALLER's clock (ADR-0008 §3); `sub` breaks ties within one
+  millisecond (one writer, sequential appends).
+- Row: `role u8` (user/assistant/tool/system), `kind u8` (text;
+  tool_call/tool_result reserved for view-layer pruning), `content String`.
+  Storage always holds the full row — pruning is the view's job (ADR-0006).
 
-### Access (mem-core `ChannelStore`)
+### `CheckpointKey` / `CheckpointRow` (ns 34)
 
-`append(channel_id, ts_ms, sub, role, kind, content)` — the caller
-(gravity) assigns the clock; `fetch_full(channel_id, member_id)` →
-`SessionView { coverage_ts, summary, increment }` — the projection:
-checkpoint + increment strictly after coverage, key order;
-`append_checkpoint(channel_id, member_id, coverage_ts, summary)`.
-`view::assemble(channels, graph, channel, member, scope, user_node)` →
-`Projection { head: Vec<FactView>, view: SessionView }` — the head is the user
-node's incident facts (36/37), which the door RENDERS (`render::render_head`)
-in the requested `format` before it goes on the wire.
+- Key `[channel_id 8B][member_id 8B]` — one checkpoint per (channel, member),
+  LATEST-WINS: the projection reads only the newest, and a compression's audit
+  trail is the decision log below rather than this row.
+- Row: `coverage_ts u64` (the increment starts STRICTLY after it),
+  `summary String`.
 
-Not yet (later slices): threads, topic tags, members, read cursors,
-compression policy engine (ADR-0008/0009).
+### `CursorKey` / `CursorRow` (ns 39)
+
+- Key `[channel_id 8B][member_id 8B]` — the member's last-read instant, stamped
+  from the caller's clock at a projection read: ADR-0008 §2's read cursor, the
+  cache clock's only observable. Latest-wins, and a read carrying an older
+  instant leaves it alone — the cursor never rewinds.
+- Row: `ts_ms u64`.
+
+### `DecisionKey` / `DecisionRow` (ns 40) — the decision log
+
+What it is for: it records what the compression policy PROPOSED and whether the
+summary of that span ever came back. Two uses — (1) the summary the caller
+returns must land on the split it was handed, and this row is where that
+coverage point comes from; (2) tuning later reads these real records (measured
+signals + parameter snapshot) instead of adjusting numbers by feel.
+
+- Key `[channel_id 8B][member_id 8B][checkpoint_ts 8B]` — one row per SPLIT the
+  policy proposed, not per read, so re-reading an unchanged projection refreshes
+  one row instead of growing the log.
+- Row: `state u8` (PENDING → DONE), `trigger u8`, and the verdict's whole
+  parameter/signal snapshot: `assembled_bytes`, `context_bytes`,
+  `budget_percent`, `cache_ttl_ms`, `idle_ms`, `max_gap_ms`.
+
+### Access (`ChannelStore`)
+
+| Call | What it does |
+|---|---|
+| `append(channel, ts_ms, sub, role, kind, content)` | one log entry; returns its key |
+| `fetch_full(channel, member)` | `SessionView { coverage_ts, summary, increment, last_read }` |
+| `append_checkpoint(channel, member, coverage_ts, summary)` | raw checkpoint write — the door does NOT call it |
+| `note_read` / `read_cursor` | stamp / read the read cursor |
+| `note_verdict` / `pending_verdict` | log what the policy proposed / read the newest open proposal |
+| `append_checkpoint_from_verdict(channel, member, summary)` | land a summary on the served split; checkpoint + decision in ONE batch; `None` when nothing is open |
+
+`view::assemble(channels, graph, channel, member, scope, user_node)` returns
+`Projection { head, view }` — the head is the user node's incident facts
+(36/37), which the door renders per `?format=` before it goes on the wire.
+
+Not yet: threads, topic tags, the members table (ADR-0008/0009).
 
 ## Code store (ns 35)
 
@@ -270,14 +219,20 @@ pub struct CodeRow {
 ### Access (mem-core `CodeStore`)
 
 `put(language, description, parameters, source)` → the store-assigned
-`code_id` (a surrogate id recovered on reopen by scanning the last key,
-same rule as flat memory); `get(code_id)` → the row, or absent for an
+`code_id` (a surrogate id: recovered on reopen by scanning the last key); `get(code_id)` → the row, or absent for an
 unknown id; `list()` → `(code_id, language, description)` in id order —
 what a resolver or a linker picks from, and the declared bring-up
 posture (a whole-table scan that the graph's retrieval replaces,
 ADR-0003/0018). Source and parameter definition stay out of `list()`.
 
 ## Fact graph (ns 36 entities, ns 37 facts)
+
+**What `scope` is.** One user's memory corpus. Every graph table below puts it
+in the FIRST key segment (`u64` user identity; a single-user deployment is `1`,
+i.e. `view::DEFAULT_SCOPE`), and it is the boundary of retrieval and traversal:
+one scope's corpus goes into one scope's index, and a bucket read stays inside
+one scope. The channel side has no scope — a channel already IS one scope's
+conversation.
 
 The 主动 (long-term) side's carrier: an okm node collection plus an okm
 edge collection, and the write-time resolution that lands one fact
@@ -305,12 +260,18 @@ pub struct EntityRow {
     pub kind_id: u16,
     pub literal_num: i64,
     pub name: String,
-    pub embedding: Vector<f32>,
+    pub embedding: Vector<f32>, // NO #[ok_index]: a vector has no key order, see below
 }
 ```
 
+**A vector declares no face.** An `#[ok_index]` face is a derived entry for
+key-ordered reads (prefix / range / covering scans); a vector has no key order,
+so there is no face to declare for it. Vector search runs on `okm-vector`'s
+`ExactIndex` — a DERIVED index rebuilt from the rows' `embedding` frames on
+first use and dropped on every write, not a declared face.
+
 - Key `[scope 8B BE][node_id 8B BE]` — `scope` leads because the corpus is
-  per-user (ADR-0003), the same ownership boundary flat memory uses. Ids are
+  per-user (ADR-0003). Ids are
   store-assigned surrogates, recovered on reopen from the last key.
 - **A face carries the payload field first and the primary key last**: okm
   joins the key tail itself, and the derive accepts payload fields only (a
@@ -368,61 +329,42 @@ pub struct EntityRow {
 
 ### Facts (ns 37) — edge collection
 
-An okm edge collection (`Graph<FjallStore, FactEdge>`), one ns per graph (okm
-ADR-0017 §4). The DECLARATION is the graph — `GraphEncode`: `#[ok_ns(37)]`,
-`#[ok_nodes(FactNodes)]` (the member collections — today `Entities`; admitting
-another collection is one enum variant plus its ns in `NS_VALUES`, a code
-change), the payload's codec,
-and one 0x1 face per DECLARED `#[ok_index]`. The handle builds the primary, the
-payload's dynamic entry, the predicate vocabulary and the four traversal
-faces.
+One fact = two nodes + one edge; this is the EDGE table (ADR-0010 §1). Declared:
 
-| Face | Key |
-|---|---|
-| 0x0 primary | `[edge_id 8B BE]` → `[src NodeRef][dst NodeRef][predicate_id][obj payload]` |
-| 0x1 dynamic segment | `[edge_id 8B BE]` → the relation's open props (`functional` rides here) |
-| 0x1nnn declared index (`since` / `confidence` / `weight`) | `[field value][edge_id]` |
-| 0x4/0x5 predicate vocabulary | `[predicate_id]` → name / `[predicate name]` → `predicate_id` |
-| 0x6 predicate index | `[predicate_id][edge_id]` |
-| 0x7 out-edges | `[src NodeRef][edge_id]` |
-| 0x8 in-edges | `[dst NodeRef][edge_id]` |
-| 0x9 predicate+out | `[predicate_id][src NodeRef][edge_id]` |
-| 0xA predicate+in | `[predicate_id][dst NodeRef][edge_id]` |
+```rust
+#[derive(GraphEncode, ...)]
+#[ok_ns(37)]
+#[ok_nodes(FactNodes)]           // member node sets: Entities, today
+#[ok_index(
+    by_since { fields(since) },              // three declared faces, one 0x1 entry each
+    by_confidence { fields(confidence) },
+    by_weight { fields(weight) },
+)]
+pub struct FactEdge { /* since / confidence / weight / five counters */ }
+```
 
-- **No scope segment on this side.** The edge collection builds its own keys
-  (okm's edge shape), so the ownership boundary rides the ENDPOINTS: a
-  `NodeRef` is `[ns 2B][len varint][entity key]`, and the entity key carries
-  the scope. A traversal starts at a scoped node and stays in scope; only a
-  whole-ns scan (0x6, "every edge of a predicate") crosses scopes, and filtering
-  it by endpoints is the caller's job. A per-scope edge prefix would mean
-  hand-rolling the collection against okm's `Graph`.
-- The three declared fields are the relation props' PROJECTIONS: `since`
-  (the caller's clock — the adjudication input), `confidence` (the write
-  side's; 255 = absent, i.e. no penalty) and `weight` (the weight system's,
-  ADR-0005 — 0 until that system writes it). They are kept OUT of the edge's
-  dynamic entry: one datum, one home.
-- **The relation's open props ride the edge's dynamic segment** (slot 1 of
-  the edge's ns), built with okm's `put_frame_named` and committed in the
-  SAME batch as the link (ADR-0002: one WriteBatch = one transaction). The
-  per-assertion `functional` flag is kept there — the assertion's own record
-  of how it declared its kind's cardinality.
-- **The payload codec is the declaration's (LANDED 2026-10-19).** `FactEdge`'s
-  payload is an ordinary obj payload (`[version u8][hot_len u16 BE][since u64]
-  [confidence u8][weight u32]`), produced and read by the one declaration:
-  `encode_payload` / `decode_payload`. k10r's hand-written `from_attrs` and its
-  locking test are gone; the adjudication input is
-  `FactEdge::decode_payload(&body.payload)`.
-- **Dictionary discipline (two vocabularies in one ns) — RETIRED, nothing
-  replaces it.** The edge ns used to hold relation kinds (okm's `Graph`,
-  long-lived `VocabCache`) AND the prop names k10r allocates; two caches
-  allocating in one vocabulary hand the same id to different names, and the
-  frame then reads back under the wrong name — silently. okm ADR-0017 §3 split
-  the vocabularies (the predicate owns 0x04/0x05; the payload's field names
-  keep 0x02/0x03), so the collision is structurally gone; k10r's two
-  disciplines — a fresh cache per call, a handle per call — retire with it, and
-  so does the read-side priming (okm's `VocabCache::id_get` loads on probe).
-  The entity collection rides the same rule — kinds at 0x04/0x05, prop names at
-  0x02/0x03.
+- **The edge collection builds its own keys, so this side carries no scope
+  segment.** Scope rides the ENDPOINTS: an endpoint is a reference to
+  `(ns, primary key)`, and an entity's primary key carries the scope. Traversal
+  starts at a scoped node, so it stays inside one scope; only a whole-table scan
+  ("every edge of one predicate") crosses scopes, and filtering by endpoint is
+  the caller's composition. Putting a per-scope prefix in the edge key would mean
+  hand-writing this collection instead of using the library's edge graph — not
+  worth it.
+- The declared fields are PROJECTIONS of the relation's props (one datum, one
+  home): `since` (the caller's clock, the adjudication input), `confidence`
+  (write-side; 255 = absent, i.e. no penalty) and `weight` (the weight system's
+  milli-units), plus the five counters the weight system folds in (listed with
+  the payload fields above).
+- **A relation's open props ride the edge's dynamic segment**, committed in the
+  same batch as the link (ADR-0002: one WriteBatch = one transaction). The
+  per-assertion `functional` flag stays there — the assertion's own record of how
+  it declared its kind's cardinality.
+- Face numbers, vocabularies and the dynamic segment's frame construction are
+  **okm's internals** and are not repeated here: see okm's
+  [MODELING](https://github.com/orbsh/okm/blob/main/docs/MODELING.md). This page
+  registers what k10r itself declares (ns, key fields, declared faces, payload
+  fields) and the one conclusion it depends on.
 
 ### Access (mem-core `GraphStore`)
 
@@ -451,7 +393,7 @@ entry, same `edge_id`, no window between two commits (ADR-0010, paid
 One Fjall **database** per process (one directory, one lock file), and
 **two keyspaces**: `channel` (the log is queue-like and takes the store's
 highest write rate, so it gets its own LSM tree and its compaction never
-drags the other tables along) and `memory` (flat memory + code + the fact
+drags the other tables along) and `memory` (code + the fact
 graph, and later the skills — those tables are discriminated by ns).
 `crate::service::open_service` opens the database and attaches each group
 with `FjallStore::from_db`. Fjall locks the directory, so a second

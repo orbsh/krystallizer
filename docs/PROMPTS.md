@@ -6,14 +6,19 @@ Status: **Declared** (a draft; nothing here is wired). Prompts are text the
 caller owns; k10r holds no LLM (ADR-0007), so the prompt below runs on the
 caller's side and is not a k10r asset.
 
-One surface. The draft this page came from also carried a write-side
+Two surfaces. §1 is the caller's tool definition; §2 is the tail prompt k10r
+serves WITH a compression verdict (ADR-0008 §4) — its text is a k10r artifact,
+and the served copy is `TAIL_PROMPT` in `crates/mem-core/src/compress.rs`, kept
+word-identical to the block below.
+
+The draft this page came from also carried a write-side
 "capsule generator" (community slice in, title + summary out); it retired with
 the capsule table (ADR-0010 §4, 2026-10-20) — the read side renders the
 community's nodes and edges instead of asking a model to summarize them.
 
 Names below follow the settled vocabulary. Where the source draft invented a
 name or a field, it is marked **[not in the design]** and left visible rather
-than silently adopted — see §3.
+than silently adopted — see §4.
 
 ## 1. Live path: the tool definition (gravity's side)
 
@@ -84,13 +89,32 @@ Notes that keep this prompt honest:
   by the caller's routing and by write-time fusion (ADR-0004/0007), not by the
   model.
 
-## 2. Where the block is deployed
+## 2. Compression tail prompt (k10r's side)
+
+Served with a verdict as `compress: { checkpoint, prompt }`: the caller
+appends this to the span's records and runs that as a branch turn beside the
+user's turn — that turn's answer IS the summary, and k10r lands it on the split
+it proposed, so the caller never states a coverage timestamp.
+
+```text
+Summarize the conversation span above so that an agent can continue from your
+summary alone. Keep: decisions and their reasons, facts, names, numbers,
+identifiers and code verbatim, open questions, and what the user is trying to
+achieve. Drop: politeness, repetition, and reasoning that led nowhere. Write the
+summary only — do not answer the last message, do not ask questions, do not
+invent anything that is not in the span.
+```
+
+The wrapping above is this page's; the served string is one line.
+
+## 3. Where the blocks are deployed
 
 | Block | Owner | Where it runs | Wiring status |
 |---|---|---|---|
 | §1 tool definition | gravity (the caller) | inserted into the turn's system prompt alongside the fixed tool list | not wired (the tool list itself is still Phase 0: plain chat, no tools) |
+| §2 compression tail prompt | k10r (served with the verdict) | the caller appends it to the span's records and runs that as a branch turn beside the user's turn | landed on k10r's side (`compress` on `GET …/session`); the caller-side branch turn is gravity's, not yet wired |
 
-## 3. Provenance and the to-verify list
+## 4. Provenance and the to-verify list
 
 This page integrates an external AI-generated draft suite. Integration rule:
 keep the drafts' prompt TEXT (it is decent craft) but never its invented

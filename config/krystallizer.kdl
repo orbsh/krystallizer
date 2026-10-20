@@ -18,3 +18,17 @@ embedding {
     dimensions 512
     metric "cosine"
 }
+
+// === compression ===
+// The Phase 2.6 policy engine's numbers (ADR-0008 §4). All four are
+// parameters, never constants: the tuning pass is deferred until feedback
+// labels exist, because fitting a policy to unlabelled traces fits noise.
+// context-bytes is the CONSUMER's model window expressed in bytes — k10r
+// holds no tokenizer for another model, so bytes are the honest unit, and
+// the mid-band percentage below is what turns the window into a trigger.
+compression {
+    context-bytes 131072
+    budget-percent 50
+    cache-ttl-ms 300000
+    floor-bytes 2048
+}

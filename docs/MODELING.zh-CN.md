@@ -3,7 +3,7 @@
 memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声明了
 哪些访问方法。OKM 通用建模规则（四层、访问方法纪律、键尾规则）不在
 此重复——见 okm 的
-[MODELING.zh-CN.md](../../../okm/docs/MODELING.zh-CN.md)，同样对本仓
+[MODELING.zh-CN.md](https://github.com/orbsh/okm/blob/main/docs/MODELING.zh-CN.md)，同样对本仓
 规范生效。每张表背后的设计决策见各 ADR。
 
 > **Languages:** [English](MODELING.md) · [中文](MODELING.zh-CN.md)（主文档）
@@ -14,11 +14,9 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
 
 | ns  | 实体              | 状态                     | ADR      |
 |-----|-------------------|--------------------------|----------|
-| 32  | Flat memory       | **2026-10-19 撤除**（下面一块是历史） | ADR-0002 |
 | 33  | Channel 消息日志   | 已实现（最小切片，2026-10-09） | ADR-0008 |
 | 34  | Checkpoint（每成员）| 已实现（最小切片，2026-10-09） | ADR-0008 |
 | 35  | Code（交付的脚本） | 已实现（bring-up 切片，2026-10-15） | gravity ADR-0001/0003 |
-| —   | Session 消息      | 被 channel log 取代      | ADR-0008 |
 | —   | Tasks / task_links DAG | 已声明（ADR-0001——第三个接口面；与事实同图） | ADR-0001, ADR-0002 |
 | 36  | 实体（事实图）     | 已实现（2026-10-17）      | ADR-0010 |
 | 37  | 事实（事实图边）   | 已实现（2026-10-17）      | ADR-0010 |
@@ -37,78 +35,10 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
 - **被动（短期）**——当前上下文：channel 日志（ns 33）+ 每成员投影
   （ns 34）。循环自己取、自己追加，从不作为工具。
 - **主动（长期）**——不在上下文里的事实，以**工具**形式到达，任何 agent 都能
-  用。载体是 fact graph；flat 记忆（ns 32）**曾经**是它在图谱化之前的形态——同一份
-  知识以文本行存放，所以图落地时它一并撤掉了（文本块没有逐条身份：按条更新、加权、
-  枚举都做不了）。2026-10-19 撤除。原始内容从来不需要它——channel 日志（ns 33）已经收了每一条消息。
+  用。载体是事实图（ns 36/37）。原始对话不归这一类：channel 日志（ns 33）已经
+  收了每一条消息。
 - **初始化（人设 / 风格）**——图派生：从用户节点出发遍历组装，投到
   投影头部。尚未分配 ns。
-
-## 事实图新增（2026-10-19）
-
-- `EntityRow` 增加 `community_id`（声明热字段，`#[ok_default(0)]`；payload 布局 v2）
-  及其 `by_community` 面（`[community_id][scope][node_id]`）——桶读是一次面扫描，
-  不是全表过滤（ADR-0010 §2）。
-- `FactEdge` 携带权重系统的输入（`read_count`、`write_count`、`tool_count`、
-  `last_read`、`last_write`；布局 v2）。`weight` 是折出来的毫单位公式值。原声明的
-  三个面（`by_since` / `by_confidence` / `by_weight`）**不再声明**：没有读者扫它们，
-  而每次 touch 都要为不存在的读者维护（ADR-0005）。
-- `CommunitySeqRow`（ns 38）：`[scope]` → `high_water`，最后发出的社区 id。
-  每 scope 一行，原地覆写，单调递增——取代了 `HighWater` reduce 与「读现存社区
-  最大值」两种发号（ADR-0010 §1）。ns 38 曾经装的那张胶囊表已退役。
-
-## Flat memory（ns 32）
-
-**2026-10-19 撤除**——图落地，载体随之退场（ADR-0001 的「flat memory, then the graph」；PLAN Phase 3）：表、`MemoryStore` 与 `/memory` 门都已删除，ns 32 空出。下面的 schema 作为图谱化之前形态的历史记录保留——存量行是迁移问题（ADR-0002 的 PG 导入），不是活表。
-
-### Key：`MemoryKey`（`KeyEncode`）
-
-```rust
-#[derive(KeyEncode, ...)]
-#[kv_ns(32)] // 历史原因：声明在 key 上（row 声明点之前）
-pub struct MemoryKey {
-    pub user_id: u64,
-    pub id: u64,
-}
-```
-
-物理布局：`[user_id 8B BE][id 8B BE]` = 16 字节，零填充。`user_id`
-是组织前缀（user 范围扫描）；`id` 是代理身份——属性是 payload，不
-进 key。
-
-### Row：`MemoryRow`（`DocumentEncode`）
-
-```rust
-#[derive(DocumentEncode, ...)]
-#[ok_ref(MemoryKey)]
-#[ok_ns(32)] // row 是表的声明点
-pub struct MemoryRow {
-    pub text: String,           // cold TLV 段
-    pub created_at: u64,        // hot 段（定宽）
-    pub embedding: Vector<f32>, // cold 帧，长度任意——该行的向量
-}
-```
-
-- ns 32 声明在 row 上（`#[ok_ns]`）；key 类型不携带 ns（collection 不收
-  ns：组装用 `<MemoryRow as Document>::collection(store>`）。
-- Payload：定宽字段连续排列（hot），变长 text 走 TLV（cold）。布局
-  版本默认 1。`embedding` 追加在 cold 段尾部——新字段一律追加在尾部
-  （okm 的 schema 演进规则）。
-- `embedding` 是内置引擎的输出（ADR-0003），在源头做 L2 归一，于是契约
-  里的 `cosine` 就是内积。帧自带计数，所以换模型换的是**数据**、不是
-  wire；空帧表示该行写入时没有挂引擎（合法，检索侧跳过它——它不是
-  零向量）。
-- 尚无 `#[ok_index]` 访问方法——检索是 Phase 0 的暴力 substring 扫描
-  （`scan_keys` + 过滤）。这是声明的 bring-up 姿态（ADR-0003），非终
-  态；Phase 1 检索内置本地 embedding 模型的向量（`Vector<f32>` 帧，
-  读进内存表）+ 名/别名点查 + weight 元数据（ADR-0005）。词法分支
-  （jieba / 倒排索引 / BM25 / RRF / arroy）已撤销——ADR-0003。
-
-### 身份生成
-
-`id` 是 `MemoryStore` 分配的自增代理键。计数器不持久化：`open()` 扫
-描表序最后一个 key 恢复（`[user_id][id]` BE → 末位 key 携带全局最大
-id），从其之后继续。后果：id 唯一但不按 user 连续，计数器跨 user 全
-局——不要假设 per-user 的 id 密度。
 
 ## 访问方法清单
 
@@ -123,10 +53,6 @@ okm 的纪律：查询只走声明过的路径——没有通用全表扫描的�
 
 现状：
 
-- Flat memory（ns 32）：**声明的退化路径**——`[user_id]` 前缀扫描加表内 substring
-  过滤（ADR-0003 的 bring-up 姿态）。这张表**曾**是长期记忆的图前载体，已随图
-  落地撤除（ADR-0001；2026-10-19），所以 ADR-0003 描述的向量落址与名/别名
-  点查声明在图的两个 collection 上，不在这张表上。
 - Channel 消息（ns 33）：**具名面**——`[channel_id][ts_ms][sub]` 前缀扫描：回放、
   increment、max-gap 读都是一次前缀扫描，且区间就落在主表自己的排序段上（顺序扫、
   无回表），见 ADR-0008 §3。checkpoint（ns 34）：按 `[channel_id][member_id]` 点读。
@@ -142,49 +68,81 @@ okm 的纪律：查询只走声明过的路径——没有通用全表扫描的�
 
 Key 布局由各套件自己的 hex 测试锁定——`tests/channel.rs` 与 `tests/code.rs` 的
 `key_layout_is_hex_locked`、`tests/graph.rs` 的
-`entity_key_layout_is_hex_locked` 与 `edge_payload_layout_is_locked`；flat 记忆
-那把锁随表一起撤除（2026-10-19）。不含 ns 头（`KeyEncode::encode()` 只返回
+`entity_key_layout_is_hex_locked` 与 `edge_payload_layout_is_locked`。不含 ns 头（`KeyEncode::encode()` 只返回
 payload，不含 ns；Table 自行前置 `[ns 2B][slot 1B]`）。
 
-## Channel 日志（ns 33）+ checkpoint（ns 34）
+## Channel 日志（ns 33）
 
-统一 channel 日志与 agent 投影（ADR-0008，服务 gravity Phase 0 的最小切片）。
-声明在 `crates/mem-core/src/channel.rs`。
+一张只追加的消息表，加三张每成员表（投影与压缩引擎读它们），ADR-0008。声明在
+`crates/mem-core/src/channel.rs`。
 
-### 键
+**`member_id` 是什么。** 成员 = 某个消费者在这个 channel 上的**投影身份**：这份
+共享日志的「谁在看」的那一个（一个 agent，或一个人）。下面三张每成员表只用
+`[channel_id][member_id]` 定位，仅此而已；**消息没有成员**——消息属于日志，不属于
+任何人的视图。members 表（显示名 / 角色）还没落地（Phase 2.7），单成员形态把 id 定
+成 `1`（`DEFAULT_MEMBER`），所以今天一个 channel 上的投影都是这一个成员。
 
-- `MessageKey`（ns 33）：`[channel_id 8B][ts_ms 8B][sub 2B]`——BE 定宽，
-  字节序 == `(ts_ms, sub)` 序；日志即索引（无排序步骤、无二级索引）。
-  `sub` = 同毫秒 tiebreaker（单写者顺序追加；u16 溢出 = 一毫秒 65 536 条，
-  病态信号）。ns/slot 在条目入址时拼接（ADR-0011）。
-- `CheckpointKey`（ns 34）：`[channel_id 8B][member_id 8B]`——每
-  (channel, member) 一条 checkpoint，**覆盖写**（同键 RMW）：投影只读最新
-  一条；压缩决策的审计史属于 Phase 2.6 的 decision log（另一张表）。若
-  未来重切分需要 checkpoint 历史，本表改为按 coverage point 键控的
-  append-only 日志——pre-production schema 变更，零迁移（ADR-0018
-  clean-break 规则）。
+### `MessageKey` / `MessageRow`（ns 33）
 
-### 行
+```rust
+#[derive(KeyEncode, ...)]
+#[ok_ns(33)]
+pub struct MessageKey {
+    pub channel_id: u64,
+    pub ts_ms: u64,
+    pub sub: u16,
+}
+```
 
-- `MessageRow`：`role u8`（user/assistant/tool/system）、`kind u8`
-  （text；tool_call/tool_result 预留给视图层剪枝）、`content String`。
-  存储永远持有完整行；剪枝在视图侧（ADR-0006）。
-- `CheckpointRow`：`coverage_ts u64`（投影增量严格晚于此点）、
-  `summary String`。
+- 键 `[channel_id 8B][ts_ms 8B][sub 2B]`，BE 定宽，所以字节序**就是**
+  `(ts_ms, sub)` 序：回放、增量、max-gap 读都是一次前缀扫描，落在日志自己的排序段
+  上——不排序，也没有二级索引。
+- `ts_ms` 是**调用方**的钟（ADR-0008 §3）；`sub` 破同毫秒平手（单写者、顺序追加）。
+- 行：`role u8`（user/assistant/tool/system）、`kind u8`（text；tool_call/tool_result
+  预留给视图层剪枝）、`content String`。存储永远持有完整行，剪枝归视图（ADR-0006）。
 
-### 访问面（mem-core `ChannelStore`）
+### `CheckpointKey` / `CheckpointRow`（ns 34）
 
-`append(channel_id, ts_ms, sub, role, kind, content)`——时钟由调用方
-（gravity）持有；`fetch_full(channel_id, member_id)` →
-`SessionView { coverage_ts, summary, increment }`——投影：checkpoint +
-严格晚于 coverage 的增量，键序；`append_checkpoint(channel_id, member_id,
-coverage_ts, summary)`。`view::assemble(channels, graph, channel, member,
-scope, user_node)` → `Projection { head: Vec<FactView>, view: SessionView }`
-——头部是用户节点的双向关联事实（36/37），由门在出网前按请求的 `format`
-渲染（`render::render_head`）。
+- 键 `[channel_id 8B][member_id 8B]`——每 (channel, member) 一条 checkpoint，
+  **覆盖写（latest-wins）**：投影只读最新这一条，一次压缩的审计史是下面的决策
+  日志，不是这一行。
+- 行：`coverage_ts u64`（增量严格晚于此点）、`summary String`。
 
-尚未落地（后续切片）：thread、topic tag、members、读游标、压缩策略
-引擎（ADR-0008/0009）。
+### `CursorKey` / `CursorRow`（ns 39）
+
+- 键 `[channel_id 8B][member_id 8B]`——成员的最近一次读取时刻，由投影读取时用
+  调用方的钟盖上：ADR-0008 §2 的读游标，也是缓存钟唯一的可观测物。latest-wins，
+  带更早时刻的读取不会改动它——游标永不倒退。
+- 行：`ts_ms u64`。
+
+### `DecisionKey` / `DecisionRow`（ns 40）——决策日志
+
+干什么的：记下压缩策略**提议过什么**，以及那份摘要到底回没回来。两个用途——(1) 调用方
+回的摘要要落在它当初收到的那个切分点上，覆盖点由这一行派生；(2) 将来有反馈标签时，
+调参读的是这些真实记录（信号实测值 + 参数快照），而不是凭印象改数字。
+
+- 键 `[channel_id 8B][member_id 8B][checkpoint_ts 8B]`——一行 = 策略提议过的
+  一个**切分点**（不是一次读取），所以同一投影重复读取只刷新一行，日志不膨胀。
+- 行：`state u8`（PENDING → DONE）、`trigger u8`，以及判词的整份参数/信号快照：
+  `assembled_bytes`、`context_bytes`、`budget_percent`、`cache_ttl_ms`、
+  `idle_ms`、`max_gap_ms`。
+
+### 访问面（`ChannelStore`）
+
+| 调用 | 做什么 |
+|---|---|
+| `append(channel, ts_ms, sub, role, kind, content)` | 追加一条，返回它的键 |
+| `fetch_full(channel, member)` | `SessionView { coverage_ts, summary, increment, last_read }` |
+| `append_checkpoint(channel, member, coverage_ts, summary)` | 裸的 checkpoint 写——门不调它 |
+| `note_read` / `read_cursor` | 盖 / 读读游标 |
+| `note_verdict` / `pending_verdict` | 记下策略的提议 / 取最新未了的提议 |
+| `append_checkpoint_from_verdict(channel, member, summary)` | 把摘要落在交付过的切分点上；checkpoint 与决策同一批；没有未了判词返回 `None` |
+
+`view::assemble(channels, graph, channel, member, scope, user_node)` 返回
+`Projection { head, view }`——头部是用户节点的双向关联事实（36/37），门在出网前按
+`?format=` 渲染它。
+
+尚未落地：thread、topic tag、members 表（ADR-0008/0009）。
 
 ## Code 存储（ns 35）
 
@@ -236,7 +194,7 @@ pub struct CodeRow {
 ### 访问面（mem-core `CodeStore`）
 
 `put(language, description, parameters, source)` → store 分配的
-`code_id`（代理键，重启后扫末键恢复，与 flat memory 同规则）；
+`code_id`（代理键，重启后扫末键恢复）；
 `get(code_id)` → 该行，未知 id = 不存在；`list()` →
 `(code_id, language, description)` 按 id 序——解析方或关联方挑选的依据，
 也是声明的 bring-up 姿态（全表扫描，由图谱检索取代，ADR-0003/0018）。
@@ -244,9 +202,13 @@ pub struct CodeRow {
 
 ## 事实图（ns 36 实体，ns 37 事实）
 
-主动面（长期）的载体：一个 okm 节点集合 + 一个 okm 边集合，以及把一条事实落地
-的写时消解（ADR-0010 §1；2026-10-17 落地）。声明在
-`crates/mem-core/src/graph.rs`。
+主动面（长期）的载体：一个节点集合 + 一个边集合，以及把一条事实落地的写时消解
+（ADR-0010 §1）。声明在 `crates/mem-core/src/graph.rs`。
+
+**`scope` 是什么。** 一个用户的记忆语料——下表的每一张图都把它放在键的第一段
+（`u64` 用户身份；单用户部署里就是 `1`，即 `view::DEFAULT_SCOPE`）。它是检索与
+遍历的边界：一个 scope 的语料装进一个 scope 的索引，bucket 读也只在一个 scope 内。
+channel 侧没有 scope——一个 channel 本身就是某个 scope 的一段对话。
 
 ### 实体（ns 36）——节点集合
 
@@ -269,12 +231,16 @@ pub struct EntityRow {
     pub kind_id: u16,
     pub literal_num: i64,
     pub name: String,
-    pub embedding: Vector<f32>,
+    pub embedding: Vector<f32>, // 没有 #[ok_index]：向量不按键序，见下
 }
 ```
 
+**向量不声明面。** `#[ok_index]` 声明的是「按键序做前缀 / 区间 / 覆盖扫」的派生条目；
+向量不按键排序，所以没有它的面可声明。向量检索走 `okm-vector` 的 `ExactIndex`——
+首次使用时从各行的 `embedding` 帧重建的派生索引（写入即失效），不是一张声明面。
+
 - 键 `[scope 8B BE][node_id 8B BE]`——`scope` 打头是因为语料按用户划分
-  （ADR-0003），与 flat memory 同一条归属边界。id 是 store 发放的代理键，重开
+  （ADR-0003）。id 是 store 发放的代理键，重开
   时从最后一个键恢复。
 - **面是「payload 字段在前、主键在后」**：key 尾由 okm 自己拼接，而派生只接受
   payload 字段（把 key 字段写进 `fields(...)` 是编译错误）。条目落成
@@ -316,50 +282,33 @@ pub struct EntityRow {
 
 ### 事实（ns 37）——边集合
 
-一个 okm 边集合（`Graph<FjallStore, FactEdge>`），每图一个 ns（okm ADR-0017）。
-声明**就是**这张图——`GraphEncode`：`#[ok_ns(37)]`、`#[ok_nodes(FactNodes)]`
-（成员集合——今天是 `Entities`；再加一个集合就是多一个枚举变体、`NS_VALUES` 里加一个 ns，改代码）、载荷的
-编解码、以及每条**声明**的 `#[ok_index]` 一个 0x1 面；主表、载荷的动态段条目、
-谓词词汇表与四个遍历面由句柄造。
+一条事实 = 两个节点 + 一条边；这一张是**边**（ADR-0010 §1）。声明：
 
-| 面 | 键 |
-|---|---|
-| 0x0 主表 | `[edge_id 8B BE]` → `[src NodeRef][dst NodeRef][predicate_id][obj 载荷]` |
-| 0x1 动态段 | `[edge_id 8B BE]` → 关系的开放 props（`functional` 标志住这里） |
-| 0x1nnn 声明索引（`since` / `confidence` / `weight`） | `[字段值][edge_id]` |
-| 0x4/0x5 谓词词汇表 | `[predicate_id]` → 谓词名 / `[谓词名]` → `predicate_id` |
-| 0x6 谓词索引 | `[predicate_id][edge_id]` |
-| 0x7 出边 | `[src NodeRef][edge_id]` |
-| 0x8 入边 | `[dst NodeRef][edge_id]` |
-| 0x9 谓词+出 | `[predicate_id][src NodeRef][edge_id]` |
-| 0xA 谓词+入 | `[predicate_id][dst NodeRef][edge_id]` |
+```rust
+#[derive(GraphEncode, ...)]
+#[ok_ns(37)]
+#[ok_nodes(FactNodes)]           // 成员节点集合：今天只有 Entities
+#[ok_index(
+    by_since { fields(since) },          // 三个声明面，各一个 0x1 条目
+    by_confidence { fields(confidence) },
+    by_weight { fields(weight) },
+)]
+pub struct FactEdge { /* since / confidence / weight / 五个计数器 */ }
+```
 
-- **这一侧没有 scope 段。** 边集合自己造键（okm 的边形态），所以归属边界走
-  **端点**：`NodeRef` 是 `[ns 2B][len varint][实体键]`，实体键里带着 scope。
-  遍历从带 scope 的节点出发，也就一直在 scope 内；只有整 ns 的扫描（0x6，
-  「某个谓词的全部边」）跨 scope，按端点过滤是调用方的事。要在边键上带
-  per-scope 前缀，就得绕开 okm 的 `Graph` 手写这个集合。
-- 三个声明字段是关系 props 的**投影**：`since`（调用方的时钟——裁决输入）、
-  `confidence`（写侧的；255 = 缺省，即不惩罚）与 `weight`（权重系统的，
-  ADR-0005——在该系统写它之前为 0）。它们被排除在边的动态条目之外：一个数据
-  只有一个家。
-- **关系的开放 props 走边的动态段**（边 ns 的 slot 1），用 okm 的
-  `put_frame_named` 构造，与 link **同一批**提交（ADR-0002：一个 WriteBatch
-  = 一个事务）。按断言给的 `functional` 标志留在那里——这是该断言自己关于
-  「它如何声明那个种类的基数」的记录。
-- **载荷编解码归声明所有（2026-10-19 落地）。** `FactEdge` 的载荷就是一份普通
-  obj 载荷（`[version u8][hot_len u16 BE][since u64][confidence u8][weight u32]`），
-  由同一份声明写与读：`encode_payload` / `decode_payload`。k10r 手写的
-  `from_attrs` 与那把锁测试已删；裁决输入是
-  `FactEdge::decode_payload(&body.payload)`。
-- **词汇表纪律（一个 ns 两套词汇）——已退役，不再有替代品。** 边 ns 里曾住着关系
-  种类（由 okm 的 `Graph` 用长驻 `VocabCache` 分配）**和** k10r 分配的 prop 名；
-  两个 cache 在同一本词汇表里分配会把同一个 id 发给两个不同的名字，帧随后以错误的
-  名字读回来，而且无声。okm ADR-0017 §3 把两套词汇分开（谓词占 0x04/0x05、载荷
-  字段名保留 0x02/0x03）之后，这个撞名结构性消失；k10r 那两条纪律（一次性
-  cache、handle 每次现建）随之退役，读侧的"预热"也不再需要（okm 的
-  `VocabCache::id_get` 在探测时自加载）。实体集合走同一条规则——kinds 占
-  0x04/0x05、props 名留 0x02/0x03。
+- **边集合自己造键，所以这一侧没有 scope 段。** 归属边界走**端点**：端点是
+  `(ns, 主键)` 的引用，实体主键里带着 scope。遍历从带 scope 的节点出发，就一直在
+  scope 内；只有整表扫描（「某个谓词的全部边」）跨 scope，按端点过滤是调用方的事。
+  要在边键上带 per-scope 前缀，就得绕开库的边图手写这个集合——不值得。
+- 声明字段是关系 props 的**投影**（一个数据只有一个家）：`since`（调用方的钟，裁决
+  输入）、`confidence`（写侧的，255 = 缺省即不惩罚）、`weight`（权重系统的毫单位
+  ），加权重系统折进去的五个计数器（见「事实」载荷字段清单）。
+- **关系的开放 props 走边的动态段**，与 link 同一批提交（ADR-0002：一个 WriteBatch
+  = 一个事务）。按断言给的 `functional` 标志留在那里——这是该断言自己关于「它如何
+  声明那个种类的基数」的记录。
+- 面号、词汇表、动态段的帧构造都是 **okm 的内部**，不在本页重复：见 okm 的
+  [MODELING](https://github.com/orbsh/okm/blob/main/docs/MODELING.zh-CN.md)。本页只
+  登记 k10r 自己声明的东西（ns、键字段、声明的面、载荷字段）和它依赖的那条结论。
 
 ### 访问面（mem-core `GraphStore`）
 
@@ -382,7 +331,7 @@ pub struct EntityRow {
 
 一个进程一个 Fjall **database**（一个目录、一把锁文件），**两个
 keyspace**：`channel`（日志是类队列的，写频率全库最高，所以单独一棵 LSM
-树，它的 compaction 不会拖着别的表）与 `memory`（flat memory + code + 事实图，将来
+树，它的 compaction 不会拖着别的表）与 `memory`（code + 事实图，将来
 的 fact graph 与 skill 也进这里——这些表靠 ns 区分）。
 `crate::service::open_service` 打开 database，再用 `FjallStore::from_db`
 把各组挂上去。Fjall 锁目录，所以对同一目录第二次 `FjallStore::open` 会失

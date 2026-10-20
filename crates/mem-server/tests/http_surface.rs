@@ -5,16 +5,23 @@
 //! store level — mem-core's own tests cover that).
 
 use mem_core::channel::role;
-use mem_server::{open, AppendCheckpoint, AppendMessage, MessageKeyDto};
+use mem_server::{AppendCheckpoint, AppendMessage, MessageKeyDto};
 use serde_json::json;
 use std::net::SocketAddr;
 use tempfile::TempDir;
 
 /// Boot the router on 127.0.0.1:0, return its base URL; the keyspace
-/// lives in a temp dir dropped at test end.
+/// lives in a temp dir dropped at test end. The compression numbers are
+/// k10r's defaults, which are far above these fixtures — a case that needs
+/// a verdict boots through `spawn_server_with` instead.
 async fn spawn_server() -> (String, TempDir) {
+    spawn_server_with(mem_core::CompressionParams::default()).await
+}
+
+/// `spawn_server` with the compression policy stated.
+async fn spawn_server_with(params: mem_core::CompressionParams) -> (String, TempDir) {
     let dir = TempDir::new().unwrap();
-    let app = open(dir.path().to_path_buf()).unwrap();
+    let app = mem_server::open_with_compression(dir.path().to_path_buf(), None, params).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -114,21 +121,23 @@ async fn append_fetch_checkpoint_flow() {
         "the default representation is echoed"
     );
 
-    // Advance the checkpoint past the user's message; the increment
-    // keeps only strictly-after entries and the summary rides along.
+    // A checkpoint with nothing behind it is refused: the coverage point comes
+    // from the verdict k10r served, so a bare summary is the caller's bug.
     let status = client
         .post(format!("{base}/channels/7/members/1/checkpoint"))
         .json(&AppendCheckpoint {
-            coverage_ts: 1000,
             summary: "greeting done".into(),
         })
         .send()
         .await
         .unwrap()
         .status();
-    assert_eq!(status, reqwest::StatusCode::NO_CONTENT);
-
-    let session: serde_json::Value = client
+    assert_eq!(
+        status,
+        reqwest::StatusCode::BAD_REQUEST,
+        "no verdict was served, so there is no coverage point to land on"
+    );
+    let unchanged: serde_json::Value = client
         .get(format!("{base}/channels/7/members/1/session"))
         .send()
         .await
@@ -136,11 +145,8 @@ async fn append_fetch_checkpoint_flow() {
         .json()
         .await
         .unwrap();
-    assert_eq!(session["coverage_ts"], 1000);
-    assert_eq!(session["summary"], "greeting done");
-    let inc = session["increment"].as_array().unwrap();
-    assert_eq!(inc.len(), 1, "only entries strictly after coverage remain");
-    assert_eq!(inc[0]["key"]["ts_ms"], 1001);
+    assert_eq!(unchanged["coverage_ts"], 0);
+    assert_eq!(unchanged["increment"].as_array().unwrap().len(), 2);
 }
 
 /// Channels are prefix-isolated: entries on one channel never appear
@@ -179,11 +185,19 @@ async fn channels_are_isolated() {
     }
 }
 
-/// Members are key-isolated too: two checkpoints on one channel
-/// compress independently (ADR-0008 §2).
+/// Members are key-isolated too: a verdict and the summary that lands on it
+/// belong to ONE member, so member 2's projection is untouched by member 1's
+/// compression (ADR-0008 §2). The policy is dialled down so the read serves
+/// a verdict for member 1 alone.
 #[tokio::test]
 async fn member_checkpoints_are_independent() {
-    let (base, _dir) = spawn_server().await;
+    let (base, _dir) = spawn_server_with(mem_core::CompressionParams {
+        context_bytes: 1,
+        budget_percent: 50,
+        cache_ttl_ms: u64::MAX,
+        floor_bytes: 1,
+    })
+    .await;
     let client = reqwest::Client::new();
 
     client
@@ -193,17 +207,39 @@ async fn member_checkpoints_are_independent() {
         .await
         .unwrap();
 
-    client
+    // Member 1 reads (the verdict is theirs), then lands the summary.
+    let read: serde_json::Value = client
+        .get(format!("{base}/channels/9/members/1/session"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(read.get("compress").is_some(), "member 1 has a verdict");
+    let status = client
         .post(format!("{base}/channels/9/members/1/checkpoint"))
         .json(&AppendCheckpoint {
-            coverage_ts: 10,
             summary: "m1".into(),
         })
         .send()
         .await
-        .unwrap();
+        .unwrap()
+        .status();
+    assert_eq!(status, reqwest::StatusCode::NO_CONTENT);
 
-    // Member 2's projection is untouched by member 1's checkpoint.
+    let s1: serde_json::Value = client
+        .get(format!("{base}/channels/9/members/1/session"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(s1["coverage_ts"], 10);
+
+    // Member 2's projection is untouched by member 1's checkpoint — and so
+    // is member 2's decision log: no verdict was served to it.
     let s2: serde_json::Value = client
         .get(format!("{base}/channels/9/members/2/session"))
         .send()
@@ -236,7 +272,16 @@ async fn session_carries_the_head_block_and_named_roles() {
     // The first entity scope 1 resolves takes node id 1.
     let status = client
         .post(format!("{base}/memories/1"))
-        .json(&json!(["用户", "person", {}, "PREFERS", {}, "简洁", "style", {}]))
+        .json(&json!([
+            "用户",
+            "person",
+            {},
+            "PREFERS",
+            {},
+            "简洁",
+            "style",
+            {}
+        ]))
         .send()
         .await
         .unwrap()
@@ -304,7 +349,10 @@ async fn session_carries_the_head_block_and_named_roles() {
     assert_eq!(bad.status(), reqwest::StatusCode::BAD_REQUEST);
     let body: serde_json::Value = bad.json().await.unwrap();
     assert!(
-        body["error"].as_str().unwrap().contains("unknown format `json`"),
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("unknown format `json`"),
         "{body}"
     );
 }

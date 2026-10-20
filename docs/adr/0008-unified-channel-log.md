@@ -1,6 +1,6 @@
 # ADR-0008: Unified Channel Log — Agent Context as a Projection, Heuristic Compression
 
-**Status**: Partially landed (2026-10-09: the minimal slice — channel messages ns 33 + per-member checkpoints ns 34, `ChannelStore::append`/`fetch_full`/`append_checkpoint`, serving gravity Phase 0; the compression point is its OWN table (ns 34), pointing into the log by `coverage_ts` and latest-wins inside that table, while the log itself stays append-only (ADR-0002); pending: threads, topic tags, members, cursors, the policy engine)
+**Status**: Partially landed (2026-10-09: the minimal slice — channel messages ns 33 + per-member checkpoints ns 34, `ChannelStore::append`/`fetch_full`/`append_checkpoint`, serving gravity Phase 0; 2026-10-20: the read cursor (ns 39) and the compression policy engine (§4, decision log ns 40); pending: threads, topic tags, members, and the checkpoint door's derived coverage)
 **Date**: 2026-09-22
 **Chinese**: [0008-unified-channel-log.zh-CN.md](0008-unified-channel-log.zh-CN.md)
 **Amends**: ADR-0001 (summarize's truncation step), ADR-0002 (session message key), ADR-0006 (session read/write shape)
@@ -209,6 +209,34 @@ through the ordinary append path; k10r takes the compressed span's own
 last record as the compression point, so the caller never states a
 coverage timestamp. This is §2's "tail (single-turn branch)" written
 concretely, not a second mechanism.
+
+**Landed 2026-10-20.** The engine is `mem-core/src/compress.rs`: pure
+functions, no LLM, no timer, and the verdict shape the paragraph above declares.
+Its state is two tables beside the checkpoint — `CursorRow` (ns 39,
+`[channel][member] → last-read ts`, latest-wins and never rewinding) and
+`DecisionRow` (ns 40, keyed by the proposed SPLIT, carrying the whole
+parameter/signal snapshot and a PENDING/DONE state) — in the CHANNEL keyspace,
+because a summary landing and its decision closing must commit in one batch.
+The numbers are `compression { context-bytes budget-percent cache-ttl-ms
+floor-bytes }` in `krystallizer.kdl`; `cache-ttl-ms` is the FIRE point, set
+below the provider's real TTL (that is exactly what the "50 idle minutes of a
+1-hour cache" example above means), and a test asserts the file's numbers equal
+`Params::default()`. The door is `GET …/session?ts_ms=`: the idle time is
+measured against the cursor the member had BEFORE this read, and only then is
+the cursor stamped — reading is the cache clock's only observable, so the order
+is the signal — while no clock means the read is served with nothing stamped
+(the same rule as recall's "no clock, no count"). Keying the decision log by
+the split keeps the log honest without growing it: re-reading an unchanged
+projection refreshes one row.
+
+**The checkpoint door takes the summary ALONE (2026-10-20).** No caller states
+a coverage point: `POST …/checkpoint` carries `{ summary }`, k10r lands it on the
+split it served (`append_checkpoint_from_verdict`, checkpoint + decision closed
+in one batch), and a summary with no open verdict is a 400 — there is nothing to
+derive a coverage point from, and inventing one would make this side guess what
+it is supposed to own. The consumer's half moved in the same pass: gravity's
+`SessionProjection.compress` carries the directive through both surfaces, so the
+seam is closed at both ends; running the branch turn is gravity's Phase 3.
 
 ### 5. Division of labor with the memory add
 
