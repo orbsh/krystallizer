@@ -74,7 +74,18 @@ pub enum Trigger {
 }
 
 impl Trigger {
-    /// The stored code (`DecisionRow::trigger`).
+    /// The name the diagnostic log carries: a log row is read by a person or a
+    /// query, and a word beats a code nobody remembers.
+    pub fn name(self) -> &'static str {
+        match self {
+            Trigger::Budget => "budget",
+            Trigger::CacheClock => "cache_clock",
+            Trigger::Both => "both",
+        }
+    }
+
+    /// The stored code (`DecisionRow::trigger`, retired with that table — the
+    /// log row carries the name instead).
     pub fn code(self) -> u8 {
         match self {
             Trigger::Budget => 0,

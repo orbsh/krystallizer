@@ -68,6 +68,8 @@ pub mod field {
     pub const MSG: &str = "msg";
     pub const TRIGGER: &str = "trigger";
     pub const SPLIT_TS: &str = "split_ts";
+    /// The second half of the split pointer (same-millisecond tiebreaker).
+    pub const SPLIT_SUB: &str = "split_sub";
     pub const IDLE_MS: &str = "idle_ms";
     pub const MAX_GAP_MS: &str = "max_gap_ms";
     pub const ASSEMBLED_BYTES: &str = "assembled_bytes";
@@ -199,6 +201,51 @@ impl LogStore {
         self.recent.insert(pos, key.clone());
         self.trim();
         key
+    }
+
+    /// One diagnostic row for the compression verdict (ADR-0011's first
+    /// writer): the decision, its trigger, the split it named and the numbers it
+    /// was made from — so the policy can be re-examined without having kept a
+    /// second table for it.
+    pub fn record_verdict(
+        &mut self,
+        now_ms: u64,
+        channel_id: u64,
+        verdict: &crate::compress::Verdict,
+    ) -> LogKey {
+        let mut fields = BTreeMap::new();
+        fields.insert(field::CHANNEL.to_string(), DynamicValue::UInt(channel_id));
+        fields.insert(
+            field::SPLIT_TS.to_string(),
+            DynamicValue::UInt(verdict.checkpoint_ts),
+        );
+        fields.insert(
+            field::SPLIT_SUB.to_string(),
+            DynamicValue::UInt(u64::from(verdict.checkpoint_sub)),
+        );
+        fields.insert(
+            field::TRIGGER.to_string(),
+            DynamicValue::Str(verdict.trigger.name().to_string()),
+        );
+        fields.insert(
+            field::ASSEMBLED_BYTES.to_string(),
+            DynamicValue::UInt(verdict.assembled_bytes as u64),
+        );
+        if let Some(idle) = verdict.idle_ms {
+            fields.insert(field::IDLE_MS.to_string(), DynamicValue::UInt(idle));
+        }
+        if let Some(gap) = verdict.max_gap_ms {
+            fields.insert(field::MAX_GAP_MS.to_string(), DynamicValue::UInt(gap));
+        }
+        self.append(now_ms, level::INFO, event::COMPRESSION_VERDICT, fields)
+    }
+
+    /// Every row at or after `ts_ms`, in key order — a window over the table,
+    /// not a query language. `max_rows` bounds it, so this is never unbounded.
+    pub fn since(&mut self, ts_ms: u64) -> Vec<LogEntry> {
+        let mut rows = self.entries();
+        rows.retain(|(key, _)| key.ts_ms >= ts_ms);
+        rows
     }
 
     /// One row, fixed fields and dynamic ones together. `None` = absent.

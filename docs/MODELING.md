@@ -23,7 +23,7 @@ One entity class = one ns (OKM rule). Current state:
 | 37  | Facts (fact graph edges) | Implemented (2026-10-17) | ADR-0010 |
 | 38  | Community sequence (the id issuer, one row per scope) | Implemented (2026-10-20) | ADR-0010 |
 | 39  | Read cursor (a channel pointer; multi-party only) | Implemented (2026-10-20) | ADR-0008 §2 |
-| 41  | Structured log (diagnostics; internal, no door) | Declared | ADR-0011 |
+| 41  | Structured log (diagnostics; internal, no door) | Implemented (2026-10-20) | ADR-0011 |
 | 42  | Channel members (identity: display name + human/agent) | Implemented (2026-10-20) | ADR-0009 §1 |
 | —   | Initialization memory (persona / style) | Declared (ADR-0001) | ADR-0001 |
 
@@ -181,9 +181,12 @@ second segment (2.6d-iii: `ts_ms + sub`, and only the multi-party shape stores a
 
 ## Structured log (ns 41) — diagnostics, no door
 
-ADR-0011. `crates/mem-core/src/log.rs` holds the table and the store; nothing
-writes a row YET (the compression verdict is the first writer, and it waits for
-the pointer reshape).
+ADR-0011. `crates/mem-core/src/log.rs` holds the table and the store. The first
+writer is the compression verdict — `record_verdict(now_ms, channel, &verdict)`
+writes `channel` / `split_ts` / `split_sub` / `trigger` (a word) /
+`assembled_bytes` plus whichever signals fired, keyed by K10R's own clock; a
+signal that did not fire writes no field. Reads are windows (`since(ts_ms)`), not
+a query language.
 
 ### `LogKey` / `LogRow` (ns 41)
 

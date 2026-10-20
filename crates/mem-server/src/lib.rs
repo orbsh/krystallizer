@@ -47,6 +47,10 @@ pub struct MemState {
     /// The compression policy's numbers (ADR-0008 §4). The engine is
     /// pure, so the parameters are the whole of its deployment state.
     compression: mem_core::CompressionParams,
+    /// The structured log (ns 41, the `channel` keyspace): k10r's own
+    /// diagnostics — the compression verdict's row is its first writer
+    /// (ADR-0011). No HTTP door reads it.
+    log: tokio::sync::Mutex<mem_core::LogStore>,
 }
 
 /// Open the database at `path` and build the router WITHOUT an embedding
@@ -91,6 +95,7 @@ pub fn open_with_compression(
         store: tokio::sync::Mutex::new(stores.channels),
         code: tokio::sync::Mutex::new(stores.code),
         graph: tokio::sync::Mutex::new(graph),
+        log: tokio::sync::Mutex::new(stores.log),
         compression,
     });
     Ok(Router::new()
@@ -398,12 +403,32 @@ async fn fetch_session(
     if let Some(v) = &verdict {
         channels.open_checkpoint(channel_id, (v.checkpoint_ts, v.checkpoint_sub), &head_ids);
     }
+    // ADR-0011's first writer: the verdict is a decision, and decisions go to the
+    // diagnostic log — naming the split it chose, the trigger that fired and the
+    // numbers it read. The row's clock is K10R's own.
+    if let Some(verdict) = &verdict {
+        state
+            .log
+            .lock()
+            .await
+            .record_verdict(now_ms(), channel_id, verdict);
+    }
     let turns: Vec<TurnDto> =
         mem_core::view::turns_of(&channels, channel_id, &projection.view.increment)
             .into_iter()
             .map(TurnDto::from)
             .collect();
     Ok(Json(SessionDto::new(projection, format, verdict, turns)))
+}
+
+/// k10r's own clock, milliseconds since the epoch — the log's key (ADR-0011: a
+/// diagnostic row records when K10R observed the event, not when the caller
+/// believes it happened).
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// The PEOPLE's view (ADR-0009 §4): the channel as written — every record, in log

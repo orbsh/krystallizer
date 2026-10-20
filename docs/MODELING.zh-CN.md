@@ -22,7 +22,7 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
 | 37  | 事实（事实图边）   | 已实现（2026-10-17）      | ADR-0010 |
 | 38  | 社区序号（发号用，每 scope 一行） | 已实现（2026-10-20） | ADR-0010 |
 | 39  | 读游标（channel 的指针；仅多方） | 已实现（2026-10-20） | ADR-0008 §2 |
-| 41  | 结构化日志（诊断用；内部，无门） | 已声明 | ADR-0011 |
+| 41  | 结构化日志（诊断用；内部，无门） | 已实装（2026-10-20） | ADR-0011 |
 | —   | 初始化记忆（人设 / 风格） | 已声明（ADR-0001） | ADR-0001 |
 
 图的读侧（LPA、分箱、社区的渲染）已随之落地（2026-10-19/20）；会话日志缺的几块、
@@ -155,8 +155,10 @@ edge id 集合。还欠的是游标的第二段（2.6d-iii：`ts_ms + sub`，且
 
 ## 结构化日志（ns 41）——诊断用，没有门
 
-ADR-0011。表与 store 已在 `crates/mem-core/src/log.rs`；**还没有人写行**（压缩判词是
-第一个写者，它等指针形状改完）。
+ADR-0011。表与 store 在 `crates/mem-core/src/log.rs`。第一个写者是压缩判词——
+`record_verdict(now_ms, channel, &verdict)` 写 `channel` / `split_ts` / `split_sub` /
+`trigger`（词）/ `assembled_bytes`，以及真正触发的信号，键用 k10r 自己的钟；
+没触发的信号不写字段。读是窗口（`since(ts_ms)`），不是查询语言。
 
 ### `LogKey` / `LogRow`（ns 41）
 

@@ -106,6 +106,21 @@ it opens as an **analysis-class** door — that class's shapes may drift with th
 analysis need, never appear on a model's tool list, and never become a turn
 loop's dependency.
 
+### 7. The first writer: the compression verdict
+
+The verdict was the reason this table exists — a decision, the trigger that fired,
+the split it named and the numbers it was made from, with nowhere to live once the
+decision log was withdrawn (ADR-0008). `LogStore::record_verdict` writes exactly
+that row: `channel`, `split_ts` + `split_sub` (the pointer, both halves), `trigger`
+as a WORD (`budget` / `cache_clock` / `both` — a log row is read by a person, and a
+code nobody remembers is not a record), `assembled_bytes`, and whichever signals
+fired. An absent signal writes no field at all: absence must not read as zero,
+which is the difference between "the cache clock stayed silent" and "it said 0".
+
+The read side is a window, not a query language: `since(ts_ms)` returns every row
+at or after a lower bound, in key order — which byte order already gives — and
+`max_rows` keeps it bounded.
+
 ## Why Not
 
 - **One table per kind of record (the decision log's shape)**: every new question

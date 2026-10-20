@@ -213,8 +213,16 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     (log 7 — hex lock, dynamic round trip, a bare event line, key-order reads
     incl. same-millisecond, `seq` across a reopen, the ceiling, the config
     drift), mem-server 25/0, clippy 0.
-  - [ ] 2.9b. The first WRITER (the compression verdict's row) and a windowed
-    read; both wait on 2.6d, which reshapes the verdict's pointer.
+  - [x] 2.9b. THE FIRST WRITER LANDED 2026-10-20: `LogStore::record_verdict(now_ms,
+    channel, &verdict)` writes the decision as a row — `channel`, `split_ts`,
+    `split_sub`, `trigger` (as a WORD: `budget` / `cache_clock` / `both`), plus
+    `assembled_bytes` and whichever signals fired (`idle_ms`, `max_gap_ms`; an
+    absent signal writes no field, so absence never reads as zero). The door
+    writes it on every read whose policy fired, keyed by K10R's own clock
+    (`now_ms()` in mem-server). Windowed read: `LogStore::since(ts_ms)` — a lower
+    bound in key order, bounded by `max_rows`. Covered at the row level (mem-core
+    log 8/0); the door's single call is compiled but not asserted end to end —
+    that needs either a read door (ADR-0011 says none) or a debug endpoint.
 - [ ] Phase 3 — Atomic-fact graph: fact node/edge tables, ingestion of the 8-slot fact tuple (the facts arrive by the model's ACTIVE add — the caller routes that call to `ingest(fact)`; no compression pass and no trailing extraction worker, ADR-0008, write-time fusion (in-domain id / out-of-domain embedding convergence + small-candidate LLM decision — the LLM decision is gravity's, per ADR-0007's boundary), weight system (the counters on the edge row, read-write quadrants, tool_invoke_count); initialization memory (人设/风格) — a traversal from the user node, delivered at the context head; the task graph (task vertices + `task_links` dependency edges) shares that same graph — tasks are the third interface surface, their instance state structured rather than approximate. Write-time resolution (upsert on a new fact) and cognitive binning ride this side per ADR-0010 (fact node / community reverse index / the community sequence; ns 36/37 for the graph, 38 for the sequence). Scope note: append-first covers THIS side (node/edge rows, weights, derived entries) — the log does not (ADR-0002. Flat memory (ns 32) and its HTTP door are withdrawn in this landing: the graph is its successor (ADR-0001's carrier line, "flat memory, then the graph") — flat was the pre-graph form of the same extracted knowledge, and a text row carries no per-fact identity. What is owed with it: the fate of legacy flat rows (ADR-0002's PG migration imports them as-is) is a migration question, not a schema one. (ADR-0001, ADR-0002, ADR-0004, ADR-0005, ADR-0007, ADR-0010)
   - [x] 3a. The write side's steps 1–2 LANDED (2026-10-17): the entities
     collection (ns 36) + the facts edge collection (ns 37) and the

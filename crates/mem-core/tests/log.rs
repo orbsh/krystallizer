@@ -154,3 +154,49 @@ fn the_default_ceiling_is_the_one_the_config_ships() {
     let cfg = mem_core::KrystallizerConfig::load(&path).expect("repo config decodes");
     assert_eq!(cfg.logs.max_rows, DEFAULT_MAX_ROWS);
 }
+
+/// ADR-0011's first writer: the verdict is a decision, so it becomes a row that
+/// names the split it chose, the trigger that fired and the numbers it read —
+/// which is what lets the policy be re-examined later without a second table.
+#[test]
+fn the_verdict_row_carries_the_decision_it_made() {
+    use mem_core::compress::{Trigger, Verdict};
+
+    let dir = tempdir();
+    let mut store = LogStore::open(dir.path()).expect("open");
+    let verdict = Verdict {
+        checkpoint_ts: 1_500,
+        checkpoint_sub: 2,
+        trigger: Trigger::CacheClock,
+        assembled_bytes: 12_345,
+        context_bytes: 100_000,
+        budget_percent: 60,
+        cache_ttl_ms: 300_000,
+        idle_ms: Some(400_000),
+        max_gap_ms: None,
+    };
+
+    let key = store.record_verdict(9_000, 7, &verdict);
+    assert_eq!(key.ts_ms, 9_000, "the server's own clock keys the row");
+
+    let row = store.get(&key).expect("the row lands");
+    assert_eq!(row[field::CHANNEL], DynamicValue::UInt(7));
+    assert_eq!(row[field::SPLIT_TS], DynamicValue::UInt(1_500));
+    assert_eq!(row[field::SPLIT_SUB], DynamicValue::UInt(2));
+    assert_eq!(
+        row[field::TRIGGER],
+        DynamicValue::Str("cache_clock".into()),
+        "the trigger travels as a WORD: a log is read by people"
+    );
+    assert_eq!(row[field::ASSEMBLED_BYTES], DynamicValue::UInt(12_345));
+    assert_eq!(row[field::IDLE_MS], DynamicValue::UInt(400_000));
+    assert!(
+        !row.contains_key(field::MAX_GAP_MS),
+        "an absent signal writes no field — absence must not read as zero"
+    );
+
+    let entry = store.entries().into_iter().next().expect("one entry");
+    assert_eq!(entry.0, key);
+    assert_eq!(store.since(9_000).len(), 1);
+    assert!(store.since(9_001).is_empty(), "the window is a lower bound");
+}
