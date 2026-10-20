@@ -328,12 +328,26 @@ async fn fetch_session(
         mem_core::view::DEFAULT_USER_NODE,
     );
     let assembled = assembled_bytes(&projection);
+    // The clock is the caller's (`query.ts_ms`); the POSITION is k10r's. The
+    // idle therefore measures how stale the record this member last saw has
+    // become, not how long ago the HTTP call happened (ADR-0008 §2).
     let idle_ms = query
         .ts_ms
-        .zip(projection.view.last_read)
-        .map(|(now, last_read)| now.saturating_sub(last_read));
-    if let Some(ts_ms) = query.ts_ms {
-        channels.note_read(channel_id, member_id, ts_ms);
+        .zip(projection.view.read_at)
+        .map(|(now, read_at)| now.saturating_sub(read_at));
+    // Stamp the position this read reached: the newest record it served, or the
+    // coverage point when the increment came back empty.
+    let served = projection
+        .view
+        .increment
+        .last()
+        .map(|(key, _)| (key.ts_ms, key.sub))
+        .or_else(|| {
+            (projection.view.coverage_ts > 0)
+                .then_some((projection.view.coverage_ts, projection.view.coverage_sub))
+        });
+    if let (Some(clock), Some(pointer)) = (query.ts_ms, served) {
+        channels.note_read(channel_id, member_id, pointer, clock);
     }
     // The head this read assembled is what the coming compression will have
     // been produced under, so the proposal freezes it NOW (ADR-0008 §2: the

@@ -195,22 +195,22 @@ fn the_read_cursor_stamps_advances_and_never_rewinds() {
     assert_eq!(store.read_cursor(CH, DEFAULT_MEMBER), None, "never read");
     assert_eq!(store.fetch_full(CH, DEFAULT_MEMBER).last_read, None);
 
-    store.note_read(CH, DEFAULT_MEMBER, 1_000);
-    assert_eq!(store.read_cursor(CH, DEFAULT_MEMBER), Some(1_000));
+    store.note_read(CH, DEFAULT_MEMBER, (1_000, 0), 1_000);
+    assert_eq!(store.read_cursor(CH, DEFAULT_MEMBER), Some((1_000, 0)));
     assert_eq!(
         store.fetch_full(CH, DEFAULT_MEMBER).last_read,
-        Some(1_000),
+        Some((1_000, 0)),
         "the projection carries it, so the engine needs no second read"
     );
 
-    store.note_read(CH, DEFAULT_MEMBER, 900);
+    store.note_read(CH, DEFAULT_MEMBER, (900, 0), 900);
     assert_eq!(
         store.read_cursor(CH, DEFAULT_MEMBER),
-        Some(1_000),
+        Some((1_000, 0)),
         "an older read must not move the clock backwards"
     );
-    store.note_read(CH, DEFAULT_MEMBER, 2_000);
-    assert_eq!(store.read_cursor(CH, DEFAULT_MEMBER), Some(2_000));
+    store.note_read(CH, DEFAULT_MEMBER, (2_000, 3), 2_000);
+    assert_eq!(store.read_cursor(CH, DEFAULT_MEMBER), Some((2_000, 3)));
 
     assert_eq!(
         store.read_cursor(CH, 2),

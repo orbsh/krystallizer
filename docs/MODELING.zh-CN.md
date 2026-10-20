@@ -128,7 +128,9 @@ pub struct MessageKey {
   这一行；单人与 agent 时游标可以安全地当作日志最新的一条，于是不存，空闲时长直接
   是「现在 − 最后一条的 ts」。latest-wins，带更早位置的读取不会改动它——游标永不
   倒退。
-- 行：`ts_ms u64` + `sub u16`——指针，同样指向一条记录。
+- 行：`ts_ms u64` + `sub u16`（指针，指向一条记录）+ `read_at u64`（那次读取时调用方
+  的钟）。两个事实、一行：缓存钟问的是「这个成员上一次碰模型是什么时候」，而重读同一段
+  记录必须刷新它，哪怕**位置**没动。
 
 ### 访问面（`ChannelStore`）
 
@@ -139,7 +141,7 @@ pub struct MessageKey {
 | `open_checkpoint(channel, pointer, head)` | 在切分点上放下**空摘要**的节点（正在压的标记），带着冻结的头部 edge id；读仍由它下面那个节点作答 |
 | `complete_checkpoint(channel, summary)` | 把摘要填进最新的未完成节点——门唯一的 checkpoint 写 |
 | `append_checkpoint(channel, pointer, summary, head)` | 裸的一次性写（测试、回填）——门不调它 |
-| `note_read(channel, member, ts_ms)` / `read_cursor` | 盖 / 读读游标（游标行是多方形才有的） |
+| `note_read(channel, member, pointer, read_at)` / `read_cursor` / `read_at` | 盖 / 读读位置与读时钟（游标行是多方形才有的） |
 
 `view::assemble(channels, graph, channel, scope, user_node)` 返回
 `Projection { head, view }`——头部是用户节点的双向关联事实（36/37），门在出网前按

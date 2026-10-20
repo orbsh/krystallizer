@@ -151,7 +151,10 @@ pub struct MessageKey {
   stored and the idle time is "now − the last record's ts" outright. Latest-wins,
   and a read carrying an older position leaves it alone — the cursor never
   rewinds.
-- Row: `ts_ms u64` + `sub u16` — the pointer, again naming a record.
+- Row: `ts_ms u64` + `sub u16` (the pointer, naming a record) + `read_at u64`
+  (the caller's clock at that read). Two facts, one row: the cache clock asks
+  "when did this member last touch the model", which a re-read of the same
+  records must refresh even though the POSITION does not move.
 
 ### Access (`ChannelStore`)
 
@@ -162,7 +165,7 @@ pub struct MessageKey {
 | `open_checkpoint(channel, pointer, head)` | put the EMPTY-summary node at the split (the "compressing" marker) carrying the frozen head edge ids; the read keeps answering from the node below |
 | `complete_checkpoint(channel, summary)` | fill the newest open node — the only checkpoint write a door makes |
 | `append_checkpoint(channel, pointer, summary, head)` | raw single-shot write (tests, backfill) — the door does NOT call it |
-| `note_read(channel, member, ts_ms)` / `read_cursor` | stamp / read the read cursor (a cursor row is the multi-party shape's) |
+| `note_read(channel, member, pointer, read_at)` / `read_cursor` / `read_at` | stamp / read the read position and the read clock (a cursor row is the multi-party shape's) |
 
 `view::assemble(channels, graph, channel, scope, user_node)` returns
 `Projection { head, view }` — the head is the user node's incident facts

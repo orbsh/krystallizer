@@ -43,6 +43,7 @@ fn view(ts_list: &[u64]) -> SessionView {
         compressing: false,
         increment: ts_list.iter().map(|ts| entry(*ts, "x")).collect(),
         last_read: None,
+        read_at: None,
     }
 }
 

@@ -96,9 +96,18 @@ pub struct CursorKey {
 #[ok_ref(CursorKey)]
 #[ok_ns(39)]
 pub struct CursorRow {
-    /// The caller's clock at the read that stamped it (ADR-0008 §3: the
-    /// caller owns the clock, and no clock means no stamp).
+    /// The position's first segment: where the member has read up to.
     pub ts_ms: u64,
+    /// The position's second segment: a read position is a RECORD, not a
+    /// millisecond — the same shape as the checkpoint key and the message key
+    /// (ADR-0008 §2: "the cursor is the channel's pointer too").
+    pub sub: u16,
+    /// The CALLER's clock at the read that stamped this row (ADR-0008 §3).
+    /// Two facts, one row: the position (where) and the clock (when) answer
+    /// different questions — the cache clock asks "when did this member last
+    /// touch the model", and a re-read of the same records must refresh it
+    /// even though the position does not move.
+    pub read_at: u64,
 }
 
 /// The agent's context projection (ADR-0008 §2): checkpoint + increment.
@@ -126,7 +135,10 @@ pub struct SessionView {
     pub increment: Vec<(MessageKey, MessageRow)>,
     /// When this member last read its projection (ADR-0008 §2's read
     /// cursor); `None` = never read with a clock.
-    pub last_read: Option<u64>,
+    pub last_read: Option<(u64, u16)>,
+    /// When that member last READ (the caller's clock, ADR-0008 §3) — the
+    /// cache clock's observable. `None` = never read with a clock.
+    pub read_at: Option<u64>,
 }
 
 /// Dynamic-segment names the channel tables use.
@@ -218,6 +230,7 @@ impl ChannelStore {
             compressing,
             increment: self.messages_after(channel_id, coverage),
             last_read: self.read_cursor(channel_id, member_id),
+            read_at: self.read_at(channel_id, member_id),
         }
     }
 
@@ -348,29 +361,66 @@ impl ChannelStore {
         self.write_head(&key, head);
     }
 
-    /// Stamp the member's read cursor from the caller's clock at a
-    /// projection read (ADR-0008 §2's cache clock; §3's "the caller owns
-    /// the clock" — no ts means the read is served and nothing is
-    /// stamped, never a server-invented instant). Never rewinds.
-    pub fn note_read(&mut self, channel_id: u64, member_id: u64, ts_ms: u64) {
+    /// Stamp the member's read cursor at the POSITION the read reached
+    /// (ADR-0008 §2: the cursor is the channel's pointer too, `ts_ms + sub`).
+    /// Never rewinds — an older pointer leaves the stored one alone, so a
+    /// re-read of a shorter span cannot walk the position backwards.
+    pub fn note_read(
+        &mut self,
+        channel_id: u64,
+        member_id: u64,
+        pointer: (u64, u16),
+        read_at: u64,
+    ) {
         let key = CursorKey {
             channel_id,
             member_id,
         };
-        if self.cursors.get(&key).is_some_and(|row| row.ts_ms >= ts_ms) {
+        let current = self.cursors.get(&key);
+        // The position never rewinds; the clock never rewinds either. Both may
+        // move independently, so neither wins over the other.
+        let position = match &current {
+            Some(row) if (row.ts_ms, row.sub) > pointer => (row.ts_ms, row.sub),
+            _ => pointer,
+        };
+        let clock = current
+            .as_ref()
+            .map_or(read_at, |row| row.read_at.max(read_at));
+        if current
+            .as_ref()
+            .is_some_and(|row| (row.ts_ms, row.sub) == position && row.read_at == clock)
+        {
             return;
         }
-        self.cursors.put(&key, &CursorRow { ts_ms });
+        self.cursors.put(
+            &key,
+            &CursorRow {
+                ts_ms: position.0,
+                sub: position.1,
+                read_at: clock,
+            },
+        );
     }
 
-    /// The member's read cursor, if a read ever carried a clock.
-    pub fn read_cursor(&self, channel_id: u64, member_id: u64) -> Option<u64> {
+    /// The member's read position, if a read ever stamped one.
+    pub fn read_cursor(&self, channel_id: u64, member_id: u64) -> Option<(u64, u16)> {
         self.cursors
             .get(&CursorKey {
                 channel_id,
                 member_id,
             })
-            .map(|row| row.ts_ms)
+            .map(|row| (row.ts_ms, row.sub))
+    }
+
+    /// The caller's clock at that member's last read — the cache clock's
+    /// observable (ADR-0008 §3).
+    pub fn read_at(&self, channel_id: u64, member_id: u64) -> Option<u64> {
+        self.cursors
+            .get(&CursorKey {
+                channel_id,
+                member_id,
+            })
+            .map(|row| row.read_at)
     }
 
     /// Log entries for `channel_id` strictly after `after`, in key order.
