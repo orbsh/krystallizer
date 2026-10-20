@@ -64,8 +64,10 @@ analysis 类的门读；它永不在消费者的回合路径上，也永不作�
 | `GET /graph/{scope}` | `GraphStore::scope_entities` + `scope_facts`（一个 scope 作为节点 + 连边——渲染方的批量读；节点带 `community_id`） | 实体（36）+ 事实（37） | 已落（2026-10-17） |
 | `GET /graph/{scope}/search?q=&k=` | `GraphStore::retrieve`（**只有落点**：节点向量、内积、0.35 地板；无 engine = 200 + `[]`）——`recall` 回答之前做的那一步 | 实体（36） | 已落（2026-10-19） |
 | `GET /graph/{scope}/entities/{node_id}/edges` | `GraphStore::out_facts`（一跳，两端都已解析）——检视用；调用方要自己组更深的走法也从这里起步 | 事实（37）+ 实体（36） | 已落（2026-10-17） |
+| `GET /graph/{scope}/facts/{edge_id}` | `GraphStore::fact_in_scope`——**确定性**读：写返回的那个 `edge_id` 直接读回来，没有查询、没有向量；scope 与边自身的端点核对，所以别的 scope 的 id 是 404（这正是参考链接的地址） | 事实（37） | 已落（2026-10-20） |
+| `DELETE /graph/{scope}/facts/{edge_id}` | `GraphStore::withdraw`（okm 的 `unlink`：行与全部派生面条目在**一个**批里删净；204，或 id 在本 scope 不存在时 404） | 事实（37） | 已落（2026-10-20） |
 | — 无路由 | `entity` / `entity_props` / `fact` / `fact_props` / `typed_out`（核心其余**读**原语） | 事实图（36/37） | core 已落、无路由——审计读 |
-| — 无路由 | scope 级的权重 Top-K | 事实（37） | 后续件（Phase 4——需要 `[scope][weight][edge_id]` 投影表，ADR-0005） |
+| `GET /graph/{scope}/top?k=` | `GraphStore::top_by_weight`（该 scope 最重的事实，权重降序、同权重按 edge id；排序来自声明过的 `by_weight` 面——ADR-0005 的 `W:{weight}:{edge_id}`，每次写都维护——**结果**由 `k` 截断） | 事实（37） | 已落（2026-10-20；惰性窗口行走欠在 okm-core——目前读仍是 O(n)） |
 
 in-process 不是第二道门：`InProcessSurface` 在调用方进程内链接同一批原
 语（同机部署细节）；HTTP 是唯一的跨进程形态（ADR-0007 as revised）。

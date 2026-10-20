@@ -73,8 +73,10 @@ never on a consumer's turn path and never a tool.
 | `GET /graph/{scope}` | `GraphStore::scope_entities` + `scope_facts` (one scope as nodes + links — the renderer's bulk read; nodes carry `community_id`) | entities (36) + facts (37) | landed (2026-10-17) |
 | `GET /graph/{scope}/search?q=&k=` | `GraphStore::retrieve` (the landing ALONE: node vectors, inner product, the 0.35 floor; no engine = 200 + `[]`) — what `recall` does before it answers | entities (36) | landed (2026-10-19) |
 | `GET /graph/{scope}/entities/{node_id}/edges` | `GraphStore::out_facts` (one hop, both endpoints resolved) — inspection, and a caller's own composition starts here | facts (37) + entities (36) | landed (2026-10-17) |
+| `GET /graph/{scope}/facts/{edge_id}` | `GraphStore::fact_in_scope` — the DETERMINISTIC read: the same `edge_id` the write answered with, no query and no embedding; the scope is checked against the edge's own endpoint, so another scope's id is a 404 (the address of a reference link) | facts (37) | landed (2026-10-20) |
+| `DELETE /graph/{scope}/facts/{edge_id}` | `GraphStore::withdraw` (okm's `unlink`: row + every derived face entry in ONE batch; 204, or 404 when the id names nothing here) | facts (37) | landed (2026-10-20) |
 | — no route | `entity` / `entity_props` / `fact` / `fact_props` / `typed_out` (the rest of the core's READ primitives) | fact graph (36/37) | core landed, no route — audit reads |
-| — no route | a scope-wide weight Top-K | facts (37) | FOLLOW-UP (Phase 4 — it needs a `[scope][weight][edge_id]` projection, ADR-0005) |
+| `GET /graph/{scope}/top?k=` | `GraphStore::top_by_weight` (the scope's heaviest facts, weight-descending, ties by edge id; the ordering is the declared `by_weight` face — ADR-0005's `W:{weight}:{edge_id}`, maintained on every write — and the RESULT is bounded by `k`) | facts (37) | landed (2026-10-20; the lazy windowed walk is owed in okm-core — the read is still O(n)) |
 
 `in-process` is not a second door: `InProcessSurface` links the same
 primitives in the caller's process (a same-machine deployment detail); HTTP is

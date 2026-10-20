@@ -188,6 +188,17 @@ writes `channel` / `split_ts` / `split_sub` / `trigger` (a word) /
 signal that did not fire writes no field. Reads are windows (`since(ts_ms)`), not
 a query language.
 
+The field shape is RULED and not yet landed (ADR-0011 §8): `event` and `source`
+become `Vocab<u16>` — a closed, small, endlessly repeated set is what a vocabulary
+is for, two bytes cannot be misspelled, and the typo moves from a row nobody can
+group by to a compile error — while `note Str` stays the one free-text field and
+`level u8` stays a tiny ordered domain the code compares. Interning is the TYPE's
+business, not the store's: okm interns on write (`Collection::put` → `__okm_intern`)
+and resolves the label on read (`get` → `__okm_deref_vocab`), so `append` still
+takes `&str`, builds `Vocab::of(..)` internally, and no call site changes. The cost
+is one document clone per write on a table that declares a Vocab field. Ruled, not
+landed — a clean layout break (pre-production, ADR-0018) — PLAN 2.9c.
+
 ### `LogKey` / `LogRow` (ns 41)
 
 ```rust
@@ -429,6 +440,7 @@ It returns `IngestOutcome::{Linked, Rewritten, Dropped}`.
 Reads: `entity(scope, node_id)`, `entity_by_name(scope, name)` →
 `(node_id, row)`, `entity_kind(kind_id)` → the token, `entity_props` /
 `fact_props` (the dynamic segments), `fact(edge_id)` → the decoded edge,
+`fact_in_scope(scope, edge_id)` → the deterministic point read (see below),
 `out_edges` and `typed_out` (the traversal currency). For a bulk consumer
 (the visualization door) `scope_entities(scope)` and `scope_facts(scope)`
 return one scope whole — the scan is bounded by the primary-key prefix
@@ -437,6 +449,19 @@ endpoints in the scope it was called with. A functional rewrite is ONE engine
 batch — okm's `unlink_into` + `link_into` plus k10r's own dynamic-segment
 entry, same `edge_id`, no window between two commits (ADR-0010, paid
 2026-10-19).
+
+Three verbs, and the doors mirror them: `ingest` LINKS (or rewrites in place
+when the relation is functional), `withdraw(scope, edge_id)` removes one fact —
+row and every derived face entry in one batch (okm's `unlink`) — and
+`fact_in_scope(scope, edge_id)` is the deterministic read that answers with the
+same `edge_id` the write returned. Nothing in that loop needs a search: a
+reference is an id.
+
+**Reference links.** A fact may name another fact's id in its props when the
+other one is not central enough to sit in the head; the reader then decides
+whether to follow it (`fact_in_scope`, one id) or not. The same shape skills
+use one level up — a pointer the reader may take, not a subtree the writer
+forces in.
 
 ### Storage assembly
 

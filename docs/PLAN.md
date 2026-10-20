@@ -223,6 +223,23 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     bound in key order, bounded by `max_rows`. Covered at the row level (mem-core
     log 8/0); the door's single call is compiled but not asserted end to end —
     that needs either a read door (ADR-0011 says none) or a debug endpoint.
+  - [ ] 2.9c. THE LOG'S FIELD SHAPE (ruled 2026-10-20, NOT landed): `event` and
+    `source` become `Vocab<u16>` (a closed, small, endlessly repeated set — two
+    bytes, no spellings), `note Str` is the ONE free-text field, `level u8` and
+    `ts_ms u64` stay, everything else rides the dynamic segment (ADR-0011 §8). The
+    change is the row's FIELD TYPES and nothing else: interning is the type's own
+    business (okm's `Collection::put` clones the document and runs `__okm_intern`;
+    `get` runs `__okm_deref_vocab`), so `append` keeps taking `&str` — it gains a
+    `source` argument and builds `Vocab::of(..)` internally, and no call site
+    changes. The one cost is a document clone per write on a vocab-declaring table.
+    Layout break is clean (pre-production, ADR-0018 — no migration).
+  - [ ] 2.9d. INTERNAL COUNTERS VIA `ok_reduce`'s HighWater (ruled 2026-10-20):
+    `LogStore::seq` and `CodeStore::next_id` currently recover their high-water by
+    reading the table's last key at open. `#[ok_reduce(HighWater(field))]` with no
+    `group(…)` is ONE whole-table group maintained on every write — unfold is a
+    NO-OP, a watermark must not fall when the newest row is deleted — and read in
+    O(1) via `reduce_get`. The non-resetting semantics is what an internal id
+    wants: deleting the highest id must not make the next one reuse it.
 - [x] Phase 3 — Atomic-fact graph: fact node/edge tables, ingestion of the 8-slot fact tuple (the facts arrive by the model's ACTIVE add — the caller routes that call to `ingest(fact)`; no compression pass and no trailing extraction worker, ADR-0008, write-time fusion (in-domain id / out-of-domain embedding convergence + small-candidate LLM decision — the LLM decision is gravity's, per ADR-0007's boundary), weight system (the counters on the edge row, read-write quadrants, tool_invoke_count); initialization memory (人设/风格) — a traversal from the user node, delivered at the context head; the task graph (task vertices + `task_links` dependency edges) shares that same graph — tasks are the third interface surface, their instance state structured rather than approximate. Write-time resolution (upsert on a new fact) and cognitive binning ride this side per ADR-0010 (fact node / community reverse index / the community sequence; ns 36/37 for the graph, 38 for the sequence). Scope note: append-first covers THIS side (node/edge rows, weights, derived entries) — the log does not (ADR-0002. Flat memory (ns 32) and its HTTP door are withdrawn in this landing: the graph is its successor (ADR-0001's carrier line, "flat memory, then the graph") — flat was the pre-graph form of the same extracted knowledge, and a text row carries no per-fact identity. What is owed with it: the fate of legacy flat rows (ADR-0002's PG migration imports them as-is) is a migration question, not a schema one. (ADR-0001, ADR-0002, ADR-0004, ADR-0005, ADR-0007, ADR-0010)
   - [x] 3a. The write side's steps 1–2 LANDED (2026-10-17): the entities
     collection (ns 36) + the facts edge collection (ns 37) and the
@@ -310,7 +327,45 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     withdrawn), SEAM's endpoint table, README. Legacy flat rows stay a
     migration question (ADR-0002's PG import), not a schema one. Gates:
     mem-core 47/0 across its suites, mem-server 20/0, clippy 0.
+  - [x] 3e. THE DETERMINISTIC READ AND THE THIRD WRITE VERB LANDED 2026-10-20:
+    `GraphStore::fact_in_scope(scope, edge_id)` — the point read that answers with
+    the same id the write returned, no query and no embedding, the scope checked
+    against the edge's own endpoint (another scope's id is a miss, never a leak) —
+    and `GraphStore::withdraw(scope, edge_id)` (okm's `unlink`: the row and every
+    derived face entry in ONE batch). Doors: `GET /graph/{scope}/facts/{edge_id}`
+    (200 / 404) and `DELETE …/facts/{edge_id}` (204 / 404; a second delete is a
+    miss, not an error storm). UPDATE is deliberately NOT a new verb:
+    re-ingesting the same tuple IS the update for a functional relation (same
+    `edge_id`, row rewritten in place), and a field-level `PATCH` would owe a
+    ruling on who may change what and what happens to the weight. Gates:
+    http_surface 8/0, 115/0 total, clippy 0.
 - [ ] Phase 4 — Clustered retrieval: entity-anchored / temporal / causal-chain views; progressive loading (a scope-wide Top-K by weight — a `[scope][weight][edge_id]` projection table maintained on each touch, not a declared face; ADR-0005). Reads the write-time structure ADR-0010 lands (the node's community id + the `by_community` face + the rendered community) instead of running a graph algorithm on the read path. (ADR-0005, ADR-0010)
+  - [x] 4a. THE WEIGHT RANKING LANDED 2026-10-20: `GraphStore::top_by_weight(scope, k)`
+    — the scope's heaviest facts, weight-descending, ties by edge id — and
+    `GET /graph/{scope}/top?k=`. This is the progressive-loading face: a caller
+    walks "the important part of the scope first" instead of asking a question.
+    HONEST LIMIT: the RESULT is bounded (k), the READ is not — it scans the scope
+    and sorts. The ordering it wants is a lazy reverse walk over `by_weight`
+    (ADR-0005's `W:{weight}:{edge_id}`, already maintained on every write through
+    `link_into`/`unlink_into`), and okm's `Graph` exposes an exact-face lookup
+    (`by_attr_face`) but NO range iterator. The owed seam is therefore in
+    `okm-core`: a range scan over a declared `ok_index` (its `Collection` already
+    has `scan_range_iter`, which is a `DoubleEndedIterator` — the graph wrapper
+    needs to forward it). Then `top_by_weight` becomes `walk.rev().take(k)` over
+    the face and the O(n) read disappears. Gates: graph 26/0 (the ranking + scope
+    isolation + `k=0`), http_surface 7/0 (the touched fact ranks first, `k` bounds
+    the answer, an empty scope answers `[]`), 114/0 total, clippy 0.
+  - [ ] 4b. The three view shapes: entity-anchored, temporal, causal-chain — each
+    reads the write-time structure (community id + `by_community` + the rendered
+    community) rather than running a graph algorithm on the read path (ADR-0010),
+    plus the progressive fill the ranking above makes possible.
+  - [ ] 4c. REFERENCE LINKS (ruled 2026-10-20, encoding owed): a fact may name
+    another fact's id in its props when that one is not central enough to sit in
+    the head; the reader decides whether to follow it (`fact_in_scope`, one id) or
+    stop — the mechanism skills use one level up: a pointer the reader may take,
+    never a subtree the writer forces in. Owed: the prop NAME (and whether it
+    holds one id or a list), and whether the head renderer prints it as a link or
+    keeps it invisible.
 - [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), SKILL topological four-part nodes, Aura Actor nodes. (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.) ADR-0010 takes the incremental LOCAL form of community detection onto the write side and leaves OPEN whether that promotes a slice of Phase 5 ahead of Phase 3/4 — an open ruling, not settled.
 
 Deferred gates:

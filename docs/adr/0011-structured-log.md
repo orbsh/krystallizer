@@ -121,6 +121,35 @@ The read side is a window, not a query language: `since(ts_ms)` returns every ro
 at or after a lower bound, in key order — which byte order already gives — and
 `max_rows` keeps it bounded.
 
+### 8. The field shape, ruled
+
+`ts_ms u64` keys the row. The declared fields are then four, and everything else
+rides the dynamic segment:
+
+- `level u8` — five values, ordered, compared in code.
+- `event Vocab<u16>` — a label in memory, a 2-byte id on disk (okm ADR-0032).
+- `source Vocab<u16>` — the module or access path that emitted the row; `0` = none.
+- `note Str` — the ONE free-text field: a human sentence about this row, not a
+  payload. A payload belongs in the dynamic segment with a name of its own.
+
+`event` and `source` are Vocab because they are a CLOSED, small, endlessly repeated
+set — the one shape a vocabulary is for. A `String` spends the same bytes on every
+row and admits three spellings of one event; two bytes cannot be misspelled, and a
+typo becomes a compile error at the call site instead of a row nobody can group by.
+`note` stays a string for the opposite reason: it is the one field whose content is
+not a name. `level` stays `u8` because it is a tiny ordered domain the code compares,
+not a label it prints.
+
+Status: RULED 2026-10-20, NOT LANDED. What the change actually is: the row's FIELD
+TYPES, nothing else. Interning is the type's own business — okm's write path interns
+a `Vocab` field when the row type declares one (`Collection::put` clones the document
+and runs `__okm_intern`), and the read path resolves the label back (`get` runs
+`__okm_deref_vocab`), so neither k10r's store nor its doors allocate or look anything
+up. `append` keeps taking `&str` and builds `Vocab::of(event)` internally, so no call
+site changes. The one honest cost: a table that declares a Vocab field pays a document
+clone on every write (the price of `put(&R)`'s immutable signature). The layout break
+is clean (pre-production, ADR-0018 — no migration). PLAN 2.9c.
+
 ## Why Not
 
 - **One table per kind of record (the decision log's shape)**: every new question

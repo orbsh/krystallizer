@@ -160,6 +160,14 @@ ADR-0011。表与 store 在 `crates/mem-core/src/log.rs`。第一个写者是压
 `trigger`（词）/ `assembled_bytes`，以及真正触发的信号，键用 k10r 自己的钟；
 没触发的信号不写字段。读是窗口（`since(ts_ms)`），不是查询语言。
 
+字段形状**已裁决、尚未落地**（ADR-0011 §8）：`event` 与 `source` 改成 `Vocab<u16>`——
+封闭、小、无限重复的集合正是词汇表的用武之地，2 字节拼不错，拼错从「谁也 group 不了的行」
+变成编译错误——`note Str` 留作唯一的自由文本字段，`level u8` 留作代码要比较的一小块
+有序域。内化是**类型**的事，不是 store 的事：okm 写时自己内化（`Collection::put` →
+`__okm_intern`）、读时自己解回标签（`get` → `__okm_deref_vocab`），所以 `append` 照样收
+`&str`、内部 `Vocab::of(..)`，调用点一行不改；代价是声明了 Vocab 字段的表每次写多一次
+文档克隆。已裁决未落地，一次干净的断代（预生产，ADR-0018）——见 PLAN 2.9c。
+
 ### `LogKey` / `LogRow`（ns 41）
 
 ```rust
@@ -357,12 +365,22 @@ pub struct FactEdge { /* since / confidence / weight / 五个计数器 */ }
 
 读：`entity(scope, node_id)`、`entity_by_name(scope, name)` → `(node_id, row)`、
 `entity_kind(kind_id)` → 词项、`entity_props` / `fact_props`（动态段）、
-`fact(edge_id)` → 解出的事实、`out_edges` 与 `typed_out`（遍历通货）。批量消费者
+`fact(edge_id)` → 解出的事实、`fact_in_scope(scope, edge_id)` → 确定性点读（见下）、
+`out_edges` 与 `typed_out`（遍历通货）。批量消费者
 （可视化门）用 `scope_entities(scope)` 与 `scope_facts(scope)` 整取一个 scope——
 扫描以主键前缀 `[scope]` 为界，而每条边只被走到一次（`ingest` 把两个端点都建在
 调用时给的 scope 里）。函数式改写是**一个**引擎批——okm 的 `unlink_into` +
 `link_into`，加上 k10r 自己那条例子的动态段条目，边 id 不变，两次提交之间的窗口
 不存在（ADR-0010，2026-10-19 付清）。
+
+三个动词，门与之一一对应：`ingest` **链接**（关系声明为 functional 时就地改写）、
+`withdraw(scope, edge_id)` 撤掉一条事实——行与全部派生面条目在**一个**批里删净
+（okm 的 `unlink`）、`fact_in_scope(scope, edge_id)` 是确定性点读，答的正是写返回的
+那个 `edge_id`。这个回路里没有任何一步需要搜索：引用就是一个 id。
+
+**参考链接。** 一条事实可以在 props 里写下另一条事实的 id——当后者不够核心、不该占
+注意力头部时——读的那方自己决定要不要跟进去（`fact_in_scope`，一个 id），还是就停在这。
+这和 skill 那一层的机制同形：写者留一个可以取的指针，而不是强塞一整棵子树。
 
 ### 存储组装
 
