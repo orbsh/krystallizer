@@ -112,6 +112,11 @@ pub fn open_with_compression(
         .route("/code/{code_id}", get(fetch_code))
         .route("/memories/{scope}", post(ingest_fact))
         .route("/graph/{scope}/search", get(search_facts))
+        .route("/graph/{scope}/top", get(top_facts))
+        .route(
+            "/graph/{scope}/facts/{edge_id}",
+            get(fetch_fact).delete(withdraw_fact),
+        )
         .route("/memories/{scope}/recall", get(recall_facts))
         .route("/memories/{scope}/edges/{edge_id}/touch", post(touch_fact))
         .route("/memories/{scope}/entities/{name}", get(fetch_entity))
@@ -714,6 +719,15 @@ pub struct FactSearchQuery {
     pub k: usize,
 }
 
+/// `GET /graph/{scope}/top`'s query: how many, and nothing else. A ranking is not
+/// a search — no `q`, no clock, no format: the answer is the same shape as
+/// recall's facts.
+#[derive(Deserialize)]
+pub struct TopQuery {
+    #[serde(default = "default_seed_count")]
+    pub k: usize,
+}
+
 /// The recall door's query: the landing query, the seed count, and the
 /// CALLER's clock (`ts_ms`). A clock that rides the call makes every served
 /// fact count as one read and re-folds its weight; absent, the answer is
@@ -790,6 +804,55 @@ async fn search_facts(
             )
         })
         .map_err(FactError::from)
+}
+
+/// One fact BY ITS ID — the deterministic read, the mirror of the write that
+/// answered with an `edge_id`: no query, no embedding, no ranking. `404` when the
+/// id names nothing in this scope, so a stale reference link is a clean miss.
+async fn fetch_fact(
+    State(state): State<Arc<MemState>>,
+    Path((scope, edge_id)): Path<(u64, u64)>,
+) -> Result<Json<FactViewDto>, StatusCode> {
+    let mut graph = state.graph.lock().await;
+    graph
+        .fact_in_scope(scope, edge_id)
+        .map(|fact| Json(FactViewDto::from(fact)))
+        .ok_or(StatusCode::NOT_FOUND)
+}
+
+/// Withdraw one fact — the write side's third verb, beside link and rewrite. The
+/// row goes with every derived face entry in one batch (okm's `unlink`), so no
+/// stale weight or community entry survives it. `204` on success, `404` when the
+/// id names nothing here.
+async fn withdraw_fact(
+    State(state): State<Arc<MemState>>,
+    Path((scope, edge_id)): Path<(u64, u64)>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let mut graph = state.graph.lock().await;
+    match graph.withdraw(scope, edge_id) {
+        Ok(true) => Ok(StatusCode::NO_CONTENT),
+        Ok(false) => Err((StatusCode::NOT_FOUND, "no such fact".into())),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+/// `GET /graph/{scope}/top?k=` — Phase 4's progressive read: the heaviest facts
+/// of a scope, weight-descending (ties by edge id), as data. No query, no
+/// embedding: this is the ordering a caller walks when it wants "the important
+/// part of the scope first" rather than the answer to a question.
+async fn top_facts(
+    State(state): State<Arc<MemState>>,
+    Path(scope): Path<u64>,
+    Query(query): Query<TopQuery>,
+) -> Json<Vec<FactViewDto>> {
+    let mut graph = state.graph.lock().await;
+    Json(
+        graph
+            .top_by_weight(scope, query.k)
+            .into_iter()
+            .map(FactViewDto::from)
+            .collect(),
+    )
 }
 
 /// `GET /memories/{scope}/recall?q=&k=&ts_ms=` — the read shape ADR-0003

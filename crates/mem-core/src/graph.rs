@@ -182,6 +182,9 @@ pub struct EntityRow {
 }
 
 use __OkmIndex_EntityRow_by_community as ByCommunity;
+/// The fact row's weight face (ADR-0005 `W:{weight}:{edge_id}`), declared on
+/// `FactEdge` — the progressive read's ordering, ascending in the index and
+/// walked in reverse for the heaviest first.
 use __OkmIndex_EntityRow_by_name as ByName;
 
 /// A fact: an edge of the graph. The three declared fields are ADR-0010
@@ -792,6 +795,65 @@ impl GraphStore {
             dst: self.resolve_ref(&body.dst),
             edge: FactEdge::decode_payload(&body.payload),
         })
+    }
+
+    /// One fact by ITS ID — the deterministic read (ADR-0004's identity), the
+    /// mirror of `ingest`'s `edge_id` answer: no search, no embedding, no
+    /// ranking. The scope is checked against the edge's own source endpoint, so
+    /// an id from another scope answers `None` rather than leaking.
+    ///
+    /// This is what a reference LINK resolves to: a fact can name a less central
+    /// fact by id in its props, and the reader decides whether to follow it — the
+    /// navigation shape skills use, one level down.
+    pub fn fact_in_scope(&mut self, scope: u64, edge_id: u64) -> Option<FactView> {
+        let body = self.facts().get_edge(edge_id)?;
+        if EntityKey::decode(&body.src.pkey).scope != scope {
+            return None;
+        }
+        self.fact_view(edge_id)
+    }
+
+    /// Withdraw one fact: its row and every derived face entry go in ONE batch
+    /// (okm's `unlink` — the same path a functional rewrite takes for the
+    /// incumbent). `false` = no such edge in this scope, so the caller can answer
+    /// 404 without guessing.
+    pub fn withdraw(&mut self, scope: u64, edge_id: u64) -> Result<bool, IngestError> {
+        let Some(body) = self.facts().get_edge(edge_id) else {
+            return Ok(false);
+        };
+        if EntityKey::decode(&body.src.pkey).scope != scope {
+            return Ok(false);
+        }
+        self.facts()
+            .unlink(edge_id)
+            .map_err(IngestError::Storage)?;
+        Ok(true)
+    }
+
+    /// The heaviest facts of a scope, weight-descending, ties by edge id
+    /// (Phase 4's progressive read).
+    ///
+    /// It reads the scope's facts and keeps `k` — a bounded RESULT, not yet a
+    /// bounded READ. The ordering this wants is a lazy reverse walk over the
+    /// `by_weight` face (ADR-0005's `W:{weight}:{edge_id}`), and okm's `Graph`
+    /// exposes an exact-face lookup (`by_attr_face`) but no range iterator. The
+    /// face is maintained on every write already, so the walk is a small addition
+    /// to `okm-core` (a range scan over a declared `ok_index`), not a redesign —
+    /// PLAN Phase 4 records it as the owed seam. Until then this is correct and
+    /// bounded, and pays O(n) reads for O(k) rows.
+    pub fn top_by_weight(&mut self, scope: u64, k: usize) -> Vec<FactView> {
+        if k == 0 {
+            return Vec::new();
+        }
+        let mut facts = self.scope_facts(scope);
+        facts.sort_by(|a, b| {
+            b.edge
+                .weight
+                .cmp(&a.edge.weight)
+                .then_with(|| a.edge_id.cmp(&b.edge_id))
+        });
+        facts.truncate(k);
+        facts
     }
 
     /// One node's outgoing facts, endpoints resolved — the one-hop

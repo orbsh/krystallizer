@@ -418,3 +418,146 @@ async fn the_session_gives_turns_and_the_channel_gives_rows() {
     assert_eq!(rows[0]["sender_name"], "master");
     assert_eq!(rows[1]["content"], "问个事");
 }
+
+/// Phase 4's progressive read over the wire: the heaviest facts of a scope, as
+/// data, with `k` bounding the result. The touched fact ranks first and the empty
+/// scope answers an empty list rather than an error.
+#[tokio::test]
+async fn the_top_face_ranks_a_scope_by_weight() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    for (head, tail) in [("alpha", "shared"), ("beta", "shared")] {
+        client
+            .post(format!("{base}/memories/1"))
+            .json(&json!([head, "thing", {}, "POINTS_AT", {}, tail, "thing", {}]))
+            .send()
+            .await
+            .unwrap();
+    }
+    let all: Vec<serde_json::Value> = client
+        .get(format!("{base}/graph/1/top?k=10"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 2, "both facts of the scope");
+    let plain = all[0]["edge_id"].as_u64().unwrap();
+
+    // Boost the OTHER one: a write touch folds new counters into its weight.
+    let other = all[1]["edge_id"].as_u64().unwrap();
+    client
+        .post(format!("{base}/memories/1/edges/{other}/touch"))
+        .json(&json!({"kind": 1, "ts_ms": 5000}))
+        .send()
+        .await
+        .unwrap();
+
+    let top: Vec<serde_json::Value> = client
+        .get(format!("{base}/graph/1/top?k=1"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(top.len(), 1, "k bounds the result");
+    assert_eq!(
+        top[0]["edge_id"].as_u64().unwrap(),
+        other,
+        "the touched fact is now the heaviest"
+    );
+    assert_ne!(top[0]["edge_id"].as_u64().unwrap(), plain);
+
+    let empty: Vec<serde_json::Value> = client
+        .get(format!("{base}/graph/9/top?k=5"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(empty.is_empty(), "an empty scope is an empty list, not an error");
+}
+
+/// The deterministic read and the third write verb: a fact fetched BY ID (the
+/// mirror of the `edge_id` the write answered with), withdrawn in one call, then
+/// absent — and an id from another scope is a clean 404, never a leak.
+#[tokio::test]
+async fn a_fact_is_read_and_withdrawn_by_its_id() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    let key: serde_json::Value = client
+        .post(format!("{base}/memories/1"))
+        .json(&json!(["alpha", "thing", {}, "POINTS_AT", {}, "beta", "thing", {}]))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let edge_id = key["edge_id"].as_u64().unwrap();
+
+    let fetched: serde_json::Value = client
+        .get(format!("{base}/graph/1/facts/{edge_id}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(fetched["edge_id"].as_u64().unwrap(), edge_id);
+    assert_eq!(fetched["kind"], "POINTS_AT");
+    assert_eq!(fetched["src"]["name"], "alpha");
+
+    assert_eq!(
+        client
+            .get(format!("{base}/graph/2/facts/{edge_id}"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "scope is part of the address"
+    );
+
+    assert_eq!(
+        client
+            .delete(format!("{base}/graph/1/facts/{edge_id}"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        client
+            .get(format!("{base}/graph/1/facts/{edge_id}"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "withdrawn means gone, not tombstoned-and-visible"
+    );
+    assert_eq!(
+        client
+            .delete(format!("{base}/graph/1/facts/{edge_id}"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "a second delete is a miss, not an error storm"
+    );
+    let top: Vec<serde_json::Value> = client
+        .get(format!("{base}/graph/1/top?k=10"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(top.is_empty(), "the ranking no longer sees it");
+}

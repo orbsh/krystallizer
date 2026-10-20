@@ -241,7 +241,9 @@ fn functional_relation_rewrites_the_incumbent() {
     // The rewrite is ONE batch (unlink_into + link_into), and the dynamic
     // segment is k10r's entry: the old assertion's props must not survive
     // into the new one.
-    let props = graph.fact_props(edge_id).expect("the assertion's own record");
+    let props = graph
+        .fact_props(edge_id)
+        .expect("the assertion's own record");
     assert!(
         !props.contains_key("reason"),
         "the old assertion's prop does not survive the rewrite"
@@ -252,7 +254,11 @@ fn functional_relation_rewrites_the_incumbent() {
         "the new assertion's own declaration is what the entry holds"
     );
     assert_eq!(graph.fact(edge_id).unwrap().edge.since, 200);
-    assert_eq!(graph.out_edges(1, core_id), vec![edge_id], "one edge, one commit");
+    assert_eq!(
+        graph.out_edges(1, core_id),
+        vec![edge_id],
+        "one edge, one commit"
+    );
 }
 
 /// The loser of the adjudication is DROPPED: an older, less confident fact
@@ -440,7 +446,10 @@ fn local_embedder() -> Option<std::sync::Arc<mem_core::Embedder>> {
     let cfg = mem_core::KrystallizerConfig::load(&cfg_path).ok()?;
     let dir = std::path::Path::new(&cfg.embedding.model_dir);
     if !dir.join("model.safetensors").exists() {
-        eprintln!("skipping: no embedding model in {}", cfg.embedding.model_dir);
+        eprintln!(
+            "skipping: no embedding model in {}",
+            cfg.embedding.model_dir
+        );
         return None;
     }
     Some(std::sync::Arc::new(
@@ -469,9 +478,7 @@ fn retrieval_lands_on_the_exact_node() {
     graph
         .ingest(
             1,
-            &tuple(
-                r#"["slatedb_engine","system",{},"STORAGE_ENGINE",{},"k10r_core","system",{}]"#,
-            ),
+            &tuple(r#"["slatedb_engine","system",{},"STORAGE_ENGINE",{},"k10r_core","system",{}]"#),
         )
         .unwrap();
 
@@ -555,9 +562,15 @@ fn recall_returns_the_landed_community_as_text() {
     }
 
     for query in ["fjall_engine", "storage_engine"] {
-        let recall = graph.recall(1, query, 1, None, 0, RenderFormat::Plaintext).unwrap();
+        let recall = graph
+            .recall(1, query, 1, None, 0, RenderFormat::Plaintext)
+            .unwrap();
         assert_eq!(recall.seeds.len(), 1, "one seed for `{query}`");
-        assert_eq!(recall.communities.len(), 1, "both names share one community");
+        assert_eq!(
+            recall.communities.len(),
+            1,
+            "both names share one community"
+        );
         assert_eq!(recall.facts.len(), 2, "the community's two facts");
         assert_eq!((recall.shown, recall.total), (2, 2));
 
@@ -579,9 +592,15 @@ fn recall_returns_the_landed_community_as_text() {
 
     // An empty query is the legal "nothing landed": no seeds, no facts, no
     // text — never an error.
-    let nothing = graph.recall(1, "   ", 5, None, 0, RenderFormat::Plaintext).unwrap();
+    let nothing = graph
+        .recall(1, "   ", 5, None, 0, RenderFormat::Plaintext)
+        .unwrap();
     assert!(nothing.seeds.is_empty() && nothing.facts.is_empty());
-    assert_eq!(nothing.text.as_deref(), Some(""), "nothing landed: empty text");
+    assert_eq!(
+        nothing.text.as_deref(),
+        Some(""),
+        "nothing landed: empty text"
+    );
     assert_eq!((nothing.shown, nothing.total), (0, 0));
 }
 
@@ -598,9 +617,7 @@ fn a_landed_fact_carries_one_write_and_the_folded_weight() {
     graph
         .ingest(
             1,
-            &tuple(
-                r#"["alpha","thing",{},"IS",{"since":1000000},"beta","thing",{}]"#,
-            ),
+            &tuple(r#"["alpha","thing",{},"IS",{"since":1000000},"beta","thing",{}]"#),
         )
         .unwrap();
 
@@ -623,17 +640,13 @@ fn recall_counts_reads_and_orders_the_served_facts_by_weight() {
     graph
         .ingest(
             1,
-            &tuple(
-                r#"["alpha","thing",{},"IS",{"since":1000},"beta","thing",{}]"#,
-            ),
+            &tuple(r#"["alpha","thing",{},"IS",{"since":1000},"beta","thing",{}]"#),
         )
         .unwrap();
     graph
         .ingest(
             1,
-            &tuple(
-                r#"["gamma","thing",{},"IS",{"since":1000},"beta","thing",{}]"#,
-            ),
+            &tuple(r#"["gamma","thing",{},"IS",{"since":1000},"beta","thing",{}]"#),
         )
         .unwrap();
     // No engine attached: land explicitly on the tail by its node id.
@@ -691,7 +704,11 @@ fn the_deep_water_quadrant_earns_the_rarity_bonus() {
 
     let mut edge = FactEdge::default();
     for _ in 0..4 {
-        edge = graph.touch(1, 1, mem_core::Touch::Read, 2000).unwrap().unwrap().edge;
+        edge = graph
+            .touch(1, 1, mem_core::Touch::Read, 2000)
+            .unwrap()
+            .unwrap()
+            .edge;
     }
     assert_eq!(edge.read_count, 4);
     assert_eq!(edge.write_count, 1);
@@ -730,9 +747,7 @@ fn time_decay_is_charged_at_the_fold_it_elapsed_for() {
     graph
         .ingest(
             1,
-            &tuple(
-                r#"["alpha","thing",{},"IS",{"since":1000000},"beta","thing",{}]"#,
-            ),
+            &tuple(r#"["alpha","thing",{},"IS",{"since":1000000},"beta","thing",{}]"#),
         )
         .unwrap();
 
@@ -830,7 +845,9 @@ fn the_answer_is_budgeted_and_states_the_elision() {
         graph.ingest(1, &tuple(fact)).unwrap();
     }
 
-    let capped = graph.recall(1, "alpha", 1, None, 2, RenderFormat::Plaintext).unwrap();
+    let capped = graph
+        .recall(1, "alpha", 1, None, 2, RenderFormat::Plaintext)
+        .unwrap();
     assert_eq!(capped.shown, 2, "the budget caps the shown facts");
     assert_eq!(capped.total, 3, "the community still holds all three");
     assert_eq!(capped.facts.len(), 2);
@@ -842,7 +859,9 @@ fn the_answer_is_budgeted_and_states_the_elision() {
 
     // The elided lines are the LOWEST-weight ones, and lifting the budget
     // shows the rest: the same corpus answers the same way.
-    let full = graph.recall(1, "alpha", 1, None, 0, RenderFormat::Plaintext).unwrap();
+    let full = graph
+        .recall(1, "alpha", 1, None, 0, RenderFormat::Plaintext)
+        .unwrap();
     assert_eq!(full.shown, 3);
     assert_eq!(full.total, 3);
     assert!(!full.text.as_deref().unwrap().contains("showing"));
@@ -855,7 +874,9 @@ fn the_answer_is_budgeted_and_states_the_elision() {
 
     // ONE representation per answer: `struct` carries the data and NO text —
     // the consumer that assembles the answer asks for it in this form.
-    let structured = graph.recall(1, "alpha", 1, None, 0, RenderFormat::Struct).unwrap();
+    let structured = graph
+        .recall(1, "alpha", 1, None, 0, RenderFormat::Struct)
+        .unwrap();
     assert!(structured.text.is_none(), "struct renders no text at all");
     assert_eq!(
         structured.facts.len(),
@@ -926,4 +947,68 @@ fn communities_are_per_scope() {
     assert_eq!(members_two.len(), 2);
     assert!(members_one.contains(&alpha_one) && !members_one.contains(&alpha_two));
     assert!(members_two.contains(&alpha_two) && !members_two.contains(&alpha_one));
+}
+
+/// Phase 4's progressive read: the heaviest facts of a scope, weight-descending,
+/// ties by edge id — and a `k` that bounds the RESULT (the read is still O(n)
+/// until okm's graph gains a range walk over `by_weight`).
+#[test]
+fn top_by_weight_ranks_the_scope_and_stops_at_k() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap();
+    for (head, tail) in [("a", "x"), ("b", "x"), ("c", "x")] {
+        graph
+            .ingest(
+                1,
+                &tuple(&format!(
+                    r#"["{head}","thing",{{}},"POINTS_AT",{{}},"{tail}","thing",{{}}]"#
+                )),
+            )
+            .unwrap();
+    }
+    // A second scope's fact must never surface in scope 1's ranking.
+    graph
+        .ingest(
+            2,
+            &tuple(r#"["other","thing",{},"POINTS_AT",{},"y","thing",{}]"#),
+        )
+        .unwrap();
+
+    let base: Vec<u64> = graph
+        .scope_facts(1)
+        .iter()
+        .map(|fact| fact.edge_id)
+        .collect();
+    assert_eq!(base.len(), 3);
+    // Boost one of them: a touch folds new counters into the weight.
+    graph
+        .touch(1, base[1], mem_core::Touch::Write, 5_000)
+        .unwrap();
+    graph
+        .touch(1, base[1], mem_core::Touch::Write, 6_000)
+        .unwrap();
+
+    let top = graph.top_by_weight(1, 2);
+    assert_eq!(top.len(), 2, "k bounds the result");
+    assert_eq!(
+        top[0].edge_id, base[1],
+        "the touched fact is heaviest and comes first"
+    );
+    assert!(
+        top[0].edge.weight >= top[1].edge.weight,
+        "weight-descending: {} then {}",
+        top[0].edge.weight,
+        top[1].edge.weight
+    );
+    assert!(
+        top.iter()
+            .all(|fact| fact.edge_id != base[0] || top[1].edge_id == base[0]),
+        "the ranking is the scope's own three edges"
+    );
+    assert_eq!(
+        graph.top_by_weight(2, 1).len(),
+        1,
+        "a scope only ever sees its own facts"
+    );
+    assert!(graph.top_by_weight(1, 0).is_empty());
 }
