@@ -135,11 +135,11 @@ pub struct MessageKey {
 | 调用 | 做什么 |
 |---|---|
 | `append(channel, ts_ms, sub, role, kind, content)` | 追加一条，返回它的键 |
-| `fetch_full(channel)` | `SessionView { coverage, summary, increment, last_read }`——覆盖点与摘要取最新那行 checkpoint |
-| `open_checkpoint(channel, pointer, snapshot)` | 在切分点上开一行**正在压**的行：空摘要（标记）+ 人设快照 |
-| `complete_checkpoint(channel, summary)` | 把摘要填进最新那行未完成的行——门唯一的 checkpoint 写 |
-| `append_checkpoint(channel, pointer, summary)` | 裸的一次性写（测试、重派生）——门不调它 |
-| `note_read(channel, position)` / `read_cursor` | 盖 / 读读游标（游标行是多方形才有的） |
+| `fetch_full(channel, member)` | `SessionView { coverage, summary, head, compressing, increment, last_read }`——摘要、头部、截断点都取**最近那条带摘要**的节点；它上面若有空摘要节点，只让 `compressing` 为真 |
+| `open_checkpoint(channel, pointer, head)` | 在切分点上放下**空摘要**的节点（正在压的标记），带着冻结的头部 edge id；读仍由它下面那个节点作答 |
+| `complete_checkpoint(channel, summary)` | 把摘要填进最新的未完成节点——门唯一的 checkpoint 写 |
+| `append_checkpoint(channel, pointer, summary, head)` | 裸的一次性写（测试、回填）——门不调它 |
+| `note_read(channel, member, ts_ms)` / `read_cursor` | 盖 / 读读游标（游标行是多方形才有的） |
 
 `view::assemble(channels, graph, channel, scope, user_node)` 返回
 `Projection { head, view }`——头部是用户节点的双向关联事实（36/37），门在出网前按
@@ -148,10 +148,9 @@ pub struct MessageKey {
 尚未落地：thread、topic tag、members 表（ADR-0008/0009）——游标的「人」那一维
 正是随这张表才回来。
 
-代码走了一半（2.6d-i）：覆盖点已经是**指针**——`coverage_sub` 随 checkpoint 行、
-判词与 session DTO 走，增量按 `(ts, sub)` 比较——但键里仍带着 `DEFAULT_MEMBER`，
-决策日志也还立着。剩下的形状（键即指针、行累积、open/complete 两个写、撤 ns 40、
-人设快照）是 2.6d-ii。
+代码已跟上模型（2.6d-i/ii 于 2026-10-20 落地）：键即指针、节点累积、
+`open_checkpoint` / `complete_checkpoint` 就是那两个写、ns 40 已撤、头部是冻结的
+edge id 集合。还欠的是游标的第二段（2.6d-iii：`ts_ms + sub`，且只有多方形才存行）。
 
 ## 结构化日志（ns 41）——诊断用，没有门
 

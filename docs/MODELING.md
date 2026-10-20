@@ -158,11 +158,11 @@ pub struct MessageKey {
 | Call | What it does |
 |---|---|
 | `append(channel, ts_ms, sub, role, kind, content)` | one log entry; returns its key |
-| `fetch_full(channel)` | `SessionView { coverage, summary, increment, last_read }` — coverage/summary from the newest checkpoint row |
-| `open_checkpoint(channel, pointer, snapshot)` | write the IN-FLIGHT row at the split: empty summary (the "compressing" marker) + the persona snapshot |
-| `complete_checkpoint(channel, summary)` | fill the newest open row's summary — the only checkpoint write a door makes |
-| `append_checkpoint(channel, pointer, summary)` | raw single-shot write (tests, re-derivation) — the door does NOT call it |
-| `note_read(channel, position)` / `read_cursor` | stamp / read the read cursor (a cursor row is the multi-party shape's) |
+| `fetch_full(channel, member)` | `SessionView { coverage, summary, head, compressing, increment, last_read }` — summary/head/cut point from the newest node that HAS a summary; an empty-summary node above it only sets `compressing` |
+| `open_checkpoint(channel, pointer, head)` | put the EMPTY-summary node at the split (the "compressing" marker) carrying the frozen head edge ids; the read keeps answering from the node below |
+| `complete_checkpoint(channel, summary)` | fill the newest open node — the only checkpoint write a door makes |
+| `append_checkpoint(channel, pointer, summary, head)` | raw single-shot write (tests, backfill) — the door does NOT call it |
+| `note_read(channel, member, ts_ms)` / `read_cursor` | stamp / read the read cursor (a cursor row is the multi-party shape's) |
 
 `view::assemble(channels, graph, channel, scope, user_node)` returns
 `Projection { head, view }` — the head is the user node's incident facts
@@ -171,12 +171,10 @@ pub struct MessageKey {
 Not yet: threads, topic tags, the members table (ADR-0008/0009) — that table is
 what finally gives the cursor its people.
 
-The CODE is half-way there (2.6d-i): the coverage POINTER is a record —
-`coverage_sub` rides the checkpoint row, the verdict and the session DTO, and
-the increment compares `(ts, sub)` — while the keys still carry `DEFAULT_MEMBER`
-and the decision log still stands. The remaining reshape (key = pointer, rows
-accumulating, open/complete writes, ns 40 withdrawn, the persona snapshot) is
-2.6d-ii.
+The CODE follows the model (2.6d-i/ii landed 2026-10-20): the key IS the pointer,
+nodes accumulate, `open_checkpoint` / `complete_checkpoint` are the two writes, ns 40
+is gone, and the head is the frozen edge-id set. What is still owed is the cursor's
+second segment (2.6d-iii: `ts_ms + sub`, and only the multi-party shape stores a row).
 
 ## Structured log (ns 41) — diagnostics, no door
 

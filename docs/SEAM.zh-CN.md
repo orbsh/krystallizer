@@ -35,7 +35,7 @@ community id），但**维护**那个结构从来不是消费方的活儿。所�
 | 门（HTTP） | mem-core 原语 | 表（ns） | 状态 |
 |---|---|---|---|
 | `POST /channels/{c}/messages` | `ChannelStore::append` | messages (33) | 已落 |
-| `GET /channels/{c}/members/{m}/session?format=&ts_ms=` | `channel::fetch_full` + `view::assemble`（头部 → 压缩点 → 增量）+ `render::render_head`；读取时跑 `compress::evaluate`，判词随 `compress: {checkpoint, prompt}` 出行——引擎先在那个切分点上开出「正在压」的行（空摘要 = 标记）；`note_read` 盖的是**这个成员**的游标（缓存钟量它；单人+agent 没有行时就是日志最后一条） | messages (33) + checkpoints (34) + cursors (39，多方) + 头部的那些事实 (36/37) | 已落（视图形状 2026-10-20；压缩判词 2026-10-20） |
+| `GET /channels/{c}/members/{m}/session?format=&ts_ms=` | `channel::fetch_full` + `view::assemble`（头部 → 压缩点 → 增量）+ `render::render_head`；读取时跑 `compress::evaluate`，判词随 `compress: {checkpoint, prompt}` 出行——引擎先在那个切分点上开出「正在压」的节点（空摘要 = 标记，DTO 的 `compressing` 据此为真）；`note_read` 盖的是**这个成员**的游标（缓存钟量它；单人+agent 没有行时就是日志最后一条） | messages (33) + checkpoints (34) + cursors (39，多方) + 头部的那些事实 (36/37) | 已落（视图形状 2026-10-20；压缩判词 2026-10-20） |
 | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::complete_checkpoint`（正文只有摘要；填进 k10r 开出的那一行；没有开着的行 = 400） | checkpoints (34) | 已落（2026-10-20） |
 | `POST /memories/{scope}` | `GraphStore::ingest`（请求体就是 8 元组；`scope` 走路径） | 实体（36）+ 事实（37） | 已落（2026-10-17） |
 | `GET /memories/{scope}/recall?q=&k=&budget=&ts_ms=&format=` | `GraphStore::recall`（落点 → 着陆到的**社区**的桶 → 一种表示：渲染好的带 id 文本，或 `format=struct` 时只给数据；按权重排序、受 `budget` 封顶；无 engine = 空答案） | 实体（36）+ 事实（37） | 已落（2026-10-20） |
