@@ -88,10 +88,12 @@ impl Trigger {
 /// parameter snapshot the decision log keeps.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Verdict {
-    /// The coverage point the summary should end at — the last log
-    /// record of the span (ADR-0008 §4: k10r derives this, the caller
-    /// never states one).
+    /// The coverage point the summary should end at — the last log record of
+    /// the span (ADR-0008 §4: k10r derives this, the caller never states
+    /// one). A POINTER: `ts_ms` plus the same-millisecond tiebreaker, so the
+    /// checkpoint can name the record rather than the millisecond.
     pub checkpoint_ts: u64,
+    pub checkpoint_sub: u16,
     pub trigger: Trigger,
     pub assembled_bytes: usize,
     pub context_bytes: usize,
@@ -136,9 +138,10 @@ pub fn evaluate(
         (false, true) => Trigger::CacheClock,
         (true, true) => Trigger::Both,
     };
-    let (checkpoint_ts, max_gap_ms) = split(view)?;
+    let (checkpoint, max_gap_ms) = split(view)?;
     Some(Verdict {
-        checkpoint_ts,
+        checkpoint_ts: checkpoint.0,
+        checkpoint_sub: checkpoint.1,
         trigger,
         assembled_bytes,
         context_bytes: params.context_bytes,
@@ -158,23 +161,23 @@ pub fn evaluate(
 /// that record's ts), never between two records, so "the gap IS the
 /// silence that fired the trigger" cannot select itself. Ties go to the
 /// earlier gap, so one corpus always answers identically.
-fn split(view: &SessionView) -> Option<(u64, Option<u64>)> {
+fn split(view: &SessionView) -> Option<((u64, u16), Option<u64>)> {
     let last = view.increment.last()?;
-    let mut best: Option<(u64, u64)> = None;
+    let mut best: Option<(u64, (u64, u16))> = None;
     for pair in view.increment.windows(2) {
         let gap = pair[1].0.ts_ms.saturating_sub(pair[0].0.ts_ms);
         if best.is_none_or(|(seen, _)| gap > seen) {
-            best = Some((gap, pair[0].0.ts_ms));
+            best = Some((gap, (pair[0].0.ts_ms, pair[0].0.sub)));
         }
     }
-    let (checkpoint_ts, max_gap_ms) = match best {
-        Some((gap, ts_ms)) => (ts_ms, Some(gap)),
-        None => (last.0.ts_ms, None),
+    let (checkpoint, max_gap_ms) = match best {
+        Some((gap, pointer)) => (pointer, Some(gap)),
+        None => ((last.0.ts_ms, last.0.sub), None),
     };
-    if checkpoint_ts <= view.coverage_ts {
+    if checkpoint <= (view.coverage_ts, view.coverage_sub) {
         return None;
     }
-    Some((checkpoint_ts, max_gap_ms))
+    Some((checkpoint, max_gap_ms))
 }
 
 /// The tail prompt the verdict carries (ADR-0008 §4: the caller appends

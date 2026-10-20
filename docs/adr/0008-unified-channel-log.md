@@ -107,7 +107,10 @@ projection: [persona snapshot][summary] + [m5][m6][m7]
   read, while the prompt cache's premise is a BYTE-STABLE prefix: one wobble
   in the head re-prices the whole context and gives back what compression
   saved. So the snapshot is produced at the compression and stored with the
-  checkpoint; every read until the next compression uses it. The cost is that
+  checkpoint; every read until the next compression uses it. What it holds is the
+  FACT SET (those edges' ids), not rendered text: each read still renders it per
+  `?format=`, and because the inputs are frozen the bytes stay stable — so
+  `struct` and the text formats each keep their own meaning. The cost is that
   persona updates lag to the next compression — freshness traded for cache
   stability, deliberately.
 - **Rows accumulate; reads take the newest.** A duplicate compression (the

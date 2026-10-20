@@ -26,7 +26,7 @@ fn open() -> (tempfile::TempDir, ServiceStores) {
 
 fn projection(stores: &mut ServiceStores) -> Projection {
     assemble(
-        &stores.channels,
+        &mut stores.channels,
         &mut stores.graph,
         7,
         1,
@@ -109,7 +109,7 @@ fn increment_starts_after_the_compression_point() {
         .append(channel, 1001, 0, role::ASSISTANT, kind::TEXT, "hello");
     stores
         .channels
-        .append_checkpoint(channel, member, 1000, "greeting done");
+        .append_checkpoint(channel, member, 1000, 0, "greeting done", &[]);
 
     let p = projection(&mut stores);
     assert_eq!(p.view.coverage_ts, 1000);
@@ -127,4 +127,62 @@ fn role_codes_map_to_llm_roles() {
     assert_eq!(role_name(role::TOOL), Some("tool"));
     assert_eq!(role_name(role::SYSTEM), Some("system"));
     assert_eq!(role_name(9), None, "the store never polices the code");
+}
+
+/// The head is FROZEN at the compression (ADR-0008 §2, ruled 2026-10-20: the
+/// snapshot is the FACT SET, re-rendered per request — lossless, and `struct`
+/// keeps meaning what it says). Before the first compression the live
+/// traversal answers; after one, the graph may move and the head must not.
+#[test]
+fn the_head_is_frozen_at_the_compression() {
+    let (_d, mut stores) = open();
+    let scope = DEFAULT_SCOPE;
+    stores
+        .graph
+        .ingest(
+            scope,
+            &tuple(r#"["用户","person",{},"PREFERS",{},"简洁","style",{}]"#),
+        )
+        .unwrap();
+
+    let live = projection(&mut stores);
+    assert!(
+        !live.head.is_empty(),
+        "before any compression the live traversal answers"
+    );
+    let head_ids: Vec<u64> = live.head.iter().map(|f| f.edge_id).collect();
+
+    let verdict = mem_core::compress::Verdict {
+        checkpoint_ts: 1000,
+        checkpoint_sub: 0,
+        trigger: mem_core::compress::Trigger::Budget,
+        assembled_bytes: 60_000,
+        context_bytes: 131_072,
+        budget_percent: 50,
+        cache_ttl_ms: 300_000,
+        idle_ms: Some(1_000),
+        max_gap_ms: Some(700),
+    };
+    stores.channels.note_verdict(7, 1, &verdict, &head_ids);
+    stores
+        .channels
+        .append_checkpoint_from_verdict(7, 1, "the summary")
+        .expect("the proposal is open");
+
+    // The graph gains a preference AFTER the compression: a live traversal
+    // would now include it, the frozen head must not.
+    stores
+        .graph
+        .ingest(
+            scope,
+            &tuple(r#"["用户","person",{},"PREFERS",{},"浓咖啡","drink",{}]"#),
+        )
+        .unwrap();
+
+    let frozen = projection(&mut stores);
+    let frozen_ids: Vec<u64> = frozen.head.iter().map(|f| f.edge_id).collect();
+    assert_eq!(
+        frozen_ids, head_ids,
+        "the head is the set frozen at the compression, re-rendered — not the live traversal"
+    );
 }

@@ -214,6 +214,10 @@ pub struct SessionDto {
     /// node, weight-descending. Empty when the node has no facts yet.
     pub head: HeadDto,
     pub coverage_ts: u64,
+    /// The pointer's same-millisecond tiebreaker (ADR-0008 §2): a coverage
+    /// point names a RECORD, so `ts` alone is not the whole position. Additive
+    /// on the wire — a decoder that only knows `coverage_ts` still works.
+    pub coverage_sub: u16,
     pub summary: Option<String>,
     pub increment: Vec<IncrementEntry>,
     /// The policy's verdict when one fired (ADR-0008 §4). Absent = the
@@ -237,6 +241,7 @@ impl SessionDto {
             format: format.name(),
             head,
             coverage_ts: p.view.coverage_ts,
+            coverage_sub: p.view.coverage_sub,
             summary: p.view.summary,
             increment: p
                 .view
@@ -309,7 +314,7 @@ async fn fetch_session(
     let mut channels = state.store.lock().await;
     let mut graph = state.graph.lock().await;
     let projection = mem_core::view::assemble(
-        &channels,
+        &mut channels,
         &mut graph,
         channel_id,
         member_id,
@@ -324,10 +329,14 @@ async fn fetch_session(
     if let Some(ts_ms) = query.ts_ms {
         channels.note_read(channel_id, member_id, ts_ms);
     }
+    // The head this read assembled is what the coming compression will have
+    // been produced under, so the proposal freezes it NOW (ADR-0008 §2: the
+    // checkpoint carries the persona, not a re-computation of it).
+    let head_ids: Vec<u64> = projection.head.iter().map(|fact| fact.edge_id).collect();
     let verdict =
         mem_core::compress::evaluate(&projection.view, assembled, idle_ms, &state.compression);
     if let Some(v) = &verdict {
-        channels.note_verdict(channel_id, member_id, v);
+        channels.note_verdict(channel_id, member_id, v, &head_ids);
     }
     Ok(Json(SessionDto::new(projection, format, verdict)))
 }

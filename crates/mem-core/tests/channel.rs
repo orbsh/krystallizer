@@ -1,9 +1,9 @@
 //! Channel-log tests (ADR-0008 minimal slice): key layout hex locks,
 //! the append/fetch round trip in TIME order, checkpoint coverage
-//! semantics (increment starts strictly after the coverage point), and
-//! per-member projection independence. The query round-trip is locked,
-//! not just the bytes (okm junction lesson: byte-pass + query-empty is
-//! the classic silent corruption shape).
+//! semantics (increment starts strictly after the coverage POINTER), and
+//! projection independence. The query round-trip is locked, not just the
+//! bytes (okm junction lesson: byte-pass + query-empty is the classic
+//! silent corruption shape).
 
 use mem_core::channel::{role, ChannelStore, DEFAULT_MEMBER};
 use okm_core::KeyEncode;
@@ -52,6 +52,7 @@ fn fetch_returns_entries_in_time_order() {
 
     let view = store.fetch_full(CH, DEFAULT_MEMBER);
     assert_eq!(view.coverage_ts, 0, "no checkpoint yet");
+    assert_eq!(view.coverage_sub, 0);
     assert!(view.summary.is_none());
     let texts: Vec<&str> = view
         .increment
@@ -86,9 +87,9 @@ fn returned_keys_round_trip_to_rows() {
 }
 
 /// Checkpoint semantics: the increment starts STRICTLY AFTER the
-/// coverage point (a message AT coverage_ts is summarized, not
+/// coverage POINTER (a message AT the pointer is summarized, not
 /// re-delivered); the summary rides the view; advancing coverage
-/// shrinks the increment (overwrite, not append — see CheckpointRow).
+/// overwrites the same checkpoint row.
 #[test]
 fn checkpoint_coverage_splits_the_projection() {
     let (_d, mut store) = open();
@@ -98,9 +99,10 @@ fn checkpoint_coverage_splits_the_projection() {
     store.append(CH, 20, 0, role::ASSISTANT, 0, "m2");
     store.append(CH, 30, 0, role::USER, 0, "m3");
 
-    store.append_checkpoint(CH, DEFAULT_MEMBER, 20, "m1 and m2 were about testing");
+    store.append_checkpoint(CH, DEFAULT_MEMBER, 20, 0, "m1 and m2 were about testing", &[]);
     let view = store.fetch_full(CH, DEFAULT_MEMBER);
     assert_eq!(view.coverage_ts, 20);
+    assert_eq!(view.coverage_sub, 0);
     assert_eq!(
         view.summary.as_deref(),
         Some("m1 and m2 were about testing")
@@ -118,26 +120,49 @@ fn checkpoint_coverage_splits_the_projection() {
 
     // Advancing coverage overwrites the same checkpoint row (and the
     // summary): m3 becomes covered too, increment drains.
-    store.append_checkpoint(CH, DEFAULT_MEMBER, 30, "everything so far");
+    store.append_checkpoint(CH, DEFAULT_MEMBER, 30, 0, "everything so far", &[]);
     let view = store.fetch_full(CH, DEFAULT_MEMBER);
     assert_eq!(view.coverage_ts, 30);
     assert!(view.increment.is_empty());
 }
 
-/// Per-member independence (ADR-0008 §2): two members' checkpoints are
-/// private projection state — one's coverage never touches the other's.
+/// The POINTER is a record, not a millisecond (ADR-0008 §2): a message that
+/// shares the coverage point's millisecond but sorts after it is NOT covered.
+/// A ts-only compare would silently drop it from both the increment and the
+/// summarized span — the failure that has no error anywhere.
 #[test]
-fn checkpoints_are_per_member() {
+fn a_same_millisecond_record_after_the_pointer_stays_in_the_increment() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
-    store.append(CH, 10, 0, role::USER, 0, "m1");
 
-    store.append_checkpoint(CH, 1, 10, "member 1 covered");
-    let v2 = store.fetch_full(CH, 2);
-    assert_eq!(v2.coverage_ts, 0, "member 2 unaffected");
-    assert_eq!(v2.increment.len(), 1);
-    let v1 = store.fetch_full(CH, 1);
-    assert_eq!(v1.summary.as_deref(), Some("member 1 covered"));
+    store.append(CH, 1000, 0, role::USER, 0, "the split record");
+    store.append(CH, 1000, 1, role::TOOL, 2, "tool_result, same ms");
+    store.append(CH, 1500, 0, role::ASSISTANT, 0, "later");
+
+    // Coverage lands ON (1000, 0) — the split record itself.
+    store.append_checkpoint(CH, DEFAULT_MEMBER, 1000, 0, "up to the split", &[]);
+    let view = store.fetch_full(CH, DEFAULT_MEMBER);
+    let texts: Vec<&str> = view
+        .increment
+        .iter()
+        .map(|(_, r)| r.content.as_str())
+        .collect();
+    assert_eq!(
+        texts,
+        vec!["tool_result, same ms", "later"],
+        "same-ms records after the pointer are still raw"
+    );
+
+    // Advancing to (1000, 1) covers that one too, and nothing else.
+    store.append_checkpoint(CH, DEFAULT_MEMBER, 1000, 1, "now the burst is in", &[]);
+    let view = store.fetch_full(CH, DEFAULT_MEMBER);
+    assert_eq!(view.coverage_sub, 1);
+    let texts: Vec<&str> = view
+        .increment
+        .iter()
+        .map(|(_, r)| r.content.as_str())
+        .collect();
+    assert_eq!(texts, vec!["later"]);
 }
 
 /// Independent channels never see each other's rows (the channel prefix
@@ -148,7 +173,7 @@ fn channels_are_isolated() {
     let (_d, mut store) = open();
     store.append(1, 100, 0, role::USER, 0, "ch1");
     store.append(2, 100, 0, role::USER, 0, "ch2");
-    store.append_checkpoint(1, DEFAULT_MEMBER, 100, "ch1 summary");
+    store.append_checkpoint(1, DEFAULT_MEMBER, 100, 0, "ch1 summary", &[]);
 
     let v2 = store.fetch_full(2, DEFAULT_MEMBER);
     assert_eq!(v2.coverage_ts, 0, "ch2 has no checkpoint");
@@ -199,9 +224,10 @@ fn the_read_cursor_stamps_advances_and_never_rewinds() {
     );
 }
 
-fn verdict(checkpoint_ts: u64) -> mem_core::compress::Verdict {
+fn verdict(checkpoint_ts: u64, checkpoint_sub: u16) -> mem_core::compress::Verdict {
     mem_core::compress::Verdict {
         checkpoint_ts,
+        checkpoint_sub,
         trigger: mem_core::compress::Trigger::Budget,
         assembled_bytes: 60_000,
         context_bytes: 131_072,
@@ -224,11 +250,15 @@ fn a_summary_lands_on_the_derived_coverage_point() {
         store.append(CH, ts, 0, role::USER, 0, text);
     }
 
-    store.note_verdict(CH, DEFAULT_MEMBER, &verdict(200));
+    store.note_verdict(CH, DEFAULT_MEMBER, &verdict(200, 0), &[]);
     let (key, row) = store
         .pending_verdict(CH, DEFAULT_MEMBER)
         .expect("the verdict is pending");
     assert_eq!(key.checkpoint_ts, 200);
+    assert_eq!(
+        row.checkpoint_sub, 0,
+        "the pointer's second segment rides the row"
+    );
     assert_eq!(row.state, mem_core::decision_state::PENDING);
     assert_eq!(row.trigger, mem_core::compress::Trigger::Budget.code());
     assert_eq!(row.max_gap_ms, 700, "the gap the split was chosen on");
@@ -251,6 +281,29 @@ fn a_summary_lands_on_the_derived_coverage_point() {
     );
 }
 
+/// The pointer's `sub` survives the derivation: a split inside a
+/// same-millisecond burst lands coverage on the right record.
+#[test]
+fn the_derived_coverage_point_carries_the_split_sub() {
+    let (_d, mut store) = open();
+    const CH: u64 = 1;
+    store.append(CH, 100, 0, role::USER, 0, "before");
+    store.append(CH, 200, 0, role::TOOL, 0, "call");
+    store.append(CH, 200, 1, role::TOOL, 2, "result");
+
+    store.note_verdict(CH, DEFAULT_MEMBER, &verdict(200, 1), &[]);
+    store
+        .append_checkpoint_from_verdict(CH, DEFAULT_MEMBER, "up to the result")
+        .expect("a pending verdict exists");
+
+    let view = store.fetch_full(CH, DEFAULT_MEMBER);
+    assert_eq!(
+        (view.coverage_ts, view.coverage_sub),
+        (200, 1),
+        "coverage is the split's record, not its millisecond"
+    );
+}
+
 /// No verdict, no derivation: a summary with nothing pending has no
 /// coverage point to land on, so the store refuses rather than inventing
 /// one (the door turns this into a 400).
@@ -270,15 +323,15 @@ fn a_summary_without_a_verdict_is_refused() {
 }
 
 /// Re-reading an unchanged projection proposes the same split, so the
-/// decision log does not grow per read — and when two splits are open,
+/// proposal table does not grow per read — and when two splits are open,
 /// the summary lands on the NEWEST proposal.
 #[test]
 fn repeated_reads_refresh_one_row_and_the_newest_split_wins() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
 
-    store.note_verdict(CH, DEFAULT_MEMBER, &verdict(200));
-    store.note_verdict(CH, DEFAULT_MEMBER, &verdict(200));
+    store.note_verdict(CH, DEFAULT_MEMBER, &verdict(200, 0), &[]);
+    store.note_verdict(CH, DEFAULT_MEMBER, &verdict(200, 0), &[]);
     assert_eq!(
         store.pending_verdict(CH, DEFAULT_MEMBER).map(|(k, _)| k),
         Some(mem_core::DecisionKey {
@@ -288,7 +341,7 @@ fn repeated_reads_refresh_one_row_and_the_newest_split_wins() {
         })
     );
 
-    store.note_verdict(CH, DEFAULT_MEMBER, &verdict(500));
+    store.note_verdict(CH, DEFAULT_MEMBER, &verdict(500, 0), &[]);
     let (key, _) = store.pending_verdict(CH, DEFAULT_MEMBER).unwrap();
     assert_eq!(key.checkpoint_ts, 500, "the newest proposal is pending");
 

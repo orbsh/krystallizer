@@ -171,9 +171,12 @@ pub struct MessageKey {
 Not yet: threads, topic tags, the members table (ADR-0008/0009) — that table is
 what finally gives the cursor its people.
 
-The CODE still carries the pre-ruling shapes (a constant `member` segment on all
-three tables, a ts-only coverage point); aligning it is ADR-0008's landing work,
-not a schema question.
+The CODE is half-way there (2.6d-i): the coverage POINTER is a record —
+`coverage_sub` rides the checkpoint row, the verdict and the session DTO, and
+the increment compares `(ts, sub)` — while the keys still carry `DEFAULT_MEMBER`
+and the decision log still stands. The remaining reshape (key = pointer, rows
+accumulating, open/complete writes, ns 40 withdrawn, the persona snapshot) is
+2.6d-ii.
 
 ## Structured log (ns 41) — diagnostics, no door
 

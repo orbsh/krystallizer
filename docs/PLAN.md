@@ -98,10 +98,30 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     compressed. The cursor stays `[channel][member] → (ts, sub)` and only in the
     multi-party shape (single user + agent: the log's newest record IS the read
     position, so no row and no cache-clock storage).
+  - [x] 2.6d-i. The POINTER LANDED 2026-10-20: coverage is a RECORD, not a
+    millisecond. `CheckpointRow.coverage_sub` (payload v2) beside
+    `coverage_ts`, `SessionView.coverage_sub`, `Verdict.checkpoint_sub` (the
+    split names `pair[0]`'s full key), `DecisionRow.checkpoint_sub` (the
+    decision key carries the ts, so the second segment rides the row), the
+    increment filter compares `(ts, sub)` lexicographically, and
+    `append_checkpoint_from_verdict` derives the full pointer. The session DTO
+    KEEPS `coverage_ts` and ADDS `coverage_sub` — additive, so gravity's decode
+    and the door paths stay untouched. Gates: mem-core 80/0 (two new channel
+    tests: a same-millisecond record after the pointer stays raw, and the
+    derived coverage carries the split's `sub`), mem-server 25/0, clippy 0.
+  - [ ] 2.6d-ii. The SHAPE: checkpoint key `[channel][ts][sub]` (rows
+    accumulate, no member segment), `open_checkpoint` / `complete_checkpoint`
+    replacing note_verdict/pending_verdict/append_checkpoint_from_verdict, the
+    decision-log table (ns 40) withdrawn, the cursor `(ts, sub)` and
+    multi-party-only. The persona snapshot is RULED (b): the row holds the FACT
+    SET (edge ids, a dynamic-segment array), re-rendered per request — landed
+    with 2.6d-i's head path (`note_verdict` freezes it, `view::assemble` prefers
+    it over the live traversal). Gates: mem-core 81/0 (the new
+    `the_head_is_frozen_at_the_compression`), mem-server 25/0.
     Docs are synced in this pass (ADR-0008 pair, ADR-0001/0009 pairs, MODELING
-    pair, SEAM pair); the CODE still carries `DEFAULT_MEMBER`, the ts-only
-    coverage point and a standalone decision-log table. Touches `channel.rs`
-    (three keys, the increment filter, `open`/`complete` checkpoint writes),
+    pair, SEAM pair); the CODE still carries `DEFAULT_MEMBER` and the standalone
+    decision log (the ts-only pointer is already gone — 2.6d-i). Touches
+    `channel.rs` (three keys, `open`/`complete` checkpoint writes),
     `mem-server` (the checkpoint door fills the open row; the session DTO KEEPS
     `coverage_ts` and ADDS `coverage_sub` + the persona snapshot, so gravity's
     decode stays valid), `view::assemble` + `view.rs`'s placeholder constants

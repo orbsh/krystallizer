@@ -148,8 +148,10 @@ pub struct MessageKey {
 尚未落地：thread、topic tag、members 表（ADR-0008/0009）——游标的「人」那一维
 正是随这张表才回来。
 
-代码里还带着裁决前的形状（三张表都有一段恒为 1 的 `member` 段，覆盖点只有一个
-`coverage_ts`）；对齐它是 ADR-0008 的落地件，不是 schema 问题。
+代码走了一半（2.6d-i）：覆盖点已经是**指针**——`coverage_sub` 随 checkpoint 行、
+判词与 session DTO 走，增量按 `(ts, sub)` 比较——但键里仍带着 `DEFAULT_MEMBER`，
+决策日志也还立着。剩下的形状（键即指针、行累积、open/complete 两个写、撤 ns 40、
+人设快照）是 2.6d-ii。
 
 ## 结构化日志（ns 41）——诊断用，没有门
 

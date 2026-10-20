@@ -37,7 +37,9 @@ fn entry(ts_ms: u64, content: &str) -> (MessageKey, MessageRow) {
 fn view(ts_list: &[u64]) -> SessionView {
     SessionView {
         coverage_ts: 0,
+        coverage_sub: 0,
         summary: None,
+        head: None,
         increment: ts_list.iter().map(|ts| entry(*ts, "x")).collect(),
         last_read: None,
     }

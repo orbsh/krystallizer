@@ -70,17 +70,25 @@ pub fn role_name(code: u8) -> Option<&'static str> {
 /// from a member to a graph node is Phase 2.7's, and inventing one here
 /// would put a policy in the storage layer.
 pub fn assemble(
-    channels: &ChannelStore,
+    channels: &mut ChannelStore,
     graph: &mut GraphStore,
     channel_id: u64,
     member_id: u64,
     scope: u64,
     user_node: u64,
 ) -> Projection {
-    Projection {
-        head: initialization_memory(graph, scope, user_node),
-        view: channels.fetch_full(channel_id, member_id),
-    }
+    let view = channels.fetch_full(channel_id, member_id);
+    // The head is the FROZEN set the checkpoint recorded (ADR-0008 §2): the
+    // initialization memory is snapshotted as a set of edge ids at compression
+    // time and re-rendered per request, so `?format=` still picks the
+    // representation while the head's bytes stay stable between compressions.
+    // Before the first compression there is no snapshot, so the live traversal
+    // answers.
+    let head = match &view.head {
+        Some(ids) => ids.iter().filter_map(|id| graph.fact_view(*id)).collect(),
+        None => initialization_memory(graph, scope, user_node),
+    };
+    Projection { head, view }
 }
 
 /// The facts incident to `user_node`, both directions, each edge once.

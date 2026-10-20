@@ -72,9 +72,12 @@ pub struct CheckpointKey {
 #[ok_ref(CheckpointKey)]
 #[ok_ns(34)]
 pub struct CheckpointRow {
-    /// Everything at or before this timestamp is summarized into
-    /// `summary`; the projection's increment starts strictly after.
+    /// The last record the summary covers, as a POINTER: `ts_ms` plus the
+    /// same-millisecond tiebreaker. A ts alone cannot say WHICH record the
+    /// cut landed at, and the increment would then swallow the records that
+    /// share that millisecond and sort after it (ADR-0008 §2).
     pub coverage_ts: u64,
+    pub coverage_sub: u16,
     pub summary: String,
 }
 
@@ -123,6 +126,10 @@ pub struct DecisionKey {
 #[ok_ns(40)]
 pub struct DecisionRow {
     pub state: u8,
+    /// The split's same-millisecond tiebreaker. The row's KEY carries the ts
+    /// only, so the pointer's second segment rides here (ADR-0008 §2: a
+    /// coverage point is a record, not a millisecond).
+    pub checkpoint_sub: u16,
     /// 0 = budget, 1 = cache clock, 2 = both (see `compress::Trigger`).
     pub trigger: u8,
     pub assembled_bytes: u32,
@@ -148,16 +155,29 @@ pub mod decision_state {
 /// tool-call pruning are Phase 2.5's view layer, not storage's job.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SessionView {
-    /// The coverage point the checkpoint carries (0 = no checkpoint:
-    /// the increment IS the full log).
+    /// The coverage point the checkpoint carries (`(0, 0)` = no checkpoint:
+    /// the increment IS the full log). A POINTER — see [`CheckpointRow`].
     pub coverage_ts: u64,
+    pub coverage_sub: u16,
     pub summary: Option<String>,
+    /// The FROZEN initialization memory of that compression: the edge ids the
+    /// head was built from (ADR-0008 §2). Frozen as a SET and rendered per
+    /// request, so the head's bytes stay stable while `?format=` still picks
+    /// the representation. `None` = no checkpoint yet, so the head is the
+    /// live traversal.
+    pub head: Option<Vec<u64>>,
     /// Log entries strictly after `coverage_ts`, key order (== time
     /// order, BE bytes).
     pub increment: Vec<(MessageKey, MessageRow)>,
     /// When this member last read its projection (ADR-0008 §2's read
     /// cursor); `None` = never read with a clock.
     pub last_read: Option<u64>,
+}
+
+/// Dynamic-segment names the channel tables use.
+pub mod checkpoint_field {
+    /// The frozen head of a compression: an array of edge ids (u64 as UInt).
+    pub const HEAD: &str = "head";
 }
 
 /// The member whose projection the reads assemble. Single-member shape
@@ -233,24 +253,51 @@ impl ChannelStore {
     /// The scan is channel-prefixed — only the channel's key range is
     /// read, never the whole table (same discipline as the graph's
     /// scope-prefixed scans).
-    pub fn fetch_full(&self, channel_id: u64, member_id: u64) -> SessionView {
-        let checkpoint = self.checkpoints.get(&CheckpointKey {
+    pub fn fetch_full(&mut self, channel_id: u64, member_id: u64) -> SessionView {
+        let key = CheckpointKey {
             channel_id,
             member_id,
-        });
-        let coverage_ts = checkpoint.as_ref().map_or(0, |c| c.coverage_ts);
-        let increment = self.messages_after(channel_id, coverage_ts);
+        };
+        let checkpoint = self.checkpoints.get(&key);
+        let coverage = checkpoint
+            .as_ref()
+            .map_or((0, 0), |c| (c.coverage_ts, c.coverage_sub));
+        let increment = self.messages_after(channel_id, coverage);
+        let head = self.checkpoint_head(&key);
         SessionView {
-            coverage_ts,
+            coverage_ts: coverage.0,
+            coverage_sub: coverage.1,
             summary: checkpoint.map(|c| c.summary),
+            head,
             increment,
             last_read: self.read_cursor(channel_id, member_id),
         }
     }
 
+    /// The frozen head stored with one checkpoint, if any (ADR-0008 §2: the
+    /// initialization memory is snapshotted as a SET of edge ids, so the head
+    /// stays byte-stable while `?format=` keeps choosing the representation).
+    fn checkpoint_head(&mut self, key: &CheckpointKey) -> Option<Vec<u64>> {
+        let doc = self.checkpoints.get_document(key)?;
+        match doc.get(checkpoint_field::HEAD) {
+            Some(okm_core::obj_dynamic::DynamicValue::Array(items)) => Some(
+                items
+                    .iter()
+                    .filter_map(|item| match item {
+                        okm_core::obj_dynamic::DynamicValue::UInt(id) => Some(*id),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+
     /// Record (or advance) the member's checkpoint: `summary` now covers
-    /// everything at or before `coverage_ts`. Same-key overwrite — see
-    /// the struct doc for why this is not yet an append-only log.
+    /// everything up to and including the record at `(coverage_ts,
+    /// coverage_sub)`, and `head` is the initialization memory frozen at that
+    /// moment. Same-key overwrite — see the struct doc for why this is not yet
+    /// an append-only checkpoint log.
     ///
     /// The door never calls this: ADR-0008 §4 has the caller state the
     /// SUMMARY only, with the coverage point derived from the verdict
@@ -262,18 +309,32 @@ impl ChannelStore {
         channel_id: u64,
         member_id: u64,
         coverage_ts: u64,
+        coverage_sub: u16,
         summary: &str,
+        head: &[u64],
     ) {
+        let key = CheckpointKey {
+            channel_id,
+            member_id,
+        };
         self.checkpoints.put(
-            &CheckpointKey {
-                channel_id,
-                member_id,
-            },
+            &key,
             &CheckpointRow {
                 coverage_ts,
+                coverage_sub,
                 summary: summary.to_string(),
             },
         );
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(
+            checkpoint_field::HEAD.to_string(),
+            okm_core::obj_dynamic::DynamicValue::Array(
+                head.iter()
+                    .map(|id| okm_core::obj_dynamic::DynamicValue::UInt(*id))
+                    .collect(),
+            ),
+        );
+        self.checkpoints.put_fields(&key, &fields);
     }
 
     /// Stamp the member's read cursor from the caller's clock at a
@@ -309,6 +370,7 @@ impl ChannelStore {
         channel_id: u64,
         member_id: u64,
         verdict: &crate::compress::Verdict,
+        head: &[u64],
     ) {
         let key = DecisionKey {
             channel_id,
@@ -317,6 +379,7 @@ impl ChannelStore {
         };
         let row = DecisionRow {
             state: decision_state::PENDING,
+            checkpoint_sub: verdict.checkpoint_sub,
             trigger: verdict.trigger.code(),
             assembled_bytes: verdict.assembled_bytes.min(u32::MAX as usize) as u32,
             context_bytes: verdict.context_bytes.min(u32::MAX as usize) as u32,
@@ -326,6 +389,36 @@ impl ChannelStore {
             max_gap_ms: verdict.max_gap_ms.unwrap_or(0),
         };
         self.decisions.put(&key, &row);
+        // The head is frozen HERE, at the moment the span is handed out: the
+        // summary will be produced under this persona, so the checkpoint must
+        // carry this persona and not whatever the graph says when it returns.
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(
+            checkpoint_field::HEAD.to_string(),
+            okm_core::obj_dynamic::DynamicValue::Array(
+                head.iter()
+                    .map(|id| okm_core::obj_dynamic::DynamicValue::UInt(*id))
+                    .collect(),
+            ),
+        );
+        self.decisions.put_fields(&key, &fields);
+    }
+
+    /// The head frozen on one proposal (edge ids), if it recorded one.
+    fn decision_head(&mut self, key: &DecisionKey) -> Option<Vec<u64>> {
+        let doc = self.decisions.get_document(key)?;
+        match doc.get(checkpoint_field::HEAD) {
+            Some(okm_core::obj_dynamic::DynamicValue::Array(items)) => Some(
+                items
+                    .iter()
+                    .filter_map(|item| match item {
+                        okm_core::obj_dynamic::DynamicValue::UInt(id) => Some(*id),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        }
     }
 
     /// The latest PENDING verdict for this member (key order == split
@@ -373,6 +466,10 @@ impl ChannelStore {
     ) -> Option<u64> {
         let (key, mut row) = self.pending_verdict(channel_id, member_id)?;
         row.state = decision_state::DONE;
+        // The head frozen when the verdict was served — read back from the
+        // proposal row, not recomputed here: recomputing could freeze a
+        // different persona than the one the span was summarized under.
+        let head = self.decision_head(&key);
 
         let mut batch = MemBatch::default();
         let checkpoint_key = CheckpointKey {
@@ -387,6 +484,7 @@ impl ChannelStore {
             pkey,
             CheckpointRow {
                 coverage_ts: key.checkpoint_ts,
+                coverage_sub: row.checkpoint_sub,
                 summary: summary.to_string(),
             }
             .encode_payload(),
@@ -399,15 +497,35 @@ impl ChannelStore {
         batch.put(dkey, row.encode_payload());
 
         self.store.commit_batch(batch).ok()?;
+
+        // The frozen head rides the DYNAMIC segment: a nested array cannot go
+        // through the typed batch above, so it is its own write. Losing it
+        // costs the byte-stability of the head, not the summary.
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(
+            checkpoint_field::HEAD.to_string(),
+            okm_core::obj_dynamic::DynamicValue::Array(
+                head.unwrap_or_default()
+                    .into_iter()
+                    .map(okm_core::obj_dynamic::DynamicValue::UInt)
+                    .collect(),
+            ),
+        );
+        self.checkpoints.put_fields(&checkpoint_key, &fields);
+
         Some(key.checkpoint_ts)
     }
 
-    /// Log entries for `channel_id` strictly after `after_ts`, in key
-    /// order. Prefix-scan over the channel's primary-key range: BE bytes
-    /// make engine order == `(ts_ms, sub)` order, so no sort and no
-    /// secondary index — the log IS the index (ADR-0008 §3: max-gap and
-    /// increments ride the same physical order).
-    fn messages_after(&self, channel_id: u64, after_ts: u64) -> Vec<(MessageKey, MessageRow)> {
+    /// Log entries for `channel_id` strictly after `after`, in key order.
+    /// Prefix-scan over the channel's primary-key range: BE bytes make engine
+    /// order == `(ts_ms, sub)` order, so no sort and no secondary index — the
+    /// log IS the index (ADR-0008 §3: max-gap and increments ride the same
+    /// physical order).
+    ///
+    /// The comparison is LEXICOGRAPHIC on the pointer: a record that shares
+    /// the coverage point's millisecond but sorts after it is NOT covered
+    /// (its `sub` is larger), which a ts-only compare would silently drop.
+    fn messages_after(&self, channel_id: u64, after: (u64, u16)) -> Vec<(MessageKey, MessageRow)> {
         // Header is `[ns 2B][0x00]` — the primary slot is a fixed face, one
         // byte (okm ADR-0030).
         let mut prefix = Vec::with_capacity(3 + 8);
@@ -430,7 +548,7 @@ impl ChannelStore {
                 let mut full = prefix.clone();
                 full.extend_from_slice(sfx);
                 let key = MessageKey::decode(&full[3..]);
-                if key.ts_ms <= after_ts {
+                if (key.ts_ms, key.sub) <= after {
                     return None;
                 }
                 let row = self.messages.get(&key)?;
