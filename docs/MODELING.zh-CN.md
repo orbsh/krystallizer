@@ -123,14 +123,12 @@ pub struct MessageKey {
 
 ### `CursorKey` / `CursorRow`（ns 39）
 
-- 键 `[channel_id 8B][member_id 8B]`——某个参与者的读位置，由投影读取时用调用方
-  的钟盖上：ADR-0008 §2 的读游标，也是缓存钟唯一的可观测物。只有**多方**形态才有
-  这一行；单人与 agent 时游标可以安全地当作日志最新的一条，于是不存，空闲时长直接
-  是「现在 − 最后一条的 ts」。latest-wins，带更早位置的读取不会改动它——游标永不
-  倒退。
-- 行：`ts_ms u64` + `sub u16`（指针，指向一条记录）+ `read_at u64`（那次读取时调用方
-  的钟）。两个事实、一行：缓存钟问的是「这个成员上一次碰模型是什么时候」，而重读同一段
-  记录必须刷新它，哪怕**位置**没动。
+- 键 `[channel_id 8B][member_id 8B]`——某个参与者的**读时钟**，在投影读取时盖上：
+  缓存钟唯一的可观测物。只有**多方**形态才有这一行；单人与 agent 时不存，空闲时长
+  直接是「现在 − 最后一条的 ts」。latest-wins，更早的读取不改动它——钟永不倒退。
+  不存**位置**：每次读都答到最新一条，切增量的是 checkpoint。
+- 行：只有 `read_at u64`——那次读取时调用方的钟。模型的每次读都答到最新一条，存位置
+  就是个常数；缓存钟要的是「这个成员上次碰模型是什么时候」。
 
 ### 访问面（`ChannelStore`）
 
@@ -141,7 +139,7 @@ pub struct MessageKey {
 | `open_checkpoint(channel, pointer, head)` | 在切分点上放下**空摘要**的节点（正在压的标记），带着冻结的头部 edge id；读仍由它下面那个节点作答 |
 | `complete_checkpoint(channel, summary)` | 把摘要填进最新的未完成节点——门唯一的 checkpoint 写 |
 | `append_checkpoint(channel, pointer, summary, head)` | 裸的一次性写（测试、回填）——门不调它 |
-| `note_read(channel, member, pointer, read_at)` / `read_cursor` / `read_at` | 盖 / 读读位置与读时钟（游标行是多方形才有的） |
+| `note_read(channel, member, read_at)` / `read_at` | 盖 / 读读时钟（游标行是多方形才有的；不存位置） |
 
 `view::assemble(channels, graph, channel, scope, user_node)` 返回
 `Projection { head, view }`——头部是用户节点的双向关联事实（36/37），门在出网前按

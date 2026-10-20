@@ -94,7 +94,7 @@ pub fn open_with_compression(
         compression,
     });
     Ok(Router::new()
-        .route("/channels/{channel_id}/messages", post(append_message))
+        .route("/channels/{channel_id}/messages", post(append_message).get(read_channel))
         .route(
             "/channels/{channel_id}/members/{member_id}/session",
             get(fetch_session),
@@ -180,6 +180,50 @@ pub struct IncrementEntry {
     pub content: String,
 }
 
+/// One conversation turn (ADR-0009 §4): a run of user messages BETWEEN two
+/// replies is one thing said, so the model gets one turn with per-line
+/// attribution rather than a flat record list.
+#[derive(Serialize)]
+pub struct TurnDto {
+    pub role: &'static str,
+    pub text: String,
+    pub start_ts: u64,
+    /// When the turn ended: a reply keeps the clock it finished on, so a line
+    /// typed mid-generation is visible inside its span.
+    pub end_ts: u64,
+    /// The member ids this turn speaks for, in line order.
+    pub senders: Vec<u64>,
+}
+
+impl From<mem_core::view::Turn> for TurnDto {
+    fn from(turn: mem_core::view::Turn) -> Self {
+        Self {
+            role: turn.role,
+            text: turn.text,
+            start_ts: turn.start_ts,
+            end_ts: turn.end_ts,
+            senders: turn.senders,
+        }
+    }
+}
+
+/// One raw record of the channel — the PEOPLE's view (ADR-0009 §4): every row
+/// as written, attributed by name but otherwise untouched. No checkpoint, no
+/// summary, no merging.
+#[derive(Serialize)]
+pub struct ChannelEntry {
+    pub key: MessageKeyDto,
+    /// The member id the row was written with (never absent).
+    pub sender: u64,
+    /// Its display name at read time; a rename re-labels history here.
+    pub sender_name: String,
+    pub role: Option<String>,
+    pub kind: u8,
+    /// The record's own clock (`0` = instant; a reply keeps its END here).
+    pub end_ts_ms: u64,
+    pub content: String,
+}
+
 /// The head's representation follows the requested format (ADR-0010 §5):
 /// rendered text under every text format, the facts themselves under
 /// `struct` — the consumer that assembles the answer asks for the data.
@@ -225,6 +269,10 @@ pub struct SessionDto {
     /// back to the newest node that HAS a summary.
     pub compressing: bool,
     pub increment: Vec<IncrementEntry>,
+    /// The same records as TURNS (ADR-0009 §4) — what the model actually reads:
+    /// user bursts merged, every line `[name(id=N)]`. The raw `increment` stays
+    /// beside it for callers that want the records themselves.
+    pub turns: Vec<TurnDto>,
     /// The policy's verdict when one fired (ADR-0008 §4). Absent = the
     /// caller builds its context from the records alone.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -236,6 +284,7 @@ impl SessionDto {
         p: mem_core::view::Projection,
         format: mem_core::RenderFormat,
         compress: Option<mem_core::CompressionVerdict>,
+        turns: Vec<TurnDto>,
     ) -> Self {
         let head = if format.renders_text() {
             HeadDto::Text(mem_core::render::render_head(&p.head, format))
@@ -249,6 +298,7 @@ impl SessionDto {
             coverage_sub: p.view.coverage_sub,
             summary: p.view.summary,
             compressing: p.view.compressing,
+            turns,
             increment: p
                 .view
                 .increment
@@ -335,19 +385,10 @@ async fn fetch_session(
         .ts_ms
         .zip(projection.view.read_at)
         .map(|(now, read_at)| now.saturating_sub(read_at));
-    // Stamp the position this read reached: the newest record it served, or the
-    // coverage point when the increment came back empty.
-    let served = projection
-        .view
-        .increment
-        .last()
-        .map(|(key, _)| (key.ts_ms, key.sub))
-        .or_else(|| {
-            (projection.view.coverage_ts > 0)
-                .then_some((projection.view.coverage_ts, projection.view.coverage_sub))
-        });
-    if let (Some(clock), Some(pointer)) = (query.ts_ms, served) {
-        channels.note_read(channel_id, member_id, pointer, clock);
+    // Only the clock is stamped: the model's read always reaches the log's end,
+    // so a stored POSITION would be a constant (ADR-0008 §2).
+    if let Some(clock) = query.ts_ms {
+        channels.note_read(channel_id, member_id, clock);
     }
     // The head this read assembled is what the coming compression will have
     // been produced under, so the proposal freezes it NOW (ADR-0008 §2: the
@@ -358,7 +399,39 @@ async fn fetch_session(
     if let Some(v) = &verdict {
         channels.open_checkpoint(channel_id, (v.checkpoint_ts, v.checkpoint_sub), &head_ids);
     }
-    Ok(Json(SessionDto::new(projection, format, verdict)))
+    let turns: Vec<TurnDto> =
+        mem_core::view::turns_of(&channels, channel_id, &projection.view.increment)
+            .into_iter()
+            .map(TurnDto::from)
+            .collect();
+    Ok(Json(SessionDto::new(projection, format, verdict, turns)))
+}
+
+/// The PEOPLE's view (ADR-0009 §4): the channel as written — every record, in log
+/// order, no checkpoint, no summary, no merging. Attribution is a name lookup, so
+/// a rename re-labels history without touching a row.
+async fn read_channel(
+    State(state): State<Arc<MemState>>,
+    Path(channel_id): Path<u64>,
+) -> Json<Vec<ChannelEntry>> {
+    let mut store = state.store.lock().await;
+    let rows = store.history(channel_id);
+    Json(
+        rows.into_iter()
+            .map(|(key, row)| ChannelEntry {
+                key: MessageKeyDto::from(key),
+                sender_name: store
+                    .member(channel_id, row.sender)
+                    .map(|member| member.display_name)
+                    .unwrap_or_else(|| format!("member-{}", row.sender)),
+                sender: row.sender,
+                role: mem_core::view::role_name(row.role).map(str::to_string),
+                kind: row.kind,
+                end_ts_ms: row.end_ts_ms,
+                content: row.content,
+            })
+            .collect(),
+    )
 }
 
 /// The assembled context's size in bytes — what the budget trigger

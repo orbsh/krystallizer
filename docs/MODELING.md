@@ -145,17 +145,15 @@ pub struct MessageKey {
 
 ### `CursorKey` / `CursorRow` (ns 39)
 
-- Key `[channel_id 8B][member_id 8B]` — a participant's read position, stamped
-  from the caller's clock at a projection read: ADR-0008 §2's cursor, the cache
-  clock's only observable. A row exists only in the MULTI-PARTY shape; with a
-  single user + agent the cursor is safely the log's newest record, so nothing is
-  stored and the idle time is "now − the last record's ts" outright. Latest-wins,
-  and a read carrying an older position leaves it alone — the cursor never
-  rewinds.
-- Row: `ts_ms u64` + `sub u16` (the pointer, naming a record) + `read_at u64`
-  (the caller's clock at that read). Two facts, one row: the cache clock asks
-  "when did this member last touch the model", which a re-read of the same
-  records must refresh even though the POSITION does not move.
+- Key `[channel_id 8B][member_id 8B]` — a participant's READ CLOCK, stamped at a
+  projection read: the cache clock's only observable. A row exists only in the
+  MULTI-PARTY shape; with a single user + agent nothing is stored and the idle
+  time is "now − the last record's ts" outright. Latest-wins, and an earlier read
+  leaves it alone — the clock never rewinds. No POSITION is kept: every read
+  answers up to the newest record, and the checkpoint is what cuts the increment.
+- Row: `read_at u64` — the caller's clock at that read, and nothing else. The
+  model's read answers up to the newest record, so a stored position would be a
+  constant; what the cache clock needs is when this member last touched the model.
 
 ### Access (`ChannelStore`)
 
@@ -166,7 +164,7 @@ pub struct MessageKey {
 | `open_checkpoint(channel, pointer, head)` | put the EMPTY-summary node at the split (the "compressing" marker) carrying the frozen head edge ids; the read keeps answering from the node below |
 | `complete_checkpoint(channel, summary)` | fill the newest open node — the only checkpoint write a door makes |
 | `append_checkpoint(channel, pointer, summary, head)` | raw single-shot write (tests, backfill) — the door does NOT call it |
-| `note_read(channel, member, pointer, read_at)` / `read_cursor` / `read_at` | stamp / read the read position and the read clock (a cursor row is the multi-party shape's) |
+| `note_read(channel, member, read_at)` / `read_at` | stamp / read the read clock (a cursor row is the multi-party shape's; no position is stored) |
 
 `view::assemble(channels, graph, channel, scope, user_node)` returns
 `Projection { head, view }` — the head is the user node's incident facts

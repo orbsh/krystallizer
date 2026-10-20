@@ -187,38 +187,38 @@ fn channels_are_isolated() {
 /// member. No stamp = no cursor, which is what keeps an unknown idle
 /// time from reading as an idle of zero.
 #[test]
-fn the_read_cursor_stamps_advances_and_never_rewinds() {
+fn the_read_at_stamps_advances_and_never_rewinds() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
     store.append(CH, 100, 0, role::USER, 0, "m1");
 
-    assert_eq!(store.read_cursor(CH, DEFAULT_MEMBER), None, "never read");
-    assert_eq!(store.fetch_full(CH, DEFAULT_MEMBER).last_read, None);
+    assert_eq!(store.read_at(CH, DEFAULT_MEMBER), None, "never read");
+    assert_eq!(store.fetch_full(CH, DEFAULT_MEMBER).read_at, None);
 
-    store.note_read(CH, DEFAULT_MEMBER, (1_000, 0), 1_000);
-    assert_eq!(store.read_cursor(CH, DEFAULT_MEMBER), Some((1_000, 0)));
+    store.note_read(CH, DEFAULT_MEMBER, 1_000);
+    assert_eq!(store.read_at(CH, DEFAULT_MEMBER), Some(1_000));
     assert_eq!(
-        store.fetch_full(CH, DEFAULT_MEMBER).last_read,
-        Some((1_000, 0)),
+        store.fetch_full(CH, DEFAULT_MEMBER).read_at,
+        Some(1_000),
         "the projection carries it, so the engine needs no second read"
     );
 
-    store.note_read(CH, DEFAULT_MEMBER, (900, 0), 900);
+    store.note_read(CH, DEFAULT_MEMBER, 900);
     assert_eq!(
-        store.read_cursor(CH, DEFAULT_MEMBER),
-        Some((1_000, 0)),
+        store.read_at(CH, DEFAULT_MEMBER),
+        Some(1_000),
         "an older read must not move the clock backwards"
     );
-    store.note_read(CH, DEFAULT_MEMBER, (2_000, 3), 2_000);
-    assert_eq!(store.read_cursor(CH, DEFAULT_MEMBER), Some((2_000, 3)));
+    store.note_read(CH, DEFAULT_MEMBER, 2_000);
+    assert_eq!(store.read_at(CH, DEFAULT_MEMBER), Some(2_000));
 
     assert_eq!(
-        store.read_cursor(CH, 2),
+        store.read_at(CH, 2),
         None,
         "another member's cursor is its own"
     );
     assert_eq!(
-        store.read_cursor(2, DEFAULT_MEMBER),
+        store.read_at(2, DEFAULT_MEMBER),
         None,
         "another channel's"
     );

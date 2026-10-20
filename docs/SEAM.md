@@ -42,6 +42,7 @@ sit here were exactly that (retired 2026-10-20).
 | Door (HTTP) | mem-core primitive | Table (ns) | Status |
 |---|---|---|---|
 | `POST /channels/{c}/messages` | `ChannelStore::append` | messages (33) | landed |
+| `GET /channels/{c}/messages` | `ChannelStore::history` — the PEOPLE's view (ADR-0009 §4): every record in log order, attributed by name, no checkpoint, no summary, no merging | messages (33) + members (42) | landed (2026-10-20) |
 | `GET /channels/{c}/members/{m}/session?format=&ts_ms=` | `channel::fetch_full` + `view::assemble` (head → checkpoint → increment) + `render::render_head`; `compress::evaluate` runs at the read and its verdict rides `compress: {checkpoint, prompt}` — the engine first opens the in-flight node at that split (empty summary = the marker, surfaced as the DTO's `compressing`); `note_read` stamps THAT member's cursor (the cache clock measures against it; single-user + agent: the log's last record when no row exists) | messages (33) + checkpoints (34) + cursors (39, multi-party) + the head's facts (36/37) | landed (view shape 2026-10-20; compression verdict 2026-10-20) |
 | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::complete_checkpoint` (the body is the SUMMARY alone; it fills the open row at the split k10r served; 400 when no row is open) | checkpoints (34) | landed (2026-10-20) |
 | `POST /memories/{scope}` | `GraphStore::ingest` (the body IS the 8-slot tuple; `scope` is the path) | entities (36) + facts (37) | landed (2026-10-17) |

@@ -120,13 +120,13 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     an empty-summary node above it only sets `compressing` (now on the session
     DTO). The read door opens the node, `POST …/checkpoint` completes it. Gates:
     mem-core 80/0, mem-server 26/0.
-  - [x] 2.6d-iii. THE CURSOR IS A POINTER TOO (landed 2026-10-20): `CursorRow` =
-    `(ts_ms, sub)` position + `read_at` clock, stamped by the read door at the
-    newest record it served (`note_read(channel, member, pointer, read_at)`);
-    `SessionView` carries both (`last_read`, `read_at`) and the cache clock
-    measures `query.ts_ms − read_at`. Two facts in one row because they move
-    independently: a re-read of the same records refreshes the clock and not the
-    position. Gates: mem-core 80/0, mem-server 26/0.
+  - [x] 2.6d-iii. THE CURSOR IS A CLOCK (landed 2026-10-20, narrowed same day):
+    `CursorRow` = `read_at` alone — the caller's clock at that read. The model's
+    read always answers up to the newest record, so a stored POSITION would be a
+    constant, and the checkpoint is what cuts the increment; the earlier
+    `(ts_ms, sub)` position was withdrawn on that ground.
+    `note_read(channel, member, read_at)`; `SessionView.read_at`; the cache clock
+    measures `query.ts_ms − read_at`. Gates: mem-core 84/0, mem-server 26/0.
     Docs are synced in this pass (ADR-0008 pair, ADR-0001/0009 pairs, MODELING
     pair, SEAM pair); the CODE still carries `DEFAULT_MEMBER` and the standalone
     decision log (the ts-only pointer is already gone — 2.6d-i). Touches

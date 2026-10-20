@@ -114,7 +114,7 @@ pub struct Verdict {
 /// for) — the engine cannot compute it, because the head is rendered
 /// per `?format=` above this layer.
 ///
-/// `idle_ms` is `now − last_read` when the caller supplied a clock and
+/// `idle_ms` is `now − read_at` when the caller supplied a clock and
 /// the member has a cursor; `None` means the cache clock stays silent
 /// (no clock, no signal — the same discipline as recall's "no clock, no
 /// count").

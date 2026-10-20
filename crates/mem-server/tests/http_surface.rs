@@ -358,3 +358,64 @@ async fn session_carries_the_head_block_and_named_roles() {
         "{body}"
     );
 }
+
+/// The two views over the wire (ADR-0009 §4): the session answers TURNS (a user
+/// burst merged, every line attributed), while `GET /channels/{c}/messages` gives
+/// people the raw log — same rows, no merging, no checkpoint.
+#[tokio::test]
+async fn the_session_gives_turns_and_the_channel_gives_rows() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    for (ts, role_code, text) in [
+        (1_000u64, role::USER, "在吗"),
+        (1_050, role::USER, "问个事"),
+        (1_100, role::ASSISTANT, "在，你说"),
+    ] {
+        client
+            .post(format!("{base}/channels/7/messages"))
+            .json(&AppendMessage {
+                ts_ms: ts,
+                sub: 0,
+                role: role_code,
+                kind: 0,
+                content: text.into(),
+            })
+            .send()
+            .await
+            .unwrap();
+    }
+
+    let session: serde_json::Value = client
+        .get(format!("{base}/channels/7/members/1/session"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let turns = session["turns"].as_array().unwrap();
+    assert_eq!(turns.len(), 2, "two user lines merged into one turn");
+    assert_eq!(turns[0]["role"], "user");
+    assert_eq!(
+        turns[0]["text"],
+        "[master(id=1)] 在吗\n[master(id=1)] 问个事"
+    );
+    assert_eq!(turns[1]["role"], "assistant");
+    assert_eq!(
+        session["increment"].as_array().unwrap().len(),
+        3,
+        "raw stays raw"
+    );
+
+    let rows: Vec<serde_json::Value> = client
+        .get(format!("{base}/channels/7/messages"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 3, "the people's view is every record, unmerged");
+    assert_eq!(rows[0]["sender_name"], "master");
+    assert_eq!(rows[1]["content"], "问个事");
+}

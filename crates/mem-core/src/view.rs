@@ -116,23 +116,27 @@ pub struct Turn {
 /// the reply's `end_ts` still says when it finished.
 pub fn conversation(channels: &mut ChannelStore, channel_id: u64, member_id: u64) -> Vec<Turn> {
     let view = channels.fetch_full(channel_id, member_id);
-    let names: std::collections::BTreeMap<u64, String> = channels
-        .members(channel_id)
-        .into_iter()
-        .map(|(key, row)| (key.member_id, row.display_name))
-        .collect();
+    turns_of(channels, channel_id, &view.increment)
+}
 
+/// The same turn building over rows a caller already holds — the door has the
+/// increment from its own projection and must not scan twice.
+pub fn turns_of(
+    channels: &ChannelStore,
+    channel_id: u64,
+    rows: &[(crate::channel::MessageKey, crate::channel::MessageRow)],
+) -> Vec<Turn> {
     let mut turns: Vec<Turn> = Vec::new();
-    for (key, row) in &view.increment {
+    for (key, row) in rows {
         if row.kind != crate::channel::kind::TEXT {
             continue; // tool calls / results are not in the conversation yet
         }
         let Some(speaker) = role_name(row.role) else {
             continue;
         };
-        let name = names
-            .get(&row.sender)
-            .cloned()
+        let name = channels
+            .member(channel_id, row.sender)
+            .map(|member| member.display_name)
             .unwrap_or_else(|| format!("member-{}", row.sender));
         let line = format!("[{name}(id={})] {}", row.sender, row.content);
         let ended = row.end_ts_ms.max(key.ts_ms);
