@@ -142,6 +142,22 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   is withdrawn, ADR-0009; interrupt
   trigger (seconds-scale passive window); interrupt outcomes are not recorded.
   (ADR-0009)
+  - [x] 2.7a. THE IDENTITY LAYER LANDED 2026-10-20: ns 42 `MemberKey`/
+    `MemberRow` (`display_name`, `role` = HUMAN/AGENT — the one axis
+    serialization needs), `put_member` / `member` / `members`, and
+    `MessageRow.sender` (payload v2, ALWAYS set — a single-party channel seeds
+    its user as member 1) written through `append_from`. A rename re-attributes
+    history without rewriting one row: the log stores the id.
+  - [x] 2.7b. THE TWO VIEWS LANDED 2026-10-20: `MessageRow.end_ts_ms` (a reply
+    keeps the clock it FINISHED on while its key is its first token),
+    `append_from(… sender, end_ts_ms …)`, member 1 seeded on a channel's first
+    touch (`DEFAULT_MEMBER_NAME`), `ChannelStore::history` (the people's view:
+    raw, no checkpoint, no merging) and `view::conversation` (the model's view:
+    user bursts merge into one turn, every line `[name(id=N)]`, order = key
+    order, tool rows skipped). Tests: the merge + the mid-generation ordering,
+    and the seed. Wire (session DTO carrying turns) is still owed.
+  - [ ] 2.7c. The member's PROFILE node: `member_id → graph node`, profile
+    facts as edges, and the head traversal pulling the channel's members.
 - [ ] Phase 2.8 — Code store: the delivered script's home, and the one
   table an executor's call reads (gravity ADR-0001/0003 — the script
   travels as a call argument, so identity is a bare surrogate id: no

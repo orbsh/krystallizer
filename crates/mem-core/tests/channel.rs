@@ -316,3 +316,44 @@ fn a_summary_without_an_open_node_is_refused() {
     assert_eq!(view.coverage_ts, 0);
     assert!(view.summary.is_none());
 }
+
+/// The identity layer (ADR-0009 §1): a member row maps an id to the name the
+/// model sees, and messages carry the SENDER ID — so renaming a member
+/// re-attributes every past message without rewriting one row of the log.
+#[test]
+fn members_name_their_senders_and_a_rename_rewrites_nothing() {
+    let (_d, mut store) = open();
+    const CH: u64 = 1;
+    store.put_member(CH, 1, "小王", mem_core::member_role::HUMAN);
+    store.put_member(CH, 2, "k10r", mem_core::member_role::AGENT);
+    store.put_member(2, 1, "别人", mem_core::member_role::HUMAN);
+
+    assert_eq!(store.member(CH, 1).unwrap().display_name, "小王");
+    assert_eq!(
+        store.member(CH, 2).unwrap().role,
+        mem_core::member_role::AGENT
+    );
+    assert!(store.member(CH, 9).is_none());
+
+    let members = store.members(CH);
+    assert_eq!(
+        members.len(),
+        2,
+        "channel-scoped: the other channel's row is not here"
+    );
+    assert_eq!(members[0].0.member_id, 1);
+    assert_eq!(members[1].0.member_id, 2);
+
+    store.append_from(CH, 100, 0, 1, 0, role::USER, 0, "你好");
+    let view = store.fetch_full(CH, DEFAULT_MEMBER);
+    assert_eq!(view.increment[0].1.sender, 1);
+    assert_eq!(
+        view.increment[0].1.content, "你好",
+        "the log stores raw text"
+    );
+
+    store.put_member(CH, 1, "王先生", mem_core::member_role::HUMAN);
+    let view = store.fetch_full(CH, DEFAULT_MEMBER);
+    assert_eq!(view.increment[0].1.sender, 1, "the id is the stable part");
+    assert_eq!(store.member(CH, 1).unwrap().display_name, "王先生");
+}

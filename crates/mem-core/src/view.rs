@@ -91,6 +91,71 @@ pub fn assemble(
     Projection { head, view }
 }
 
+/// One turn as the LLM sees it (ADR-0009 §2): consecutive messages from the same
+/// side collapse into ONE, and every line carries `[name(id=N)]` so the model can
+/// name a speaker and look the member up. Tool rows are skipped for now.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Turn {
+    pub role: &'static str,
+    /// Merged text, one `[name(id=N)] …` line per underlying record.
+    pub text: String,
+    pub start_ts: u64,
+    /// When the turn ENDED. A reply keeps the clock it finished on, so a line a
+    /// user typed mid-generation is visible as having arrived inside the span.
+    pub end_ts: u64,
+    /// The member ids this turn speaks for, in line order.
+    pub senders: Vec<u64>,
+}
+
+/// The projection as conversation turns — the LLM's side of the channel.
+///
+/// Two rules, both from ADR-0009 §2: messages between two replies MERGE into one
+/// user turn (a burst typed before the model answered is one thing said), and the
+/// order is the log's own key order — the reply is keyed by its FIRST token's
+/// clock, so a message typed during a generation sorts before that reply while
+/// the reply's `end_ts` still says when it finished.
+pub fn conversation(channels: &mut ChannelStore, channel_id: u64, member_id: u64) -> Vec<Turn> {
+    let view = channels.fetch_full(channel_id, member_id);
+    let names: std::collections::BTreeMap<u64, String> = channels
+        .members(channel_id)
+        .into_iter()
+        .map(|(key, row)| (key.member_id, row.display_name))
+        .collect();
+
+    let mut turns: Vec<Turn> = Vec::new();
+    for (key, row) in &view.increment {
+        if row.kind != crate::channel::kind::TEXT {
+            continue; // tool calls / results are not in the conversation yet
+        }
+        let Some(speaker) = role_name(row.role) else {
+            continue;
+        };
+        let name = names
+            .get(&row.sender)
+            .cloned()
+            .unwrap_or_else(|| format!("member-{}", row.sender));
+        let line = format!("[{name}(id={})] {}", row.sender, row.content);
+        let ended = row.end_ts_ms.max(key.ts_ms);
+        match turns.last_mut() {
+            // A run of user messages between two replies is ONE thing said.
+            Some(turn) if turn.role == "user" && speaker == "user" => {
+                turn.text.push('\n');
+                turn.text.push_str(&line);
+                turn.end_ts = turn.end_ts.max(ended);
+                turn.senders.push(row.sender);
+            }
+            _ => turns.push(Turn {
+                role: speaker,
+                text: line,
+                start_ts: key.ts_ms,
+                end_ts: ended,
+                senders: vec![row.sender],
+            }),
+        }
+    }
+    turns
+}
+
 /// The facts incident to `user_node`, both directions, each edge once.
 fn initialization_memory(graph: &mut GraphStore, scope: u64, user_node: u64) -> Vec<FactView> {
     let out = graph.out_edges(scope, user_node);

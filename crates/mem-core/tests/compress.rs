@@ -27,6 +27,8 @@ fn entry(ts_ms: u64, content: &str) -> (MessageKey, MessageRow) {
             sub: 0,
         },
         MessageRow {
+            sender: 0,
+            end_ts_ms: 0,
             role: 0,
             kind: 0,
             content: content.to_string(),

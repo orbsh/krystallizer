@@ -24,6 +24,7 @@ One entity class = one ns (OKM rule). Current state:
 | 38  | Community sequence (the id issuer, one row per scope) | Implemented (2026-10-20) | ADR-0010 |
 | 39  | Read cursor (a channel pointer; multi-party only) | Implemented (2026-10-20) | ADR-0008 §2 |
 | 41  | Structured log (diagnostics; internal, no door) | Declared | ADR-0011 |
+| 42  | Channel members (identity: display name + human/agent) | Implemented (2026-10-20) | ADR-0009 §1 |
 | —   | Initialization memory (persona / style) | Declared (ADR-0001) | ADR-0001 |
 
 The graph's read side (LPA, binning, the rendered community) landed with it

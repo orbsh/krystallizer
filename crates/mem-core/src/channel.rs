@@ -45,8 +45,16 @@ pub struct MessageKey {
 #[ok_ref(MessageKey)]
 #[ok_ns(33)]
 pub struct MessageRow {
+    /// Who said it: a member id (ns 42). ALWAYS set — a single-user channel
+    /// still has its user, seeded as member 1 (ADR-0009 §1).
+    pub sender: u64,
     pub role: u8,
     pub kind: u8,
+    /// The record's END: the completion clock. `0` = instant (a user message
+    /// is written when it was sent). The agent's row carries its START as the
+    /// key's `ts_ms` — so a user message typed DURING a generation sorts before
+    /// the reply while the reply still says when it finished.
+    pub end_ts_ms: u64,
     pub content: String,
 }
 
@@ -110,6 +118,38 @@ pub struct CursorRow {
     pub read_at: u64,
 }
 
+/// A member of one channel (ns 42) — the IDENTITY layer (ADR-0009 §1): the
+/// deterministic mapping `member_id → display name + role tag` that the
+/// serialization path uses to prepend `[display-name]` to each message. The
+/// SEMANTIC layer (preferences, history, relationship) lives in the graph as
+/// facts about a member node; there is no profile table.
+#[derive(KeyEncode, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+#[ok_ns(42)]
+pub struct MemberKey {
+    pub channel_id: u64,
+    pub member_id: u64,
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(MemberKey)]
+#[ok_ns(42)]
+pub struct MemberRow {
+    /// What the model sees in the attribution bracket. Changing it rewrites
+    /// nothing in the log: the log stays raw (ADR-0009 §1).
+    pub display_name: String,
+    /// HUMAN or AGENT — the ONE axis serialization needs (who is the
+    /// assistant). Business roles (support / buyer) are semantics and belong to
+    /// the graph, not to this row.
+    pub role: u8,
+}
+
+/// Member kinds (ADR-0009 §1). `AGENT` is the assistant side of the
+/// conversation; everyone else is a human participant.
+pub mod member_role {
+    pub const HUMAN: u8 = 0;
+    pub const AGENT: u8 = 1;
+}
+
 /// The agent's context projection (ADR-0008 §2): checkpoint + increment.
 /// Structural data, NOT a serialized prompt — prompt assembly and
 /// tool-call pruning are Phase 2.5's view layer, not storage's job.
@@ -152,6 +192,11 @@ pub mod checkpoint_field {
 /// fixed so callers need not thread it through Phase 0's turn loop.
 pub const DEFAULT_MEMBER: u64 = 1;
 
+/// The name member 1 is seeded with on a channel's first touch. One constant so
+/// the attribution bracket reads the same everywhere; change it and every
+/// channel without its own member-1 row follows on the next write.
+pub const DEFAULT_MEMBER_NAME: &str = "master";
+
 /// Assembly point: one Fjall keyspace holding every channel-side table.
 /// Shared FjallStore = one atomicity domain (same discipline as the
 /// graph's group). This group's keyspace is `crate::KEYSPACE_CHANNEL` —
@@ -161,6 +206,7 @@ pub struct ChannelStore {
     messages: okm_core::Collection<FjallStore, MessageKey, MessageRow>,
     checkpoints: okm_core::Collection<FjallStore, CheckpointKey, CheckpointRow>,
     cursors: okm_core::Collection<FjallStore, CursorKey, CursorRow>,
+    members: okm_core::Collection<FjallStore, MemberKey, MemberRow>,
 }
 
 impl ChannelStore {
@@ -178,6 +224,7 @@ impl ChannelStore {
             messages: <MessageRow as okm_core::Document>::collection(store.clone()),
             checkpoints: <CheckpointRow as okm_core::Document>::collection(store.clone()),
             cursors: <CursorRow as okm_core::Document>::collection(store.clone()),
+            members: <MemberRow as okm_core::Document>::collection(store),
         }
     }
 
@@ -194,18 +241,59 @@ impl ChannelStore {
         kind: u8,
         content: &str,
     ) -> MessageKey {
+        // The single-party shape writes its one user — there is no "nobody
+        // said it" (ADR-0009 §1).
+        self.append_from(channel_id, ts_ms, sub, DEFAULT_MEMBER, 0, role, kind, content)
+    }
+
+    /// Append one entry attributed to `sender` (a member id, ns 42), ending at
+    /// `end_ts_ms` (`0` = instant).
+    pub fn append_from(
+        &mut self,
+        channel_id: u64,
+        ts_ms: u64,
+        sub: u16,
+        sender: u64,
+        end_ts_ms: u64,
+        role: u8,
+        kind: u8,
+        content: &str,
+    ) -> MessageKey {
+        self.ensure_member(channel_id);
         let key = MessageKey {
             channel_id,
             ts_ms,
             sub,
         };
         let row = MessageRow {
+            sender,
             role,
             kind,
+            end_ts_ms,
             content: content.to_string(),
         };
         self.messages.put(&key, &row);
         key
+    }
+
+    /// Member 1 always exists (ADR-0009 §1): a channel's first touch seeds it
+    /// with the default name, so a log never carries a message nobody owns.
+    fn ensure_member(&mut self, channel_id: u64) {
+        if self
+            .members
+            .get(&MemberKey {
+                channel_id,
+                member_id: DEFAULT_MEMBER,
+            })
+            .is_none()
+        {
+            self.put_member(
+                channel_id,
+                DEFAULT_MEMBER,
+                DEFAULT_MEMBER_NAME,
+                member_role::HUMAN,
+            );
+        }
     }
 
     /// The agent's projection read (ADR-0008 §2): the NEWEST node that carries a
@@ -214,6 +302,7 @@ impl ChannelStore {
     /// (invisible to the read); a node above it with an empty summary is a
     /// compression in flight.
     pub fn fetch_full(&mut self, channel_id: u64, member_id: u64) -> SessionView {
+        self.ensure_member(channel_id);
         let nodes = self.checkpoints_of(channel_id);
         let complete = nodes.iter().rfind(|(_, row)| !row.summary.is_empty());
         let coverage = complete.map_or((0, 0), |(key, _)| (key.ts_ms, key.sub));
@@ -421,6 +510,66 @@ impl ChannelStore {
                 member_id,
             })
             .map(|row| row.read_at)
+    }
+
+    /// Register (or rename) a member — the identity layer's only write
+    /// (ADR-0009 §1). Idempotent by key: the log stores raw sender ids, so a
+    /// rename re-attributes every past message without rewriting one.
+    pub fn put_member(&mut self, channel_id: u64, member_id: u64, display_name: &str, role: u8) {
+        self.members.put(
+            &MemberKey {
+                channel_id,
+                member_id,
+            },
+            &MemberRow {
+                display_name: display_name.to_string(),
+                role,
+            },
+        );
+    }
+
+    /// One member's identity, if registered.
+    pub fn member(&self, channel_id: u64, member_id: u64) -> Option<MemberRow> {
+        self.members.get(&MemberKey {
+            channel_id,
+            member_id,
+        })
+    }
+
+    /// Every member of one channel, in member-id order (prefix scan — only the
+    /// channel's key range is read).
+    pub fn members(&mut self, channel_id: u64) -> Vec<(MemberKey, MemberRow)> {
+        let mut prefix = Vec::with_capacity(3 + 8);
+        prefix.extend_from_slice(MemberRow::NS_PREFIX);
+        write_slot(&mut prefix, PRIMARY_SLOT);
+        let probe = MemberKey {
+            channel_id,
+            member_id: 0,
+        };
+        probe.encode_prefix_named(&mut prefix, &["channel_id"]);
+        let suffixes: Vec<Vec<u8>> = self
+            .members
+            .store()
+            .scan_suffix(&prefix)
+            .iter()
+            .map(|sfx| sfx.to_vec())
+            .collect();
+        let mut out = Vec::with_capacity(suffixes.len());
+        for sfx in suffixes {
+            let mut full = prefix.clone();
+            full.extend_from_slice(&sfx);
+            let key = MemberKey::decode(&full[3..]);
+            if let Some(row) = self.members.get(&key) {
+                out.push((key, row));
+            }
+        }
+        out
+    }
+
+    /// The channel's WHOLE log, key order — the human view (ADR-0009 §3: people
+    /// read the channel; no checkpoint, no merging, every record as written).
+    pub fn history(&mut self, channel_id: u64) -> Vec<(MessageKey, MessageRow)> {
+        self.messages_after(channel_id, (0, 0))
     }
 
     /// Log entries for `channel_id` strictly after `after`, in key order.

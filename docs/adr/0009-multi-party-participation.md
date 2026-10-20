@@ -114,6 +114,33 @@ question for that day, not storage paid for now.
   decisions are logged, learning waits for labels — ADR-0008 §4's
   terms apply verbatim.
 
+### 4. The model's view and the people's view are different reads
+
+The channel is ONE log, but two readers want different shapes, and neither is a
+transformation of the other's output — they are two projections of the same rows.
+
+- **Nobody is unattributed.** A single-user channel still has a user, so member
+  `1` is seeded (default display name from one constant, `master` today) the
+  first time a channel is touched. There is no sender id 0 and no "unknown"
+  author to special-case; multi-party rows use ids from 10 up.
+- **People read the channel.** Raw records, in log order, exactly as written —
+  no checkpoint, no summary, no merging (`ChannelStore::history`). Reading it is
+  a scan, not an assembly.
+- **The model reads turns.** Between two replies, several user messages are ONE
+  thing said, so they merge into a single turn; every line carries
+  `[display-name(id=N)]` — the name so the model can speak about a speaker, the
+  id so it can look the member up in the graph. Deterministic data, no model
+  involvement (ADR-0009 §1).
+- **Order is start, span is real.** A reply is keyed by its FIRST token's clock,
+  and carries `end_ts_ms` — the clock it finished on (`0` = instant, which is
+  what a user message is). So a message typed while a reply was still streaming
+  sorts BEFORE that reply and is still visibly inside its span: the order is
+  `user, user, assistant(start 1.1s, end 5.0s), user(1.2s)`, never re-sorted by
+  end. Nothing is dropped to make the transcript tidy.
+- **Tool rows are not in the conversation yet.** They are in the log (the human
+  view shows them) and the turn builder skips them; pruning belongs to the view
+  layer once the tool shape is settled.
+
 ## Why Not
 
 - **Profiles as a channel attribute**: a profile survives the channel
