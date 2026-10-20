@@ -568,10 +568,10 @@ const LANDING_DIST2: f32 = 2.0 * (1.0 - LANDING_FLOOR);
 const TABLE_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 
 /// One scope's loaded index. The search itself is `okm_vector::ExactIndex` —
-/// okm owns the vector path (its `VectorIndex` owns the ANN the moment a
-/// measured corpus asks for one), and this side owns only what is k10r's: when
-/// to build, what the answer needs besides the id, and how much derived state
-/// may sit in memory.
+/// the vector path is okm's crate end to end (an approximate index would be the
+/// same crate's business, not a decision taken here), and this side owns only
+/// what is k10r's: when to build, what the answer needs besides the id, and how
+/// much derived state may sit in memory.
 struct ScopeTable {
     index: ExactIndex,
     /// `node_id` as the index key (BE bytes) → the name and kind id the answer

@@ -301,9 +301,9 @@ pub struct EntityRow {
   kind}`。空结果是合法的（什么都没落地，调用方不注入记忆）。**扫描是
   `okm-vector` 的，不是 k10r 的**：索引是它的 `ExactIndex`（一整块 f32 加键表），
   首次使用时从 KV 重建、**每次写入即失效**，所以不可能拿旧语料作答；字节预算与
-  LRU 淘汰留在这边，因为那是 k10r 的内存账，不是搜索本身。同一调用背后的 ANN 是
-  `okm-vector` 的 `VectorIndex`（分片 HNSW，每个分片一份快照存在 okm 的 0x0B 面），
-  按 ADR-0003 的可测阈值才取——绝不自己养一份图实现。
+  LRU 淘汰留在这边，因为那是 k10r 的内存账，不是搜索本身。索引是精确还是近似，是 `okm-vector`
+  自己的事——该形态那个 crate 本来就有——不是 k10r 的 phase、也没有阈值参数，
+  这边绝不自己养一份图实现（ADR-0003）。
 - **`GraphStore::recall`（`GET /memories/{scope}/recall?q=&k=&budget=&ts_ms=`——**核心**
   类：消费方跑在上面的记忆答案**）是落地 + 着陆到的**社区**：种子的 `community_id`
   当作桶读（成员走 `by_community` 面，两端都在社区内的事实走遍历面），按权重

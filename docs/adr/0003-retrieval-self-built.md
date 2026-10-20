@@ -1,9 +1,11 @@
 # ADR-0003: Retrieval — Built-In Embedding Model, Vector Landing + the Landed Community
 
-**Status**: Partially landed (2026-10-17: the embedding engine — a built-in
-local model loaded in-process from a model directory — its config surface, and
-the row's vector carrier; the in-memory vector table and the read path are
-owed, PLAN 1c/1d)
+**Status**: Landed (2026-10-17: the embedding engine — a built-in local model
+loaded in-process from a model directory — its config surface, and the row's
+vector carrier; 2026-10-19: the landing table, `/search` and `/recall`, PLAN
+1c/1d. The model pick stays provisional: the recall comparison against the
+legacy PG stack is still not runnable here, so PLAN 1d's fixture is the
+baseline)
 **Date**: 2026-09-08
 **Chinese**: [0003-retrieval-self-built.zh-CN.md](0003-retrieval-self-built.zh-CN.md)
 
@@ -40,13 +42,16 @@ the engine the serving process attached, so the HTTP client never sends one;
 a row written with no engine attached carries an EMPTY frame — a legal row the
 retrieval side skips, never a zero vector.
 
-**Vector search: a per-ns in-memory table + brute-force inner product.** The
+**Vector search: `okm-vector`'s index over a per-ns in-memory table.** The
 corpus is per-user; tens of thousands of vectors fit memory by orders of
-magnitude. ANN is re-opened only when a MEASURED corpus crosses the threshold,
-and arroy is not the default shape for it: arroy 0.6 is an LMDB-backed
+magnitude, so the exact path answers in sub-millisecond time and no other
+machinery is needed. **The index is `okm-vector`'s end to end** (ruling
+2026-10-20): exact today (`ExactIndex`), and an approximate form would be that
+same crate's business — adopted from it rather than designed beside it, so this
+repo plans no approximate index of its own, holds no threshold parameter and
+offers no index option. arroy is rejected: arroy 0.6 is an LMDB-backed
 (memory-mapped) index, so it cannot be "serialized into Fjall" — it brings a
-second storage engine along, exactly what this ADR rules out. Not deferred
-below the threshold: dropped.
+second storage engine along, exactly what this ADR rules out.
 
 **Retrieval is vector landing + the landed community.** An exact name/alias
 point lookup (entity name / alias → node id, one prefix scan — the graph's own
@@ -85,8 +90,10 @@ only complex ones (PageRank, community detection) earn a dependency.
 - No HTTP hop at all: the model is in-process, so writes and queries embed
   locally. Dropping the remote embedding call is what makes the core's
   outbound surface empty (ADR-0007).
-- Bring-up posture: brute-force inner product stands in for ANN below the
-  measured threshold; ANN integration must not be a Phase-1 blocker.
+- Bring-up posture: the scan is EXACT — brute-force inner product over the
+  scope's table — and that is what retrieval costs at this scale; nothing
+  approximate sits behind it waiting, because the index form is `okm-vector`'s
+  call and never a phase of this repo.
   **Landed 2026-10-19:** `GraphStore::retrieve` + `GET /graph/{scope}/search`
   — per-scope in-memory table (loaded from the KV on first use, dropped on
   every write, byte-budgeted with LRU eviction), inner product over
@@ -98,31 +105,24 @@ only complex ones (PageRank, community detection) earn a dependency.
   Weight-ordered ranking is ADR-0005's. `/search` is the ANALYSIS door (the
   landing alone, for inspection); `/recall` is the CORE door (the memory
   answer) — ADR-0007 owns the two-class split.
-- **The three costs, and the shape past the threshold (2026-10-19).** A scan
-  strategy pays in compute, memory or I/O, and the choice is a MEASURED one:
-  an in-memory table pays memory (~2 KB/vector) and scans in O(N·d) — at
-  10⁴ rows that is sub-millisecond, at 10⁵ ~6 ms with AVX2; IVF pays training
-  plus a retrain-and-rewrite cycle but probes only nprobe buckets; HNSW pays
-  a persisted graph (deletes become tombstones, model swaps a rebuild) for
+- **The three costs, and whose call the shape is (2026-10-19).** A scan strategy
+  pays in compute, memory or I/O, and the choice is a MEASURED one: an in-memory
+  table pays memory (~2 KB/vector) and scans in O(N·d) — at 10⁴ rows that is
+  sub-millisecond, at 10⁵ ~6 ms with AVX2; IVF pays training plus a
+  retrain-and-rewrite cycle but probes only nprobe buckets; HNSW pays a
+  persisted graph (deletes become tombstones, model swaps a rebuild) for
   logarithmic hops, and buys nothing while the whole path is already a few
-  milliseconds. When one scope's table outgrows the budget, the next shape is
-  **IVF with the bucket encoded in the KV key** (`[ns][bucket][node_id]`) —
-  no second storage engine, deletes stay natural. arroy stays rejected for
-  the LMDB reason above; a persisted HNSW only if a MEASURED latency budget
-  still fails after that, and then as DERIVED state rebuilt from the rows,
-  never as a second source of truth.
-  **Update 2026-10-19 — the ANN is okm-vector's, not ours.** When a measured
-  budget is exhausted, the implementation is the okm workspace's `okm-vector`:
-  an in-memory HNSW over quantized codes (int8 cosine, or product codes when
-  memory bites), fnv-sharded, one snapshot blob per shard at okm's fixed face
-  0x0B. That blob is derived state — built from the rows, written in a single
-  batch, droppable at any time — so the "never a second source of truth" line
-  holds without k10r owning a graph implementation. No arroy (the LMDB reason
-  above), no second storage engine, and no schema change here: the corpus
-  stays the entity rows' `embedding` frames. Below the threshold the scan is
-  the same crate one layer down — `okm-vector`'s `ExactIndex` — so neither side
-  of the threshold is k10r's code, and crossing it is a measurement, not a
-  rewrite.
+  milliseconds.
+  **Which index k10r gets is that crate's call, not this repo's** (ruling
+  2026-10-20): the corpus is queried through `okm-vector`, and whatever form it
+  carries — exact today, approximate whenever it grows one — is taken from
+  there, its snapshot blobs living at okm's own faces. What stays on this side
+  is the ACCOUNT, not the algorithm: when the derived table is rebuilt (a write
+  drops it), how much of it may sit in memory (byte budget + LRU), and the
+  landing floor. An index of any kind is DERIVED state rebuilt from the rows,
+  never a second source of truth, and arroy stays rejected for the LMDB reason
+  above — it would bring a second storage engine, which is exactly what the
+  crate spares us.
 - There is no tokenizer to control, so "tokenization and scoring fully under
   our control" is no longer a trade-off claim this route makes.
 - The PG exit gate becomes an end-to-end recall comparison on a fixed query set,
