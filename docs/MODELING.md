@@ -177,8 +177,9 @@ not a schema question.
 
 ## Structured log (ns 41) — diagnostics, no door
 
-ADR-0011. Landed in `crates/mem-core/src/log.rs` when the phase runs; nothing
-writes it yet.
+ADR-0011. `crates/mem-core/src/log.rs` holds the table and the store; nothing
+writes a row YET (the compression verdict is the first writer, and it waits for
+the pointer reshape).
 
 ### `LogKey` / `LogRow` (ns 41)
 

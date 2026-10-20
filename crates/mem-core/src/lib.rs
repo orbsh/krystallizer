@@ -12,6 +12,7 @@ pub mod compress;
 pub mod config;
 pub mod embedding;
 pub mod graph;
+pub mod log;
 pub mod render;
 pub mod service;
 pub mod view;
@@ -39,13 +40,17 @@ pub use compress::{
     evaluate as evaluate_compression, Params as CompressionParams, Trigger as CompressionTrigger,
     Verdict as CompressionVerdict, TAIL_PROMPT,
 };
-pub use config::{CompressionConfig, ConfigError, EmbeddingConfig, KrystallizerConfig};
+pub use config::{CompressionConfig, ConfigError, EmbeddingConfig, KrystallizerConfig, LogsConfig};
 pub use embedding::{EmbedError, Embedder};
 pub use graph::{
     CommunitySeqKey, CommunitySeqRow, CommunitySlice, EntityKey, EntityRow, FactBody, FactEdge,
     FactTuple, GraphStore, IngestError, IngestOutcome, Recall, Relation, Seed, Term, Touch,
     COMMUNITY_NS, ENTITY_NS, FACT_NS, FUNCTIONAL_PROP, LANDING_FLOOR, LITERAL_KIND, LPA_RADIUS,
     LPA_ROUNDS, WEIGHT_SCALE,
+};
+pub use log::{
+    event as log_event, field as log_field, level as log_level, LogEntry, LogKey, LogRow, LogStore,
+    DEFAULT_MAX_ROWS,
 };
 pub use render::{render_head, render_memory, RenderFormat};
 pub use service::{open_service, ServiceStores};

@@ -153,7 +153,8 @@ pub struct MessageKey {
 
 ## 结构化日志（ns 41）——诊断用，没有门
 
-ADR-0011。该阶段落地时声明在 `crates/mem-core/src/log.rs`；目前没有写者。
+ADR-0011。表与 store 已在 `crates/mem-core/src/log.rs`；**还没有人写行**（压缩判词是
+第一个写者，它等指针形状改完）。
 
 ### `LogKey` / `LogRow`（ns 41）
 

@@ -145,6 +145,11 @@ projection: [persona snapshot][summary] + [m5][m6][m7]
   be assumed to be the newest record — the agent reads every turn, so the log's
   last record IS where it read — and nothing needs storing: the cache clock's
   idle time is "now − the log's last record ts" outright.
+- **The read door is therefore `GET /channels/{c}/members/{m}/session`.** The
+  checkpoint belongs to the channel, but the READ that answers with it is an act
+  by someone: whose cursor is stamped, whose projection is the answer. No member
+  segment in the table does not mean none on the door — a door names who reads,
+  not whom the summary belongs to.
 
 This amends ADR-0006: "fetch full session, write back session"
 becomes "append own messages, read own projection". The stateless-loop

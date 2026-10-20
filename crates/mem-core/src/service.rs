@@ -19,6 +19,7 @@
 use crate::channel::ChannelStore;
 use crate::code::CodeStore;
 use crate::graph::GraphStore;
+use crate::log::LogStore;
 use crate::{KEYSPACE_CHANNEL, KEYSPACE_MEMORY};
 use okm_core::FjallStore;
 
@@ -27,6 +28,10 @@ pub struct ServiceStores {
     /// The channel group (ns 33 messages, ns 34 checkpoints) — its own
     /// keyspace.
     pub channels: ChannelStore,
+    /// The structured log (ns 41) — the `channel` keyspace, because its
+    /// write shape is the log's (append-only, high rate), not the memory
+    /// side's (ADR-0002, ADR-0011).
+    pub log: LogStore,
     /// The code group (ns 35) — the `memory` keyspace.
     pub code: CodeStore,
     /// The fact graph (ns 36 entities, ns 37 facts) — the `memory`
@@ -42,7 +47,8 @@ pub fn open_service(path: &std::path::Path) -> Result<ServiceStores, fjall::Erro
     let channel_store = FjallStore::from_db(db.clone(), KEYSPACE_CHANNEL)?;
     let memory_store = FjallStore::from_db(db, KEYSPACE_MEMORY)?;
     Ok(ServiceStores {
-        channels: ChannelStore::wrap(channel_store),
+        channels: ChannelStore::wrap(channel_store.clone()),
+        log: LogStore::wrap(channel_store),
         code: CodeStore::wrap(memory_store.clone()),
         graph: GraphStore::wrap(memory_store),
     })

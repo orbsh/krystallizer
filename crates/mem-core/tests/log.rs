@@ -1,0 +1,156 @@
+//! The structured log's suite (ADR-0011): key order IS time order, `seq`
+//! survives a reopen, the dynamic segment round-trips, and the table trims
+//! its oldest rows at the ceiling instead of growing without limit.
+
+use mem_core::log::{event, field, level};
+use mem_core::{LogKey, LogStore, DEFAULT_MAX_ROWS};
+use okm_core::obj_dynamic::DynamicValue;
+use okm_core::KeyEncode;
+use std::collections::BTreeMap;
+
+fn tempdir() -> tempfile::TempDir {
+    tempfile::tempdir().expect("temp dir")
+}
+
+fn fields(pairs: &[(&str, DynamicValue)]) -> BTreeMap<String, DynamicValue> {
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), v.clone()))
+        .collect()
+}
+
+/// The key layout is a contract: `[ts_ms 8B][seq 8B]`, BE. Byte order equalling
+/// time order is what makes "the window around T" one range scan.
+#[test]
+fn log_key_layout_is_hex_locked() {
+    let key = LogKey {
+        ts_ms: 0x0102_0304_0506_0708,
+        seq: 0x1112_1314_1516_1718,
+    };
+    let hex: String = key
+        .encode()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join("");
+    assert_eq!(hex, "01020304050607081112131415161718");
+}
+
+/// One row carries the fixed fields and the variable part together, and the
+/// store keeps what it was handed (no parsing, no policing).
+#[test]
+fn a_row_round_trips_with_its_dynamic_fields() {
+    let dir = tempdir();
+    let mut store = LogStore::open(dir.path()).expect("open");
+    let key = store.append(
+        1_700_000_000_000,
+        level::WARN,
+        event::COMPRESSION_VERDICT,
+        fields(&[
+            (field::CHANNEL, DynamicValue::UInt(7)),
+            (field::TRIGGER, DynamicValue::Str("cache_clock".into())),
+            (field::IDLE_MS, DynamicValue::UInt(301_000)),
+        ]),
+    );
+
+    let doc = store.get(&key).expect("row present");
+    assert_eq!(
+        doc.get("level"),
+        Some(&DynamicValue::UInt(level::WARN as u64))
+    );
+    assert_eq!(
+        doc.get("event"),
+        Some(&DynamicValue::Str(event::COMPRESSION_VERDICT.into()))
+    );
+    assert_eq!(doc.get(field::CHANNEL), Some(&DynamicValue::UInt(7)));
+    assert_eq!(
+        doc.get(field::TRIGGER),
+        Some(&DynamicValue::Str("cache_clock".into()))
+    );
+    assert_eq!(doc.get(field::IDLE_MS), Some(&DynamicValue::UInt(301_000)));
+}
+
+/// A bare event line needs no dynamic segment at all: `fields` empty is legal,
+/// and the declared pair still round-trips.
+#[test]
+fn a_row_without_dynamic_fields_is_an_event_line() {
+    let dir = tempdir();
+    let mut store = LogStore::open(dir.path()).expect("open");
+    let key = store.append(42, level::ERROR, event::ENGINE_ERROR, BTreeMap::new());
+    let doc = store.get(&key).expect("row present");
+    assert_eq!(doc.get(field::CHANNEL), None);
+    assert_eq!(
+        doc.get("event"),
+        Some(&DynamicValue::Str(event::ENGINE_ERROR.into()))
+    );
+}
+
+/// Rows come back in TIME order, and same-millisecond appends keep their own
+/// order through `seq` — that is the whole reason the key has two segments.
+#[test]
+fn rows_read_in_time_order_and_same_millisecond_rows_keep_their_order() {
+    let dir = tempdir();
+    let mut store = LogStore::open(dir.path()).expect("open");
+    store.append(2, level::INFO, "second_ts", BTreeMap::new());
+    store.append(1, level::INFO, "first_ts", BTreeMap::new());
+    store.append(1, level::INFO, "first_ts_again", BTreeMap::new());
+
+    let events: Vec<String> = store
+        .entries()
+        .into_iter()
+        .filter_map(|(_, doc)| match doc.get("event") {
+            Some(DynamicValue::Str(s)) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(events, vec!["first_ts", "first_ts_again", "second_ts"]);
+}
+
+/// `seq` is seeded from the last stored key, so a reopened store continues past
+/// it instead of overwriting a row written in the same millisecond.
+#[test]
+fn seq_survives_a_reopen() {
+    let dir = tempdir();
+    let first = {
+        let mut store = LogStore::open(dir.path()).expect("open");
+        store.append(5, level::INFO, "before", BTreeMap::new())
+    };
+    assert_eq!(first.seq, 0);
+
+    let mut store = LogStore::open(dir.path()).expect("reopen");
+    let second = store.append(5, level::INFO, "after", BTreeMap::new());
+    assert_eq!(second.ts_ms, 5, "same millisecond on purpose");
+    assert_eq!(second.seq, 1, "the counter continued past the stored key");
+    assert_eq!(store.len(), 2, "both rows survive");
+}
+
+/// The ceiling is the table's whole lifecycle contract: past it, the OLDEST
+/// rows go, and the newest stay.
+#[test]
+fn the_ceiling_drops_the_oldest_rows() {
+    let dir = tempdir();
+    let mut store = LogStore::open(dir.path()).expect("open").with_max_rows(3);
+    for i in 0..5u64 {
+        store.append(i, level::INFO, &format!("e{i}"), BTreeMap::new());
+    }
+    assert_eq!(store.len(), 3);
+    let events: Vec<String> = store
+        .entries()
+        .into_iter()
+        .filter_map(|(_, doc)| match doc.get("event") {
+            Some(DynamicValue::Str(s)) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(events, vec!["e2", "e3", "e4"], "oldest two are gone");
+}
+
+/// The shipped config's ceiling and the built-in default must not drift — the
+/// same rule the compression numbers follow.
+#[test]
+fn the_default_ceiling_is_the_one_the_config_ships() {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/krystallizer.kdl");
+    let cfg = mem_core::KrystallizerConfig::load(&path).expect("repo config decodes");
+    assert_eq!(cfg.logs.max_rows, DEFAULT_MAX_ROWS);
+}

@@ -21,6 +21,26 @@ pub struct KrystallizerConfig {
     /// (ADR-0008 §4: every threshold is a parameter, never a constant).
     #[knus(child)]
     pub compression: CompressionConfig,
+    /// `logs { ... }` — the structured log's ceiling (ADR-0011 §5: the
+    /// table is disposable diagnostics, so it is bounded).
+    #[knus(child)]
+    pub logs: LogsConfig,
+}
+
+/// The structured log's ceiling (ADR-0011 §5). Every append past it deletes
+/// the oldest rows, so the table never becomes a second storage problem.
+///
+/// ```kdl
+/// logs {
+///     max-rows 10000
+/// }
+/// ```
+#[derive(Decode, Debug, Clone)]
+pub struct LogsConfig {
+    /// Rows kept. Must equal [`crate::log::DEFAULT_MAX_ROWS`] in the shipped
+    /// file — the same no-drift rule the compression numbers follow.
+    #[knus(child, unwrap(argument))]
+    pub max_rows: usize,
 }
 
 /// The compression policy engine's numbers (ADR-0008 §4). Tuning is
@@ -185,6 +205,9 @@ compression {
     budget-percent 50
     cache-ttl-ms 300000
     floor-bytes 2048
+}
+logs {
+    max-rows 10000
 }
 "#;
 

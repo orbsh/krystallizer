@@ -32,3 +32,14 @@ compression {
     cache-ttl-ms 300000
     floor-bytes 2048
 }
+
+// === logs ===
+// The structured log's ceiling (ADR-0011). One table (ns 41) holds the
+// diagnostics that are neither knowledge nor conversation — compression
+// verdicts with their signal values, index rebuilds, engine errors — so it
+// is written by k10r itself and has no door. It is DISPOSABLE: every append
+// past max-rows deletes the oldest rows, and the delete is never logged
+// (trimming would emit rows that trigger trimming).
+logs {
+    max-rows 10000
+}

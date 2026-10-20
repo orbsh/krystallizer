@@ -81,8 +81,13 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     (a) the checkpoint is the CHANNEL's pointer — key `[channel][ts][sub]`, the
     key IS the pointer at one log record, so the increment reads rows strictly
     after it in `(ts, sub)` order and same-millisecond messages are not
-    swallowed by a millisecond-granular cut; no member segment anywhere (one
+    swallowed by a millisecond-granular cut; no member segment in ANY TABLE (one
     channel, one voice; an agent's boundary moves with its long-term memory).
+    The DOORS keep `{m}`: the read is an act by that member (its cursor is
+    stamped, its projection is the answer), so `GET
+    /channels/{c}/members/{m}/session` and `POST …/members/{m}/checkpoint` stay
+    as they are — and gravity's `MemorySurface`, prism's dial face and the
+    booth's turn guest are NOT touched by this landing.
     (b) The compression state lives in the CHECKPOINT TABLE ALONE: rows
     accumulate (duplicates are idempotent, an earlier pointer's late summary is
     free history), an EMPTY summary is the "compressing" marker the engine
@@ -97,10 +102,11 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     pair, SEAM pair); the CODE still carries `DEFAULT_MEMBER`, the ts-only
     coverage point and a standalone decision-log table. Touches `channel.rs`
     (three keys, the increment filter, `open`/`complete` checkpoint writes),
-    `mem-server` (door paths lose `{m}`, the DTOs lose the member field, the
-    checkpoint door fills the open row), `view::assemble` + `view.rs`'s
-    placeholder constants (the head becomes the row's snapshot), and gravity's
-    `MemorySurface` plus its prism/booth callers.
+    `mem-server` (the checkpoint door fills the open row; the session DTO KEEPS
+    `coverage_ts` and ADDS `coverage_sub` + the persona snapshot, so gravity's
+    decode stays valid), `view::assemble` + `view.rs`'s placeholder constants
+    (the head becomes the row's snapshot). No cross-repo edit: with the door
+    paths intact, gravity / prism / booth see no change.
 - [ ] Phase 2.7 — Multi-party participation: member display-name/role
   fields + per-message attribution in serialization; profile knowledge as
   graph facts (a member node plus its edges — the `kind=profile` flat category
@@ -142,9 +148,21 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   keyed `[ts_ms][seq]` (k10r's own clock; `seq` seeded from the last key at
   open), declared `level` + `event` from vocabulary constants and NO faces yet,
   locator (`channel` / `scope` / `entity` / `edge` / `msg`) + payload in the
-  dynamic segment, `logs { max-rows }` trimming oldest-first in the SAME batch,
-  trimming never logged, no HTTP door. First writer: the compression verdict
-  with its parameter/signal snapshot.
+  dynamic segment, `logs { max-rows }` trimming oldest-first, trimming never
+  logged, no HTTP door. First writer: the compression verdict with its
+  parameter/signal snapshot.
+  - [x] 2.9a. The TABLE LANDED 2026-10-20: `crates/mem-core/src/log.rs`
+    (`LogKey`/`LogRow`, ns 41, in the CHANNEL keyspace) with `LogStore::open` /
+    `wrap` / `append` / `get` / `entries`, the `level` / `event` / `field`
+    vocabularies, and the ceiling (`logs { max-rows }` in the kdl file, default
+    10_000, drift test) trimming the smallest key on every append that crosses
+    it. The trim index is kept in KEY order, not arrival order — a clock step
+    backwards must not make "oldest" mean "written first". Gates: mem-core 79/0
+    (log 7 — hex lock, dynamic round trip, a bare event line, key-order reads
+    incl. same-millisecond, `seq` across a reopen, the ceiling, the config
+    drift), mem-server 25/0, clippy 0.
+  - [ ] 2.9b. The first WRITER (the compression verdict's row) and a windowed
+    read; both wait on 2.6d, which reshapes the verdict's pointer.
 - [ ] Phase 3 — Atomic-fact graph: fact node/edge tables, ingestion of the 8-slot fact tuple (the facts arrive by the model's ACTIVE add — the caller routes that call to `ingest(fact)`; no compression pass and no trailing extraction worker, ADR-0008, write-time fusion (in-domain id / out-of-domain embedding convergence + small-candidate LLM decision — the LLM decision is gravity's, per ADR-0007's boundary), weight system (the counters on the edge row, read-write quadrants, tool_invoke_count); initialization memory (人设/风格) — a traversal from the user node, delivered at the context head; the task graph (task vertices + `task_links` dependency edges) shares that same graph — tasks are the third interface surface, their instance state structured rather than approximate. Write-time resolution (upsert on a new fact) and cognitive binning ride this side per ADR-0010 (fact node / community reverse index / the community sequence; ns 36/37 for the graph, 38 for the sequence). Scope note: append-first covers THIS side (node/edge rows, weights, derived entries) — the log does not (ADR-0002. Flat memory (ns 32) and its HTTP door are withdrawn in this landing: the graph is its successor (ADR-0001's carrier line, "flat memory, then the graph") — flat was the pre-graph form of the same extracted knowledge, and a text row carries no per-fact identity. What is owed with it: the fate of legacy flat rows (ADR-0002's PG migration imports them as-is) is a migration question, not a schema one. (ADR-0001, ADR-0002, ADR-0004, ADR-0005, ADR-0007, ADR-0010)
   - [x] 3a. The write side's steps 1–2 LANDED (2026-10-17): the entities
     collection (ns 36) + the facts edge collection (ns 37) and the
