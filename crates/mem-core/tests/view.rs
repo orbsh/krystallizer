@@ -102,14 +102,14 @@ fn head_is_both_directions_deduplicated() {
 fn increment_starts_after_the_compression_point() {
     let (_d, mut stores) = open();
     let channel = 7u64;
-    let member = 1u64;
+    let _member = 1u64;
     stores.channels.append(channel, 1000, 0, role::USER, kind::TEXT, "hi");
     stores
         .channels
         .append(channel, 1001, 0, role::ASSISTANT, kind::TEXT, "hello");
     stores
         .channels
-        .append_checkpoint(channel, member, 1000, 0, "greeting done", &[]);
+        .append_checkpoint(channel, (1000, 0), "greeting done", &[]);
 
     let p = projection(&mut stores);
     assert_eq!(p.view.coverage_ts, 1000);
@@ -163,11 +163,13 @@ fn the_head_is_frozen_at_the_compression() {
         idle_ms: Some(1_000),
         max_gap_ms: Some(700),
     };
-    stores.channels.note_verdict(7, 1, &verdict, &head_ids);
     stores
         .channels
-        .append_checkpoint_from_verdict(7, 1, "the summary")
-        .expect("the proposal is open");
+        .open_checkpoint(7, (verdict.checkpoint_ts, verdict.checkpoint_sub), &head_ids);
+    stores
+        .channels
+        .complete_checkpoint(7, "the summary")
+        .expect("the node is open");
 
     // The graph gains a preference AFTER the compression: a live traversal
     // would now include it, the frozen head must not.

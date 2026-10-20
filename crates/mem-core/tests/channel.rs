@@ -99,7 +99,7 @@ fn checkpoint_coverage_splits_the_projection() {
     store.append(CH, 20, 0, role::ASSISTANT, 0, "m2");
     store.append(CH, 30, 0, role::USER, 0, "m3");
 
-    store.append_checkpoint(CH, DEFAULT_MEMBER, 20, 0, "m1 and m2 were about testing", &[]);
+    store.append_checkpoint(CH, (20, 0), "m1 and m2 were about testing", &[]);
     let view = store.fetch_full(CH, DEFAULT_MEMBER);
     assert_eq!(view.coverage_ts, 20);
     assert_eq!(view.coverage_sub, 0);
@@ -120,7 +120,7 @@ fn checkpoint_coverage_splits_the_projection() {
 
     // Advancing coverage overwrites the same checkpoint row (and the
     // summary): m3 becomes covered too, increment drains.
-    store.append_checkpoint(CH, DEFAULT_MEMBER, 30, 0, "everything so far", &[]);
+    store.append_checkpoint(CH, (30, 0), "everything so far", &[]);
     let view = store.fetch_full(CH, DEFAULT_MEMBER);
     assert_eq!(view.coverage_ts, 30);
     assert!(view.increment.is_empty());
@@ -140,7 +140,7 @@ fn a_same_millisecond_record_after_the_pointer_stays_in_the_increment() {
     store.append(CH, 1500, 0, role::ASSISTANT, 0, "later");
 
     // Coverage lands ON (1000, 0) — the split record itself.
-    store.append_checkpoint(CH, DEFAULT_MEMBER, 1000, 0, "up to the split", &[]);
+    store.append_checkpoint(CH, (1000, 0), "up to the split", &[]);
     let view = store.fetch_full(CH, DEFAULT_MEMBER);
     let texts: Vec<&str> = view
         .increment
@@ -154,7 +154,7 @@ fn a_same_millisecond_record_after_the_pointer_stays_in_the_increment() {
     );
 
     // Advancing to (1000, 1) covers that one too, and nothing else.
-    store.append_checkpoint(CH, DEFAULT_MEMBER, 1000, 1, "now the burst is in", &[]);
+    store.append_checkpoint(CH, (1000, 1), "now the burst is in", &[]);
     let view = store.fetch_full(CH, DEFAULT_MEMBER);
     assert_eq!(view.coverage_sub, 1);
     let texts: Vec<&str> = view
@@ -173,7 +173,7 @@ fn channels_are_isolated() {
     let (_d, mut store) = open();
     store.append(1, 100, 0, role::USER, 0, "ch1");
     store.append(2, 100, 0, role::USER, 0, "ch2");
-    store.append_checkpoint(1, DEFAULT_MEMBER, 100, 0, "ch1 summary", &[]);
+    store.append_checkpoint(1, (100, 0), "ch1 summary", &[]);
 
     let v2 = store.fetch_full(2, DEFAULT_MEMBER);
     assert_eq!(v2.coverage_ts, 0, "ch2 has no checkpoint");
@@ -224,129 +224,95 @@ fn the_read_cursor_stamps_advances_and_never_rewinds() {
     );
 }
 
-fn verdict(checkpoint_ts: u64, checkpoint_sub: u16) -> mem_core::compress::Verdict {
-    mem_core::compress::Verdict {
-        checkpoint_ts,
-        checkpoint_sub,
-        trigger: mem_core::compress::Trigger::Budget,
-        assembled_bytes: 60_000,
-        context_bytes: 131_072,
-        budget_percent: 50,
-        cache_ttl_ms: 300_000,
-        idle_ms: Some(1_000),
-        max_gap_ms: Some(700),
-    }
-}
-
-/// The compression contract (ADR-0008 §4): k10r serves the verdict,
-/// remembers the span, and DERIVES the coverage point when the summary
-/// comes back — the caller never states one. The decision closes in the
-/// same batch as the checkpoint.
+/// A compression OPENS a node at the pointer k10r served and COMPLETES it with
+/// the summary (ADR-0008 §2/§4). The key is the pointer, so nothing is
+/// overwritten: the previous node stays readable while this one is in flight.
 #[test]
-fn a_summary_lands_on_the_derived_coverage_point() {
+fn a_compression_opens_a_node_and_completes_it() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
     for (ts, text) in [(100, "m1"), (200, "m2"), (900, "m3")] {
         store.append(CH, ts, 0, role::USER, 0, text);
     }
 
-    store.note_verdict(CH, DEFAULT_MEMBER, &verdict(200, 0), &[]);
-    let (key, row) = store
-        .pending_verdict(CH, DEFAULT_MEMBER)
-        .expect("the verdict is pending");
-    assert_eq!(key.checkpoint_ts, 200);
+    store.open_checkpoint(CH, (200, 0), &[7, 8]);
+    let open = store.fetch_full(CH, DEFAULT_MEMBER);
     assert_eq!(
-        row.checkpoint_sub, 0,
-        "the pointer's second segment rides the row"
+        open.coverage_ts, 0,
+        "an open node is not a coverage point yet"
     );
-    assert_eq!(row.state, mem_core::decision_state::PENDING);
-    assert_eq!(row.trigger, mem_core::compress::Trigger::Budget.code());
-    assert_eq!(row.max_gap_ms, 700, "the gap the split was chosen on");
-
-    let coverage = store
-        .append_checkpoint_from_verdict(CH, DEFAULT_MEMBER, "m1 and m2")
-        .expect("a pending verdict exists");
-    assert_eq!(
-        coverage, 200,
-        "the span's last record, not a caller's number"
-    );
-
-    let view = store.fetch_full(CH, DEFAULT_MEMBER);
-    assert_eq!(view.coverage_ts, 200);
-    assert_eq!(view.summary.as_deref(), Some("m1 and m2"));
-    assert_eq!(view.increment.len(), 1, "m3 is after the coverage point");
+    assert_eq!(open.summary, None);
     assert!(
-        store.pending_verdict(CH, DEFAULT_MEMBER).is_none(),
-        "the decision closed with the summary"
+        open.compressing,
+        "the read reports the compression in flight"
     );
-}
+    assert_eq!(open.increment.len(), 3, "the whole log is still raw");
 
-/// The pointer's `sub` survives the derivation: a split inside a
-/// same-millisecond burst lands coverage on the right record.
-#[test]
-fn the_derived_coverage_point_carries_the_split_sub() {
-    let (_d, mut store) = open();
-    const CH: u64 = 1;
-    store.append(CH, 100, 0, role::USER, 0, "before");
-    store.append(CH, 200, 0, role::TOOL, 0, "call");
-    store.append(CH, 200, 1, role::TOOL, 2, "result");
-
-    store.note_verdict(CH, DEFAULT_MEMBER, &verdict(200, 1), &[]);
-    store
-        .append_checkpoint_from_verdict(CH, DEFAULT_MEMBER, "up to the result")
-        .expect("a pending verdict exists");
-
+    assert_eq!(store.complete_checkpoint(CH, "m1 and m2"), Some((200, 0)));
     let view = store.fetch_full(CH, DEFAULT_MEMBER);
-    assert_eq!(
-        (view.coverage_ts, view.coverage_sub),
-        (200, 1),
-        "coverage is the split's record, not its millisecond"
-    );
+    assert_eq!((view.coverage_ts, view.coverage_sub), (200, 0));
+    assert_eq!(view.summary.as_deref(), Some("m1 and m2"));
+    assert!(!view.compressing);
+    assert_eq!(view.head, Some(vec![7, 8]), "the frozen head rode the node");
+    assert_eq!(view.increment.len(), 1, "m3 alone is after the pointer");
 }
 
-/// No verdict, no derivation: a summary with nothing pending has no
-/// coverage point to land on, so the store refuses rather than inventing
-/// one (the door turns this into a 400).
+/// Nodes accumulate and the read takes the NEWEST COMPLETE one: opening above
+/// it never disturbs the summary the caller is still reading, and completing
+/// moves the read up one node.
 #[test]
-fn a_summary_without_a_verdict_is_refused() {
+fn nodes_accumulate_and_the_read_follows_the_newest_complete_one() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
     store.append(CH, 100, 0, role::USER, 0, "m1");
+    store.append(CH, 200, 0, role::USER, 0, "m2");
+    store.append(CH, 900, 0, role::USER, 0, "m3");
+
+    store.append_checkpoint(CH, (200, 0), "first summary", &[1]);
+    store.open_checkpoint(CH, (900, 0), &[2]);
+
+    let v = store.fetch_full(CH, DEFAULT_MEMBER);
+    assert_eq!(v.coverage_ts, 200, "the open node does not move the read");
+    assert_eq!(v.summary.as_deref(), Some("first summary"));
+    assert!(v.compressing);
+    assert_eq!(v.increment.len(), 1, "m3 is still raw");
 
     assert_eq!(
-        store.append_checkpoint_from_verdict(CH, DEFAULT_MEMBER, "orphan"),
-        None
+        store.complete_checkpoint(CH, "second summary"),
+        Some((900, 0))
     );
-    let view = store.fetch_full(CH, DEFAULT_MEMBER);
-    assert_eq!(view.coverage_ts, 0, "no checkpoint was written");
-    assert!(view.summary.is_none());
+    let v = store.fetch_full(CH, DEFAULT_MEMBER);
+    assert_eq!(v.coverage_ts, 900);
+    assert_eq!(v.summary.as_deref(), Some("second summary"));
+    assert_eq!(v.head, Some(vec![2]), "the new node carries its own head");
+    assert!(v.increment.is_empty());
+    assert!(!v.compressing);
 }
 
-/// Re-reading an unchanged projection proposes the same split, so the
-/// proposal table does not grow per read — and when two splits are open,
-/// the summary lands on the NEWEST proposal.
+/// Re-opening the same pointer is the same node (idempotent by key), so a
+/// repeated read at an unchanged split does not grow the layer.
 #[test]
-fn repeated_reads_refresh_one_row_and_the_newest_split_wins() {
+fn re_opening_the_same_pointer_is_the_same_node() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
+    store.append(CH, 100, 0, role::USER, 0, "m1");
+    store.open_checkpoint(CH, (100, 0), &[5]);
+    store.open_checkpoint(CH, (100, 0), &[5]);
+    assert_eq!(store.complete_checkpoint(CH, "once"), Some((100, 0)));
+    let v = store.fetch_full(CH, DEFAULT_MEMBER);
+    assert_eq!(v.summary.as_deref(), Some("once"));
+    assert!(!v.compressing, "one node, completed once");
+}
 
-    store.note_verdict(CH, DEFAULT_MEMBER, &verdict(200, 0), &[]);
-    store.note_verdict(CH, DEFAULT_MEMBER, &verdict(200, 0), &[]);
-    assert_eq!(
-        store.pending_verdict(CH, DEFAULT_MEMBER).map(|(k, _)| k),
-        Some(mem_core::DecisionKey {
-            channel_id: CH,
-            member_id: DEFAULT_MEMBER,
-            checkpoint_ts: 200,
-        })
-    );
-
-    store.note_verdict(CH, DEFAULT_MEMBER, &verdict(500, 0), &[]);
-    let (key, _) = store.pending_verdict(CH, DEFAULT_MEMBER).unwrap();
-    assert_eq!(key.checkpoint_ts, 500, "the newest proposal is pending");
-
-    assert_eq!(
-        store.append_checkpoint_from_verdict(CH, DEFAULT_MEMBER, "s"),
-        Some(500)
-    );
+/// A summary with nothing open has no position to land on: the store refuses
+/// rather than inventing a pointer (the door turns this into a 400).
+#[test]
+fn a_summary_without_an_open_node_is_refused() {
+    let (_d, mut store) = open();
+    const CH: u64 = 1;
+    store.append(CH, 100, 0, role::USER, 0, "m1");
+    assert_eq!(store.complete_checkpoint(CH, "orphan"), None);
+    let view = store.fetch_full(CH, DEFAULT_MEMBER);
+    assert_eq!(view.coverage_ts, 0);
+    assert!(view.summary.is_none());
 }

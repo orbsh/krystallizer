@@ -238,8 +238,9 @@ async fn member_checkpoints_are_independent() {
         .unwrap();
     assert_eq!(s1["coverage_ts"], 10);
 
-    // Member 2's projection is untouched by member 1's checkpoint — and so
-    // is member 2's decision log: no verdict was served to it.
+    // The checkpoint is the CHANNEL's (ADR-0008 §2: one voice per channel),
+    // so member 2 sees the same coverage and summary — what stays per member is
+    // the read cursor, not the compression.
     let s2: serde_json::Value = client
         .get(format!("{base}/channels/9/members/2/session"))
         .send()
@@ -248,8 +249,9 @@ async fn member_checkpoints_are_independent() {
         .json()
         .await
         .unwrap();
-    assert_eq!(s2["coverage_ts"], 0);
-    assert_eq!(s2["increment"].as_array().unwrap().len(), 1);
+    assert_eq!(s2["coverage_ts"], 10, "the node belongs to the channel");
+    assert_eq!(s2["summary"], "m1");
+    assert_eq!(s2["increment"].as_array().unwrap().len(), 0);
 }
 
 /// Phase 2.5 over the wire: the projection carries the HEAD block (the

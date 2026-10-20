@@ -109,15 +109,20 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     and the door paths stay untouched. Gates: mem-core 80/0 (two new channel
     tests: a same-millisecond record after the pointer stays raw, and the
     derived coverage carries the split's `sub`), mem-server 25/0, clippy 0.
-  - [ ] 2.6d-ii. The SHAPE: checkpoint key `[channel][ts][sub]` (rows
-    accumulate, no member segment), `open_checkpoint` / `complete_checkpoint`
-    replacing note_verdict/pending_verdict/append_checkpoint_from_verdict, the
-    decision-log table (ns 40) withdrawn, the cursor `(ts, sub)` and
-    multi-party-only. The persona snapshot is RULED (b): the row holds the FACT
-    SET (edge ids, a dynamic-segment array), re-rendered per request — landed
-    with 2.6d-i's head path (`note_verdict` freezes it, `view::assemble` prefers
-    it over the live traversal). Gates: mem-core 81/0 (the new
-    `the_head_is_frozen_at_the_compression`), mem-server 25/0.
+  - [x] 2.6d-ii. THE SHAPE LANDED 2026-10-20: `CheckpointKey` IS the pointer
+    (`[channel][ts_ms][sub]`), `CheckpointRow` holds only the summary (the head
+    rides the dynamic `head` array), nodes accumulate, and
+    `open_checkpoint(pointer, head)` / `complete_checkpoint(summary)` replace
+    note_verdict / pending_verdict / append_checkpoint_from_verdict. The
+    decision log (ns 40) is WITHDRAWN — the open node carries what it carried
+    (pointer, frozen head, in-flight state) with no second table. The read is
+    one rule: newest node WITH a summary decides summary + head + cut point;
+    an empty-summary node above it only sets `compressing` (now on the session
+    DTO). The read door opens the node, `POST …/checkpoint` completes it. Gates:
+    mem-core 80/0, mem-server 26/0.
+  - [ ] 2.6d-iii. The cursor's second segment: `CursorRow` is still `(ts)`;
+    ADR-0008 §2 makes the read position a pointer too `(ts, sub)`, and only the
+    multi-party shape stores it at all.
     Docs are synced in this pass (ADR-0008 pair, ADR-0001/0009 pairs, MODELING
     pair, SEAM pair); the CODE still carries `DEFAULT_MEMBER` and the standalone
     decision log (the ts-only pointer is already gone — 2.6d-i). Touches

@@ -219,6 +219,11 @@ pub struct SessionDto {
     /// on the wire — a decoder that only knows `coverage_ts` still works.
     pub coverage_sub: u16,
     pub summary: Option<String>,
+    /// A newer node without a summary sits above the coverage point: a
+    /// compression is in flight, and a second pass over the same span would be
+    /// a wasted model call. The answer above is still complete — the read falls
+    /// back to the newest node that HAS a summary.
+    pub compressing: bool,
     pub increment: Vec<IncrementEntry>,
     /// The policy's verdict when one fired (ADR-0008 §4). Absent = the
     /// caller builds its context from the records alone.
@@ -243,6 +248,7 @@ impl SessionDto {
             coverage_ts: p.view.coverage_ts,
             coverage_sub: p.view.coverage_sub,
             summary: p.view.summary,
+            compressing: p.view.compressing,
             increment: p
                 .view
                 .increment
@@ -336,7 +342,7 @@ async fn fetch_session(
     let verdict =
         mem_core::compress::evaluate(&projection.view, assembled, idle_ms, &state.compression);
     if let Some(v) = &verdict {
-        channels.note_verdict(channel_id, member_id, v, &head_ids);
+        channels.open_checkpoint(channel_id, (v.checkpoint_ts, v.checkpoint_sub), &head_ids);
     }
     Ok(Json(SessionDto::new(projection, format, verdict)))
 }
@@ -376,16 +382,16 @@ pub struct AppendCheckpoint {
 /// coverage point here would make k10r guess what it is supposed to own.
 async fn append_checkpoint(
     State(state): State<Arc<MemState>>,
-    Path((channel_id, member_id)): Path<(u64, u64)>,
+    Path((channel_id, _member_id)): Path<(u64, u64)>,
     Json(body): Json<AppendCheckpoint>,
 ) -> Result<StatusCode, FactError> {
     let mut store = state.store.lock().await;
     store
-        .append_checkpoint_from_verdict(channel_id, member_id, &body.summary)
-        .map(|_coverage_ts| StatusCode::NO_CONTENT)
+        .complete_checkpoint(channel_id, &body.summary)
+        .map(|_pointer| StatusCode::NO_CONTENT)
         .ok_or_else(|| FactError {
-            error: "no open compression verdict for this member: the coverage point comes \
-                    from the verdict k10r served, so read the session first"
+            error: "no open compression node for this channel: the pointer comes from the \
+                    verdict k10r served, so read the session first"
                 .into(),
             status: StatusCode::BAD_REQUEST,
         })

@@ -32,8 +32,8 @@ pub const KEYSPACE_CHANNEL: &str = "channel";
 pub const KEYSPACE_MEMORY: &str = "memory";
 
 pub use channel::{
-    decision_state, kind, role, ChannelStore, CheckpointKey, CheckpointRow, CursorKey, CursorRow,
-    DecisionKey, DecisionRow, MessageKey, MessageRow, SessionView, DEFAULT_MEMBER,
+    kind, role, ChannelStore, CheckpointKey, CheckpointRow, CursorKey, CursorRow,
+    MessageKey, MessageRow, SessionView, DEFAULT_MEMBER,
 };
 pub use code::{CodeKey, CodeRow, CodeStore};
 pub use compress::{

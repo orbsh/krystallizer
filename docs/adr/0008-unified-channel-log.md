@@ -113,6 +113,18 @@ projection: [persona snapshot][summary] + [m5][m6][m7]
   `struct` and the text formats each keep their own meaning. The cost is that
   persona updates lag to the next compression — freshness traded for cache
   stability, deliberately.
+- **The checkpoint is itself a log layer, isomorphic to the channel — two layers,
+  and that is the ceiling.** Channel records are layer 0; a checkpoint row is a
+  node in layer 1 whose key `[channel][ts_ms][sub]` IS a pointer into layer 0.
+  **Above it is not a summary of summaries — it is the fact graph**: what should
+  survive repeated compression becomes triples in the graph, which is a different
+  structure, not a third layer of this stack. So a checkpoint row holds both ends
+  at once — the pointer down into the log, the frozen fact ids (`head`) up into
+  the graph — it is the seam between the two pipes. Hence there is no "current
+  row" state cell: the state is always "the newest node", exactly as the channel's
+  state is its last record. Append-only here is not a concession to concurrency —
+  it is what the layering requires: a new node opens ON the pointer, the old one
+  stays put, and no summary is ever destroyed by the next compression.
 - **Rows accumulate; reads take the newest.** A duplicate compression (the
   same span compressed twice) writes its own row pointing at the same node —
   idempotent by construction, the price being one wasted model call, which is
