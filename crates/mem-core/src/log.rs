@@ -120,6 +120,7 @@ pub struct LogKey {
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(LogKey)]
 #[ok_ns(41)]
+#[ok_name("log")]
 // `seq` is a watermark (ADR-0023/0025, PLAN 2.9d), not a count of the rows
 // present: the trim deletes from the front, and a counter derived from "the last
 // key" would reuse a number after the whole table had been trimmed. The fold is
@@ -335,16 +336,32 @@ impl LogStore {
             .collect()
     }
 
-    /// The whole table as Parquet (ADR-0007's backup boundary). The log is the
-    /// table where "bounded and trimmed" is normal, so exporting it is also the
-    /// only way to keep what the trim drops. `None` = this store holds no table
-    /// at that ns.
-    pub fn export_parquet(
-        &self,
-        ns: u16,
-        path: &std::path::Path,
-    ) -> Option<Result<(), String>> {
-        (ns == crate::export::ns(LogRow::NS_PREFIX)).then(|| crate::export::table(&self.table, path))
+    /// This store's table, `(name, ns)` — the name from the row declaration.
+    pub fn tables(&self) -> Vec<(&'static str, u16)> {
+        vec![(
+            <LogRow as Document>::TABLE_NAME,
+            crate::export::ns(LogRow::NS_PREFIX),
+        )]
+    }
+
+    /// Export the table by NAME as Parquet (ADR-0007's backup boundary) — the
+    /// table where "bounded and trimmed" is normal, so the export is also the only
+    /// long-term record of what the trim drops. `None` = not this store's table.
+    pub fn export(&mut self, name: &str, path: &std::path::Path) -> Option<Result<(), String>> {
+        (name == <LogRow as Document>::TABLE_NAME)
+            .then(|| crate::export::table(&mut self.table, path))
+    }
+
+    /// The `seq` watermark as the derived reduce table (ADR-0034 §5): the trim
+    /// deletes from the front, so a restored log whose watermark is missing would
+    /// reissue numbers the table already holds.
+    pub fn export_reduces(&self, path: &std::path::Path) -> Result<(), String> {
+        crate::export::reduces::<__OkmReduce_LogRow_0>(
+            self.table.store(),
+            crate::export::ns(LogRow::NS_PREFIX),
+            <LogRow as Document>::TABLE_NAME,
+            path,
+        )
     }
 
     /// Drop the oldest rows until the ceiling holds. Not logged, by design.

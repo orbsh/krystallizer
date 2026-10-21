@@ -109,7 +109,8 @@ pub fn open_with_compression(
             post(append_checkpoint),
         )
         .route("/code", post(put_code))
-        .route("/export/{ns}", get(export_table))
+        .route("/export", get(export))
+        .route("/export/{table}", get(export))
         .route("/code/{code_id}", get(fetch_code))
         .route("/memories/{scope}", post(ingest_fact))
         .route("/graph/{scope}/search", get(search_facts))
@@ -584,26 +585,21 @@ async fn put_code(
     })
 }
 
-/// `GET /export/{ns}` — one table as a Parquet file (ADR-0007's backup
-/// boundary: a bulk read over the same HTTP door, no admin CLI and no second
-/// storage format). The columns are okm's eager bridge reading the row
-/// DECLARATION, so the schema cannot drift from the rows.
+/// `GET /export` — the catalog: one row per table, `(table, ns)`.
 ///
-/// An ns this service does not hold is a 404. The FACT table is a 501: an edge
-/// is a `GraphEncode` entry (`EdgeKey` + `EdgeBody` frames), which the bridge
-/// cannot turn into columns — that export needs a surface on okm's `Graph`, and
-/// inventing a k10r-side format beside the backup would be the wrong answer.
-async fn export_table(
+/// `GET /export/{table}` — one table as a Parquet file (ADR-0007's backup
+/// boundary, ADR-0034's shape): a bulk read over the same HTTP door, no admin CLI
+/// and no second storage format.
+///
+/// The door is addressed by TABLE NAME, not by ns: a number means nothing outside
+/// the store. Names come from the row declarations, so the catalog and the door
+/// cannot drift from the tables they name. An unknown name is a 404; an empty
+/// table is a 200 with a valid, empty file ("this table is empty" is information
+/// a backup carries).
+async fn export(
     State(state): State<Arc<MemState>>,
-    Path(ns): Path<u16>,
+    table: Option<Path<String>>,
 ) -> axum::response::Response {
-    if ns == mem_core::graph::FACT_NS {
-        return (
-            StatusCode::NOT_IMPLEMENTED,
-            "facts are graph-encoded entries: exporting them needs an export surface on okm's Graph (the node table at ns 36 exports)",
-        )
-            .into_response();
-    }
     let dir = match tempfile::tempdir() {
         Ok(dir) => dir,
         Err(e) => {
@@ -614,22 +610,57 @@ async fn export_table(
                 .into_response()
         }
     };
-    let path = dir.path().join(format!("ns{ns}.parquet"));
-    let outcome = if let Some(out) = state.store.lock().await.export_parquet(ns, &path) {
-        out
-    } else if let Some(out) = state.log.lock().await.export_parquet(ns, &path) {
-        out
-    } else if let Some(out) = state.code.lock().await.export_parquet(ns, &path) {
-        out
-    } else if let Some(out) = state.graph.lock().await.export_parquet(ns, &path) {
-        out
-    } else {
-        return (StatusCode::NOT_FOUND, format!("no table at ns {ns}")).into_response();
+    let (file, outcome) = match table.as_ref().map(|Path(name)| name.as_str()) {
+        // No table named: the catalog itself.
+        None => {
+            let file = dir.path().join("catalog.parquet");
+            let outcome = mem_core::export::catalog(&file);
+            (file, outcome)
+        }
+        Some(name) => {
+            let file = dir.path().join(format!("{name}.parquet"));
+            // Each attempt is its OWN statement: a guard taken in one is dropped
+            // before the next, so a table that falls through every store cannot
+            // re-take a lock it is still holding (that is a self-deadlock, not a
+            // lookup miss).
+            let mut found: Option<Result<(), String>> = None;
+            if found.is_none() {
+                found = state.store.lock().await.export(name, &file);
+            }
+            if found.is_none() {
+                found = state.code.lock().await.export(name, &file);
+            }
+            if found.is_none() {
+                found = state.log.lock().await.export(name, &file);
+            }
+            if found.is_none() {
+                found = state.graph.lock().await.export(name, &file);
+            }
+            if found.is_none() && name == mem_core::export::LOG_REDUCES {
+                found = Some(state.log.lock().await.export_reduces(&file));
+            }
+            if found.is_none() && name == mem_core::export::CODE_REDUCES {
+                found = Some(state.code.lock().await.export_reduces(&file));
+            }
+            let Some(outcome) = found else {
+                return (
+                    StatusCode::NOT_FOUND,
+                    format!("no table named {name} (see GET /export for the catalog)"),
+                )
+                    .into_response();
+            };
+            (file, outcome)
+        }
     };
     if let Err(e) = outcome {
         return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
     }
-    match std::fs::read(&path) {
+    let filename = file
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("export.parquet")
+        .to_string();
+    match std::fs::read(&file) {
         Ok(bytes) => (
             [
                 (
@@ -638,7 +669,7 @@ async fn export_table(
                 ),
                 (
                     axum::http::header::CONTENT_DISPOSITION,
-                    format!("attachment; filename=\"ns{ns}.parquet\""),
+                    format!("attachment; filename=\"{filename}\""),
                 ),
             ],
             bytes,

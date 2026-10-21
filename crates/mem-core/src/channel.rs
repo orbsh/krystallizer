@@ -44,6 +44,7 @@ pub struct MessageKey {
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(MessageKey)]
 #[ok_ns(33)]
+#[ok_name("messages")]
 pub struct MessageRow {
     /// Who said it: a member id (ns 42). ALWAYS set — a single-user channel
     /// still has its user, seeded as member 1 (ADR-0009 §1).
@@ -80,6 +81,7 @@ pub struct CheckpointKey {
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(CheckpointKey)]
 #[ok_ns(34)]
+#[ok_name("checkpoints")]
 pub struct CheckpointRow {
     /// Empty = the compression is in flight (a second pass treats the span as
     /// taken); otherwise the summary of everything up to this pointer.
@@ -103,6 +105,7 @@ pub struct CursorKey {
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(CursorKey)]
 #[ok_ns(39)]
+#[ok_name("cursors")]
 pub struct CursorRow {
     /// The CALLER's clock at the read that stamped this row (ADR-0008 §3).
     ///
@@ -128,6 +131,7 @@ pub struct MemberKey {
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(MemberKey)]
 #[ok_ns(42)]
+#[ok_name("members")]
 pub struct MemberRow {
     /// What the model sees in the attribution bracket. Changing it rewrites
     /// nothing in the log: the log stays raw (ADR-0009 §1).
@@ -231,27 +235,47 @@ impl ChannelStore {
         }
     }
 
-    /// Export one of this group's tables as Parquet (ADR-0007's backup
-    /// boundary). ns-keyed because that is how the tables are addressed
-    /// everywhere else: 33 messages, 34 checkpoints, 39 cursors, 42 members.
-    /// An ns this group does not hold is `None` — the caller's 404, not this
-    /// store's judgement.
-    pub fn export_parquet(&self, ns: u16, path: &std::path::Path) -> Option<Result<(), String>> {
-        Some(match ns {
-            n if n == crate::export::ns(MessageRow::NS_PREFIX) => {
-                crate::export::table(&self.messages, path)
-            }
-            n if n == crate::export::ns(CheckpointRow::NS_PREFIX) => {
-                crate::export::table(&self.checkpoints, path)
-            }
-            n if n == crate::export::ns(CursorRow::NS_PREFIX) => {
-                crate::export::table(&self.cursors, path)
-            }
-            n if n == crate::export::ns(MemberRow::NS_PREFIX) => {
-                crate::export::table(&self.members, path)
-            }
-            _ => return None,
-        })
+    /// This group's tables, `(name, ns)` — each name from the row that declares
+    /// it, so the catalog cannot drift from the tables it names.
+    pub fn tables(&self) -> Vec<(&'static str, u16)> {
+        vec![
+            (
+                <MessageRow as Document>::TABLE_NAME,
+                crate::export::ns(MessageRow::NS_PREFIX),
+            ),
+            (
+                <CheckpointRow as Document>::TABLE_NAME,
+                crate::export::ns(CheckpointRow::NS_PREFIX),
+            ),
+            (
+                <CursorRow as Document>::TABLE_NAME,
+                crate::export::ns(CursorRow::NS_PREFIX),
+            ),
+            (
+                <MemberRow as Document>::TABLE_NAME,
+                crate::export::ns(MemberRow::NS_PREFIX),
+            ),
+        ]
+    }
+
+    /// Export one table by NAME as Parquet (ADR-0007's backup boundary).
+    /// `None` = this group holds no such table (the caller's 404).
+    pub fn export(
+        &mut self,
+        name: &str,
+        path: &std::path::Path,
+    ) -> Option<Result<(), String>> {
+        if name == <MessageRow as Document>::TABLE_NAME {
+            Some(crate::export::table(&mut self.messages, path))
+        } else if name == <CheckpointRow as Document>::TABLE_NAME {
+            Some(crate::export::table(&mut self.checkpoints, path))
+        } else if name == <CursorRow as Document>::TABLE_NAME {
+            Some(crate::export::table(&mut self.cursors, path))
+        } else if name == <MemberRow as Document>::TABLE_NAME {
+            Some(crate::export::table(&mut self.members, path))
+        } else {
+            None
+        }
     }
 
     /// Append one entry; returns the full key (the caller's delta record

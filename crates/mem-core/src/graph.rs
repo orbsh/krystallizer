@@ -57,9 +57,8 @@
 
 use crate::embedding::Embedder;
 use crate::render::RenderFormat;
-use okm_core::index::DYNAMIC_SLOT;
-use okm_core::obj_vocab::{VocabCache, FIELD_VOCAB, PREDICATE_VOCAB};
-use okm_core::obj_dynamic::{put_frame_named, DynamicValue};
+use okm_core::obj_vocab::{VocabCache, PREDICATE_VOCAB};
+use okm_core::obj_dynamic::DynamicValue;
 use okm_core::{
     Collection, Document, DocumentEncode, EdgeHead, FjallStore, Graph, GraphEncode, KeyEncode,
     MemBatch, NodeRef, NodeSet, Vector, VectorElem, VirtualStorage, PRIMARY_SLOT, write_slot,
@@ -146,6 +145,7 @@ pub struct EntityKey {
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(EntityKey)]
 #[ok_ns(36)]
+#[ok_name("entities")]
 #[ok_layout(version = 2)]
 #[ok_index(
     // Payload fields only: the key tail appends the primary key, so the
@@ -204,6 +204,7 @@ use __OkmIndex_FactEdge_by_scope_weight as ByScopeWeight;
 /// folds into these same fields, so switching to it changes no schema.
 #[derive(Clone, Debug, Default, PartialEq, GraphEncode)]
 #[ok_ns(37)]
+#[ok_name("facts")]
 #[ok_nodes(FactNodes)]
 // The fields appended after `weight` raise the payload's hot width, hence
 // the layout version (okm's schema-evolution rule: new fields at the tail
@@ -818,14 +819,15 @@ impl GraphStore {
         self.dict_name(<EntityRow as Document>::NS_PREFIX, kind_id)
     }
 
-    /// The entity's open attributes (the dynamic segment).
-    pub fn entity_props(&self, scope: u64, node_id: u64) -> Option<BTreeMap<String, DynamicValue>> {
-        let key = self.fields_key(
-            <EntityRow as Document>::NS_PREFIX,
-            &EntityKey { scope, node_id }.encode(),
-        );
-        let raw = self.store.get(&key)?;
-        decode_props(&raw, &self.store, <EntityRow as Document>::NS_PREFIX)
+    /// The entity's open attributes (the dynamic segment) — the collection's own
+    /// read. `&mut` is the collection's signature (it interns names on the way in),
+    /// not a write here.
+    pub fn entity_props(
+        &mut self,
+        scope: u64,
+        node_id: u64,
+    ) -> Option<BTreeMap<String, DynamicValue>> {
+        self.entities.get_fields(&EntityKey { scope, node_id })
     }
 
     /// One fact, read back by id.
@@ -863,19 +865,37 @@ impl GraphStore {
         })
     }
 
-/// Export one of the graph's tables as Parquet (ADR-0007's backup boundary).
+    /// This graph's tables, `(name, ns)` — the names from the declarations.
+    pub fn tables(&self) -> Vec<(&'static str, u16)> {
+        vec![
+            (
+                <EntityRow as Document>::TABLE_NAME,
+                crate::export::ns(EntityRow::NS_PREFIX),
+            ),
+            (
+                <FactEdge as Document>::TABLE_NAME,
+                crate::export::ns(FactEdge::NS_PREFIX),
+            ),
+        ]
+    }
+
+    /// Export one table by NAME as Parquet (ADR-0007's backup boundary).
     ///
-    /// Nodes are a `Document` collection, so okm's eager bridge reads them like
-    /// any other table. FACTS are not: an edge lives in the graph's own entry
-    /// shape (`EdgeKey` + `EdgeBody` frames, `GraphEncode`), which the bridge
-    /// cannot turn into columns — exported facts need an export surface on
-    /// okm's `Graph`, and until that exists this answers `None` rather than
-    /// inventing a second format beside the one a backup should be readable in.
-    pub fn export_parquet(&self, ns: u16, path: &std::path::Path) -> Option<Result<(), String>> {
-        if ns == ENTITY_NS {
-            return Some(crate::export::table(&self.entities, path));
+    /// Nodes are a `Document` collection and export like any other table. FACTS
+    /// are the edge set as ONE table (okm ADR-0034 §3): `(table, key)` endpoints,
+    /// the declaration's fields, and the edge's open attributes as a `variant`
+    /// column — which is why that segment lives on the graph rather than in a
+    /// consumer. `None` = not this graph's table.
+    pub fn export(&mut self, name: &str, path: &std::path::Path) -> Option<Result<(), String>> {
+        if name == <EntityRow as Document>::TABLE_NAME {
+            Some(crate::export::table(&mut self.entities, path))
+        } else if name == <FactEdge as Document>::TABLE_NAME {
+            let mut facts = self.facts();
+            let batch = facts.to_record_batch_table(crate::export::name_of);
+            Some(crate::export::batch(&batch, path))
+        } else {
+            None
         }
-        None
     }
 
     /// One fact by ITS ID — the deterministic read (ADR-0004's identity), the
@@ -1704,34 +1724,18 @@ impl GraphStore {
         facts
             .link_into(batch, &head, edge, edge_id)
             .map_err(IngestError::Storage)?;
-        // The dynamic segment is k10r's own entry, not okm's: delete it here
-        // so a rewrite cannot inherit the previous assertion's props.
-        batch.del(&self.fields_key(FactEdge::NS_PREFIX, &edge_id.to_be_bytes()));
-        if !props.is_empty() {
-            let mut body = Vec::new();
-            // The prop names are FIELD names: their own vocabulary (0x02/0x03),
-            // untouched by the predicate allocation link_into just did.
-            let mut dict = VocabCache::new(FIELD_VOCAB);
-            {
-                let store = &mut self.store;
-                let mut resolver = |name: &str| dict.id_for(store, FactEdge::NS_PREFIX, name);
-                for (name, value) in props {
-                    put_frame_named(&mut body, name, value, &mut resolver);
-                }
-            }
-            batch.put(
-                self.fields_key(FactEdge::NS_PREFIX, &edge_id.to_be_bytes()),
-                body,
-            );
-        }
+        // The edge's open attributes (okm ADR-0034 §4): the 0x01 segment is the
+        // GRAPH's, written in the same batch as the row so one commit carries
+        // both. It deletes the previous assertion's segment first — props belong
+        // to the claim being written, never to the one it replaces.
+        facts.put_fields_into(batch, edge_id, props);
         Ok(())
     }
 
-    /// The fact's open props (its dynamic segment), when it has one.
+    /// The fact's open props (its dynamic segment), when it has one — the
+    /// graph's own read (okm ADR-0034 §4), not a second decoder beside it.
     pub fn fact_props(&self, edge_id: u64) -> Option<BTreeMap<String, DynamicValue>> {
-        let key = self.fields_key(FactEdge::NS_PREFIX, &edge_id.to_be_bytes());
-        let raw = self.store.get(&key)?;
-        decode_props(&raw, &self.store, FactEdge::NS_PREFIX)
+        self.facts().get_fields(edge_id)
     }
 
     /// One node as a graph endpoint: the ref carries the entity key's own
@@ -1743,16 +1747,6 @@ impl GraphStore {
         )
     }
 
-    /// A dynamic-segment key: `[ns 2B][0x01][key payload]` — the dynamic
-    /// segment is a FIXED FACE, one byte (okm ADR-0030), the same key
-    /// `Collection::put_fields` writes.
-    fn fields_key(&self, ns_prefix: &[u8], payload: &[u8]) -> Vec<u8> {
-        let mut key = Vec::with_capacity(3 + payload.len());
-        key.extend_from_slice(ns_prefix);
-        write_slot(&mut key, DYNAMIC_SLOT);
-        key.extend_from_slice(payload);
-        key
-    }
 }
 
 /// A literal's integer projection: the value's own text parsed as an
@@ -1765,27 +1759,6 @@ fn literal_num(term: &Term) -> i64 {
     term.value.parse::<i64>().unwrap_or(0)
 }
 
-/// Decode a dynamic-segment entry to its name-keyed values (the field-name
-/// dictionary resolves the ids).
-fn decode_props(
-    raw: &[u8],
-    store: &FjallStore,
-    ns_prefix: &[u8],
-) -> Option<BTreeMap<String, DynamicValue>> {
-    let mut dict = VocabCache::new(FIELD_VOCAB);
-    let frames =
-        okm_core::obj_dynamic::decode_named(raw, &mut |id| dict.name_for(store, ns_prefix, id));
-    if frames.is_empty() {
-        return None;
-    }
-    let mut out = BTreeMap::new();
-    for frame in frames {
-        if let Some(name) = dict.name_for(store, ns_prefix, frame.id) {
-            out.insert(name, frame.value);
-        }
-    }
-    Some(out)
-}
 
 // ---- ADR-0010 steps 3–4: the write-side binning pass and the read side
 

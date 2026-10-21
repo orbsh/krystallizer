@@ -43,6 +43,7 @@ pub struct CodeKey {
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(CodeKey)]
 #[ok_ns(35)]
+#[ok_name("code")]
 // The surrogate counter is a WATERMARK (ADR-0023/0025, PLAN 2.9d): the highest
 // `code_id` ever written, maintained on every write, unfold a NO-OP. That is
 // exactly what an id allocator wants — a deleted row must not free its id for
@@ -125,14 +126,30 @@ impl CodeStore {
         self.table.get(&CodeKey { code_id })
     }
 
-    /// The whole table as Parquet (ADR-0007's backup boundary) — okm's export,
-    /// no format of k10r's own. `None` = this store holds no table at that ns.
-    pub fn export_parquet(
-        &self,
-        ns: u16,
-        path: &std::path::Path,
-    ) -> Option<Result<(), String>> {
-        (ns == crate::export::ns(CodeRow::NS_PREFIX)).then(|| crate::export::table(&self.table, path))
+    /// This store's table, `(name, ns)` — the name from the row declaration.
+    pub fn tables(&self) -> Vec<(&'static str, u16)> {
+        vec![(
+            <CodeRow as Document>::TABLE_NAME,
+            crate::export::ns(CodeRow::NS_PREFIX),
+        )]
+    }
+
+    /// Export the table by NAME as Parquet (ADR-0007's backup boundary).
+    /// `None` = not this store's table.
+    pub fn export(&mut self, name: &str, path: &std::path::Path) -> Option<Result<(), String>> {
+        (name == <CodeRow as Document>::TABLE_NAME)
+            .then(|| crate::export::table(&mut self.table, path))
+    }
+
+    /// The id allocator's watermark as the derived reduce table (ADR-0034 §5):
+    /// without it a restored table would hand out an id it already used.
+    pub fn export_reduces(&self, path: &std::path::Path) -> Result<(), String> {
+        crate::export::reduces::<__OkmReduce_CodeRow_0>(
+            self.table.store(),
+            crate::export::ns(CodeRow::NS_PREFIX),
+            <CodeRow as Document>::TABLE_NAME,
+            path,
+        )
     }
 
 }
