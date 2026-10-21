@@ -59,25 +59,6 @@ fn put_assigns_ids_and_get_round_trips_the_row() {
     assert!(store.get(3).is_none(), "unknown id = absent, not an error");
 }
 
-/// The pool read: `(code_id, language, description)` in id order — the
-/// shape a resolver or linker picks from. The source and the parameter
-/// definition stay out of it (a pool read must not drag whole scripts
-/// across the wire).
-#[test]
-fn the_pool_read_is_identity_language_and_description() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut store = CodeStore::open(dir.path()).unwrap();
-    store.put("nu", "log into a host", "{}", "a very long nu script");
-    store.put("python", "sum two ints", "{}", "a very long python script");
-
-    assert_eq!(
-        store.list(),
-        vec![
-            (1, "nu".to_string(), "log into a host".to_string()),
-            (2, "python".to_string(), "sum two ints".to_string()),
-        ]
-    );
-}
 
 /// Ids are recovered from storage: a fresh process must not reuse an id
 /// (that would silently overwrite stored code).

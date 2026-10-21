@@ -108,7 +108,7 @@ pub fn open_with_compression(
             "/channels/{channel_id}/members/{member_id}/checkpoint",
             post(append_checkpoint),
         )
-        .route("/code", post(put_code).get(list_code))
+        .route("/code", post(put_code))
         .route("/code/{code_id}", get(fetch_code))
         .route("/memories/{scope}", post(ingest_fact))
         .route("/graph/{scope}/search", get(search_facts))
@@ -566,15 +566,6 @@ impl From<CodeRow> for CodeRowDto {
     }
 }
 
-/// One entry of the pool read: identity, language and description — the
-/// shape a linker or resolver decides from. NO source and no parameter
-/// definition (a pool read must not carry KB-scale payloads).
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
-pub struct CodeCandidateDto {
-    pub code_id: u64,
-    pub language: String,
-    pub description: String,
-}
 
 /// `POST /code` — store one piece of code; the store assigns the id.
 async fn put_code(
@@ -605,20 +596,6 @@ async fn fetch_code(
         .ok_or(StatusCode::NOT_FOUND)
 }
 
-/// `GET /code` — what the store holds, in id order.
-async fn list_code(State(state): State<Arc<MemState>>) -> Json<Vec<CodeCandidateDto>> {
-    let code = state.code.lock().await;
-    Json(
-        code.list()
-            .into_iter()
-            .map(|(code_id, language, description)| CodeCandidateDto {
-                code_id,
-                language,
-                description,
-            })
-            .collect(),
-    )
-}
 
 // ---- the fact graph (ns 36 entities / 37 facts) ----------------------
 //

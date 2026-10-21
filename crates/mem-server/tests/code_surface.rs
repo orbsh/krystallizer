@@ -6,7 +6,7 @@
 //! groups live in ONE database without seeing each other (one Fjall
 //! handle, one lock file, ns-discriminated entries).
 
-use mem_server::{AppendMessage, CodeCandidateDto, CodeIdDto, CodeRowDto, PutCode};
+use mem_server::{AppendMessage, CodeIdDto, CodeRowDto, PutCode};
 use std::net::SocketAddr;
 use tempfile::TempDir;
 
@@ -86,46 +86,6 @@ async fn an_unknown_id_is_a_404() {
     assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
 }
 
-/// The pool read: identity, language and description in id order, and
-/// nothing else — no source, no parameter definition.
-#[tokio::test]
-async fn the_pool_read_is_identity_language_and_description() {
-    let (base, _dir) = spawn_server().await;
-    let client = reqwest::Client::new();
-    let second = PutCode {
-        language: "python".into(),
-        description: "sum two ints".into(),
-        parameters: r#"{"n": "int"}"#.into(),
-        source: "a very long script".into(),
-    };
-    for entry in [login(), second] {
-        client
-            .post(format!("{base}/code"))
-            .json(&entry)
-            .send()
-            .await
-            .unwrap();
-    }
-
-    let pool: Vec<CodeCandidateDto> = client
-        .get(format!("{base}/code"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(pool.len(), 2);
-    assert_eq!(
-        pool[0],
-        CodeCandidateDto {
-            code_id: 1,
-            language: "nu".into(),
-            description: "log into a host via ssh".into(),
-        }
-    );
-    assert_eq!(pool[1].description, "sum two ints");
-}
 
 /// Both table groups share ONE database (one Fjall handle, one lock file):
 /// a code write must not appear in the channel log, and a message must not
@@ -168,13 +128,22 @@ async fn code_and_channel_share_one_database_without_seeing_each_other() {
         "the code row does not leak into the channel projection"
     );
 
-    let pool: Vec<CodeCandidateDto> = client
-        .get(format!("{base}/code"))
+    // The message must not leak into the code table: the one row written
+    // there is still the one the door stored, and nothing sits beside it.
+    let row = client
+        .get(format!("{base}/code/1"))
         .send()
         .await
-        .unwrap()
-        .json()
+        .unwrap();
+    assert_eq!(row.status(), reqwest::StatusCode::OK);
+    let ghost = client
+        .get(format!("{base}/code/2"))
+        .send()
         .await
         .unwrap();
-    assert_eq!(pool.len(), 1, "the message does not leak into the pool");
+    assert_eq!(
+        ghost.status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "the message does not leak into the code table"
+    );
 }

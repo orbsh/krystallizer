@@ -251,15 +251,18 @@ async fn the_graph_and_the_code_store_share_a_keyspace_without_leaking() {
         .unwrap();
     assert_eq!(stored["source"], "ssh $args.host", "the code row survives");
 
-    let pool: Vec<serde_json::Value> = client
-        .get(format!("{base}/code"))
+    // The entity wrote nothing into the code table: the only id there is the
+    // one the door stored, and the next id is empty.
+    let ghost = client
+        .get(format!("{base}/code/2"))
         .send()
         .await
-        .unwrap()
-        .json()
-        .await
         .unwrap();
-    assert_eq!(pool.len(), 1, "the entity is not a code row");
+    assert_eq!(
+        ghost.status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "the entity is not a code row"
+    );
 }
 
 /// The exact name entrance: the human identity reaches the graph here

@@ -125,19 +125,4 @@ impl CodeStore {
         self.table.get(&CodeKey { code_id })
     }
 
-    /// What the store holds, in id order: `(code_id, language,
-    /// description)` — enough to decide a skill-to-code link or pick a
-    /// step WITHOUT reading sources. A whole-table scan, and the declared
-    /// bring-up posture (the graph's retrieval replaces this answer,
-    /// ADR-0003/0018); source and parameter definition stay out of it (a
-    /// pool read must not carry KB-scale payloads).
-    pub fn list(&self) -> Vec<(u64, String, String)> {
-        let mut out = Vec::new();
-        for key in self.table.scan_keys() {
-            if let Some(row) = self.table.get(&key) {
-                out.push((key.code_id, row.language, row.description));
-            }
-        }
-        out
-    }
 }
