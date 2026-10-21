@@ -338,9 +338,7 @@ pub struct EntityRow {
 #[ok_ns(37)]
 #[ok_nodes(FactNodes)]           // 成员节点集合：今天只有 Entities
 #[ok_index(
-    by_since { fields(since) },          // 四个声明面，各一个 0x1 条目
-    by_confidence { fields(confidence) },
-    by_weight { fields(weight) },
+    by_since { fields(since) },          // 两个面，各有一个读者
     by_scope_weight { fields(scope, weight) },  // scope 前缀的排序面（PLAN 4a）
 )]
 pub struct FactEdge { /* scope / since / confidence / weight / 五个计数器 */ }

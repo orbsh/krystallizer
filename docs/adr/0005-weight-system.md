@@ -87,6 +87,18 @@ that does not exist; and okm's document overwrite does not delete an entry
 keyed by the OLD value, so every bump would owe an explicit delete for a
 query nobody makes.
 
+**Erratum (2026-10-20): the scope-wide Top-K IS a declared face, and the paragraph
+above was wrong about why it could not be.** Two premises turned out adjustable. The
+scope does not have to ride only the endpoints — the edge row now carries a
+denormalized `scope` (a copy of its source endpoint's, written once), so a face CAN
+be probed per scope. And the entry does not dangle on a weight bump: okm's
+`link_into` unlinks what the row used to derive, a rewrite is one batch, and a test
+pins one fact to one ranking entry. So the face exists:
+`by_scope_weight { fields(scope, weight) }`, keyed `[scope][weight][edge_id]`, and
+`top_by_weight(scope, k)` probes it and decodes k rows — O(k rows) + O(scope keys),
+no projection table to maintain beside the row. The bare weight face remains
+undeclared, and so does `by_confidence`: neither has a reader.
+
 ## Consequences
 
 - Today's ranking is an in-memory sort over the set recall already fetched —

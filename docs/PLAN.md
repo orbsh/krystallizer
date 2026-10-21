@@ -155,7 +155,8 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     raw, no checkpoint, no merging) and `view::conversation` (the model's view:
     user bursts merge into one turn, every line `[name(id=N)]`, order = key
     order, tool rows skipped). Tests: the merge + the mid-generation ordering,
-    and the seed. Wire (session DTO carrying turns) is still owed.
+    and the seed. Wire: `SessionDto.turns` carries them beside the raw
+    `increment` (the handler fills both from one read).
   - [x] 2.7c. THE MEMBER → NODE MAPPING LANDED 2026-10-20:
     `channel::member_node(channel, member)` = `member-{channel}-{member}` (a
     NAMING RULE, not a table — a rename moves no fact), `view::member_memory`
@@ -297,8 +298,11 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     the served facts ordered by weight (stable; seeds keep similarity order).
     The three declared faces (`by_since` / `by_confidence` / `by_weight`) were
     REMOVED: nothing scans them, and every touch would maintain them for no
-    reader — ADR-0005 records the verdict (a per-scope top-K would
-    be a `[scope][weight][edge_id]` projection, not a face). Gates: mem-core
+    reader — ADR-0005 records the verdict. (A face is not a one-time ruling: on
+    2026-10-20 `by_since` came back for `timeline` and `by_scope_weight` replaced
+    the weight-only face for `top_by_weight`, which turned out to be a DECLARED
+    face after all — the prediction that it needed a projection table was wrong.
+    `by_confidence` and the bare `by_weight` stayed out: still no reader.) Gates: mem-core
     graph 25/0 (5 weight tests), mem-server facts 12/0, clippy 0. Follow-ups
     (not debts): the delta-append table (multi-writer only — a Deferred gate)
     and a scope-wide Top-K (Phase 4's read; it needs that projection table
@@ -351,7 +355,7 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     `edge_id`, row rewritten in place), and a field-level `PATCH` would owe a
     ruling on who may change what and what happens to the weight. Gates:
     http_surface 8/0, 115/0 total, clippy 0.
-- [ ] Phase 4 — Clustered retrieval: entity-anchored / temporal / causal-chain views; progressive loading (a scope-wide Top-K by weight — a `[scope][weight][edge_id]` projection table maintained on each touch, not a declared face; ADR-0005). Reads the write-time structure ADR-0010 lands (the node's community id + the `by_community` face + the rendered community) instead of running a graph algorithm on the read path. (ADR-0005, ADR-0010)
+- [ ] Phase 4 — Clustered retrieval: entity-anchored / temporal / causal-chain views; progressive loading (a scope-wide Top-K by weight — the `by_scope_weight` declared face, `[scope][weight][edge_id]`, maintained as an index entry rather than a projection table; ADR-0005). Reads the write-time structure ADR-0010 lands (the node's community id + the `by_community` face + the rendered community) instead of running a graph algorithm on the read path. (ADR-0005, ADR-0010)
   - [x] 4a. THE WEIGHT RANKING LANDED 2026-10-20: `GraphStore::top_by_weight(scope, k)`
     — the scope's heaviest facts, weight-descending, ties by edge id — and
     `GET /graph/{scope}/top?k=`. This is the progressive-loading face: a caller

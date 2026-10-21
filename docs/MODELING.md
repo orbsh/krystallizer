@@ -402,9 +402,7 @@ One fact = two nodes + one edge; this is the EDGE table (ADR-0010 §1). Declared
 #[ok_ns(37)]
 #[ok_nodes(FactNodes)]           // member node sets: Entities, today
 #[ok_index(
-    by_since { fields(since) },              // four declared faces, one 0x1 entry each
-    by_confidence { fields(confidence) },
-    by_weight { fields(weight) },
+    by_since { fields(since) },              // two faces, each naming its reader
     by_scope_weight { fields(scope, weight) },  // the scope-prefixed ranking (PLAN 4a)
 )]
 pub struct FactEdge { /* scope / since / confidence / weight / five counters */ }
