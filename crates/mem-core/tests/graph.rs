@@ -953,7 +953,7 @@ fn communities_are_per_scope() {
 
 /// Phase 4's progressive read: the heaviest facts of a scope, weight-descending,
 /// ties by edge id — and a `k` that bounds the RESULT (the read is still O(n)
-/// until okm's graph gains a range walk over `by_weight`).
+/// until okm's graph gains a lazy range walk over the face).
 #[test]
 fn top_by_weight_ranks_the_scope_and_stops_at_k() {
     let dir = tempfile::tempdir().unwrap();
@@ -1237,4 +1237,33 @@ fn the_timeline_skips_other_scopes_on_a_scope_blind_face() {
     let timeline = graph.timeline(1, 10);
     assert_eq!(timeline.len(), 1, "only scope 1's fact");
     assert_eq!(timeline[0].edge.scope, 1);
+}
+
+/// A weight change rewrites the row — and the ranking face must follow it, not
+/// keep the old entry beside the new one. If okm's `link_into` overwrote without
+/// unlinking, the same fact would appear twice in the ranking.
+#[test]
+fn a_rewrite_does_not_leave_the_fact_in_the_ranking_twice() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap();
+    let IngestOutcome::Linked { edge_id } = graph
+        .ingest(
+            1,
+            &tuple(r#"["x","thing",{},"KNOWS",{"functional":true,"since":10},"y","thing",{}]"#),
+        )
+        .unwrap()
+    else {
+        panic!("links");
+    };
+    for _ in 0..3 {
+        graph.ingest(
+            1,
+            &tuple(r#"["x","thing",{},"KNOWS",{"functional":true,"since":20},"y","thing",{}]"#),
+        )
+        .unwrap();
+    }
+
+    let top = graph.top_by_weight(1, 10);
+    let ids: Vec<u64> = top.iter().map(|fact| fact.edge_id).collect();
+    assert_eq!(ids, vec![edge_id], "one fact, one entry: {ids:?}");
 }

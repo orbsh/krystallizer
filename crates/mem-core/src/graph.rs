@@ -182,24 +182,24 @@ pub struct EntityRow {
 }
 
 use __OkmIndex_EntityRow_by_community as ByCommunity;
-use __OkmIndex_FactEdge_by_scope_weight as ByScopeWeight;
-use __OkmIndex_FactEdge_by_since as BySince;
-/// The fact row's weight face (ADR-0005 `W:{weight}:{edge_id}`), declared on
-/// `FactEdge` — the progressive read's ordering, ascending in the index and
-/// walked in reverse for the heaviest first.
 use __OkmIndex_EntityRow_by_name as ByName;
+/// The temporal face: ascending in `since`, walked in reverse for newest-first.
+use __OkmIndex_FactEdge_by_since as BySince;
+/// The scope-prefixed weight face: one probe yields a scope's keys in weight
+/// order, so the progressive read decodes k rows for k answers.
+use __OkmIndex_FactEdge_by_scope_weight as ByScopeWeight;
 
-/// A fact: an edge of the graph. The three declared fields are ADR-0010
-/// §1's algorithm-queried ones — `since` (the caller's clock, the
-/// adjudication input), `confidence` (the write-side's, defaulting to full
-/// confidence so a fact that states none is not penalized) and `weight`
-/// (the weight system's fold, ADR-0005).
+/// A fact: an edge of the graph. The declared fields are `since` (the
+/// caller's clock, the adjudication input), `confidence` (the write-side's,
+/// defaulting to full confidence so a fact that states none is not
+/// penalized), `weight` (the weight system's fold, ADR-0005) and `scope` (the
+/// denormalized ownership the ranking face is probed by — see below).
 ///
 /// The four counters plus two clocks after `weight` are the weight
 /// system's raw inputs (ADR-0005's `weight_meta`): read / write / tool
 /// counts and the last access in each direction. They ride the SAME row
 /// as the weight — okm's declared faces are derived from the row, so a
-/// counter bump rewrites one row and the `by_weight` entry follows it.
+/// counter bump rewrites one row and its face entries follow it.
 /// The delta-append table the ADR sketches is the multi-writer escape; it
 /// folds into these same fields, so switching to it changes no schema.
 #[derive(Clone, Debug, Default, PartialEq, GraphEncode)]
@@ -209,18 +209,20 @@ use __OkmIndex_EntityRow_by_name as ByName;
 // the layout version (okm's schema-evolution rule: new fields at the tail
 // of their segment, version recorded in the header).
 #[ok_layout(version = 2)]
-// The three declared faces ADR-0010 §1 names: each algorithm-queried field
-// gets its own counting-family 0x1 index, declared here (a face is a
-// declaration, never implied by the field's existence). `by_weight` is also
-// ADR-0005's `W:{weight}:{edge_id}` index — one face, not two.
+// Each algorithm-queried field gets its own counting-family 0x1 index,
+// declared here (a face is a declaration, never implied by the field's
+// existence). Two faces only, because two reads exist; `by_confidence` and a
+// bare `by_weight` are not declared — an unscanned face is a write nobody
+// asked for, on every touch.
 #[ok_index(
+    // Two faces, and each names its reader — the discipline ADR-0005 records:
+    // a face with no scanner is an extra index write on every touch, forever.
+    // `by_since` answers the temporal entrance (`timeline`).
     by_since { fields(since) },
-    by_confidence { fields(confidence) },
-    by_weight { fields(weight) },
-    // The scope-prefixed ranking (PLAN 4a): `by_weight` alone cannot answer "the
-    // heaviest facts of scope 7" without fetching a row per key, because the scope
-    // lives on the endpoints, not in the index. This face puts it first, so one
-    // probe yields that scope's keys in weight order.
+    // `by_scope_weight` answers the progressive one (`top_by_weight`). It is the
+    // scope-prefixed form of a plain weight face, which it therefore replaces: a
+    // weight-only face cannot answer "the heaviest facts of scope 7" without a row
+    // fetch per key, because the scope lives on the endpoints, not in the index.
     by_scope_weight { fields(scope, weight) },
 )]
 pub struct FactEdge {
@@ -888,9 +890,7 @@ impl GraphStore {
         if EntityKey::decode(&body.src.pkey).scope != scope {
             return Ok(false);
         }
-        self.facts()
-            .unlink(edge_id)
-            .map_err(IngestError::Storage)?;
+        self.facts().unlink(edge_id).map_err(IngestError::Storage)?;
         Ok(true)
     }
 
@@ -956,11 +956,15 @@ impl GraphStore {
         }
         let ids: Vec<u64> = {
             let facts = self.facts();
-            okm_core::model::index::scan_index::<_, BySince>(facts.store(), FactEdge::NS_PREFIX, &[])
-                .into_iter()
-                .rev()
-                .map(|key| key.decoded.0)
-                .collect()
+            okm_core::model::index::scan_index::<_, BySince>(
+                facts.store(),
+                FactEdge::NS_PREFIX,
+                &[],
+            )
+            .into_iter()
+            .rev()
+            .map(|key| key.decoded.0)
+            .collect()
         };
         let mut out = Vec::new();
         for id in ids {
@@ -1055,7 +1059,10 @@ impl GraphStore {
             .map(|key| key.decoded.0)
             .collect()
         };
-        let mut facts: Vec<FactView> = ids.into_iter().filter_map(|id| self.fact_view(id)).collect();
+        let mut facts: Vec<FactView> = ids
+            .into_iter()
+            .filter_map(|id| self.fact_view(id))
+            .collect();
         // The face orders by (scope, weight, edge_id) ascending; reversed that is
         // weight-descending with the tie on edge id DESCENDING. The documented
         // order keeps ties ascending, so the k rows are put back in it here — k
@@ -1467,8 +1474,7 @@ impl GraphStore {
     /// Outgoing edge ids of one predicate out of one node — the 0x09 face,
     /// and the resolution path's incumbent scan.
     pub fn typed_out(&mut self, scope: u64, node_id: u64, kind: &str) -> Vec<u64> {
-        self.facts()
-            .typed_out(kind, &self.node_ref(scope, node_id))
+        self.facts().typed_out(kind, &self.node_ref(scope, node_id))
     }
 
     /// Land one fact (ADR-0010 §1 steps 1–2): resolve both endpoints to
