@@ -33,10 +33,12 @@ convergence) similarly involves one LLM decision over a small candidate set.
   carry a name AND a type label; the relation carries only its name and props —
   its name IS its kind (the edge collection's own vocabulary allocates it as
   `predicate_id` — the GRAPH's own predicate vocabulary (0x04/0x05, okm ADR-0017 §3)), so a second, coarser label would have a face nobody
-  reads. The type vocabulary is the caller's and open, with one reserved token:
+  reads. The type vocabulary is the caller's and open, with two reserved tokens:
   `literal` marks a value with no node identity of its own (a date, a number, a
   short string), and it lands as a literal node whose exact text is its name
-  (ADR-0010 §1). Empty props are written `{}` — the tuple is fixed length, no slot is
+  (ADR-0010 §1); `user` marks a member reference (`member-{channel}-{member}`),
+  parsed to a node at ns 42 — the identity collection, never created on a miss
+  (ADR-0014). Empty props are written `{}` — the tuple is fixed length, no slot is
   omitted — and `category` is not part of a fact's form. The form is written
   down in the wiki's authoritative serialization section (krystallizer, both
   languages), the knowledge-triplets skill's format section, and this repo's

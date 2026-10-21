@@ -23,6 +23,7 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
 | 38  | 社区序号（发号用，每 scope 一行） | 已实现（2026-10-20） | ADR-0010 |
 | 39  | 读游标（channel 的指针；仅多方） | 已实现（2026-10-20） | ADR-0008 §2 |
 | 41  | 结构化日志（诊断用；内部，无门） | 已实装（2026-10-20） | ADR-0011 |
+| 42  | Channel 成员（身份层：显示名 + 人或 agent） | 已实现（2026-10-20）；作为图的用户节点集合为「已声明」（ADR-0014） | ADR-0009 §1, ADR-0014 |
 | —   | 初始化记忆（人设 / 风格） | 已声明（ADR-0001） | ADR-0001 |
 
 图的读侧（LPA、分箱、社区的渲染）已随之落地（2026-10-19/20）；会话日志缺的几块、
@@ -37,9 +38,9 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
 - **被动（短期）**——当前上下文：channel 日志（ns 33）+ 它的 checkpoint
   （ns 34：指向日志的指针 + 那一段的摘要）。循环自己取、自己追加，从不作为工具。
 - **主动（长期）**——不在上下文里的事实，以**工具**形式到达，任何 agent 都能
-  用。载体是事实图（ns 36/37）。原始对话不归这一类：channel 日志（ns 33）已经
+  用。载体是事实图（ns 36/42/37）。原始对话不归这一类：channel 日志（ns 33）已经
   收了每一条消息。
-- **初始化（人设 / 风格）**——图派生：从用户节点出发遍历组装，投到
+- **初始化（人设 / 风格）**——图派生：从用户节点（成员节点，ns 42）出发遍历组装，投到
   投影头部。尚未分配 ns。
 
 ## 访问方法清单
@@ -249,10 +250,12 @@ pub struct CodeRow {
 也是声明的 bring-up 姿态（全表扫描，由图谱检索取代，ADR-0003/0018）。
 `list()` 不带 source 与参数定义。
 
-## 事实图（ns 36 实体，ns 37 事实）
+## 事实图（ns 36 实体，ns 42 用户，ns 37 事实）
 
-主动面（长期）的载体：一个节点集合 + 一个边集合，以及把一条事实落地的写时消解
-（ADR-0010 §1）。声明在 `crates/mem-core/src/graph.rs`。
+主动面（长期）的载体：节点集合（实体，加上 members 表作为用户节点集合——ADR-0014）
+与一个边集合，以及把一条事实落地的写时消解（ADR-0010 §1）。节点与边声明在
+`crates/mem-core/src/graph.rs`；它引用的 members 表声明在
+`crates/mem-core/src/channel.rs`。
 
 **`scope` 是什么。** 一个用户的记忆语料——下表的每一张图都把它放在键的第一段
 （`u64` 用户身份；单用户部署里就是 `1`，即 `view::DEFAULT_SCOPE`）。它是检索与
@@ -297,9 +300,11 @@ pub struct EntityRow {
 - **文本优先（text-first）形态**：`name` 变长且排在索引字段末位，所以按
   `alpha` 前缀扫描也会扫到 `alphabet`。精确查找因此要同时核验行里的 name
   与解出的 key 的 scope——这是把名字留在键之外要付的价。
-- `name` 是**属性**（永不进键）；`kind_id` 走本集合自己的 **谓词词汇表**（固定
-  面 0x04/0x05，okm ADR-0017 §3）——与它的 props 名所用的 0x02/0x03 词汇表分开，
-  于是没有两个分配者共享同一个 id 空间。
+- `name` 是**属性**（永不进键）；kind 是**分类字段**——声明形态是 `kind: Vocab<u16>`
+  （okm ADR-0032），标签集归该字段自己的数据词表，所以 kind 既不需要分配代码、
+  也不需要保留面；字段名用 `kind` 而不是 `kind_id`，因为值就是标签、id 只是它的编码。
+  今天的代码仍声明 `kind_id: u16` 并走本集合的 **谓词词汇表** intern；这次迁移
+  （改名 + 字段自己的词表，wire 宽度不变、仍是两字节）是欠账——PLAN 4.6。
 - `literal_num` 是字面量节点的整数投影（其余为 0）：声明的、定宽的、有序的字
   段，于是将来的数值读仍然是对某个面做 range scan，而不是向量距离的猜测。
 - **实体属性是合并的。** 一个词项的属性（元组的 head/tail 属性）落在节点行的
@@ -329,6 +334,41 @@ pub struct EntityRow {
   （增量 LPA + 分箱），并随之落地（2026-10-19）：读侧把这个面当作社区的桶来
   消费。ADR-0010 §1 保留设计形态。
 
+### 用户（ns 42）——身份集合，作为节点集合
+
+这是 k10r 唯一**不**自己声明的节点集合：`MemberRow`（ns 42，
+`crates/mem-core/src/channel.rs`）是 ADR-0009 §1 放在 channel 侧的身份层——
+`[channel_id][member_id]` → 显示名 + 人或 agent。ADR-0014 让它成为图的参与者，
+而不是一条代理行：
+
+```rust
+#[derive(KeyEncode, ...)]
+#[ok_ns(42)]
+pub struct MemberKey { pub channel_id: u64, pub member_id: u64 }
+
+#[derive(DocumentEncode, ...)]
+#[ok_ref(MemberKey)]
+#[ok_ns(42)]
+pub struct MemberRow { pub display_name: String, pub role: u8 }
+```
+
+- **封闭类型**：user 只有一种、声明一次，于是 collection 就是类型标记，行上不需要
+  `kind_id`。实体保持开放 kind 形态，因为它们的 kind 在摄入时才到达；人只能被登记，
+  不能被"发现"。
+- **键不需要任何改动就成了一条引用**：`[42][len][channel_id][member_id]` 与其他端点
+  一样自描述。`FactNodes` 增加一个变体——`NS_VALUES = &[42, 36]`——边声明其余部分
+  一字不动。
+- **没有面，也没有向量。** 读它的只有点查（键）和某个 channel 的全部成员（主键前缀
+  扫）；另起一条声明面不会有自己的扫描方。而没有 `embedding`——又在另一个
+  collection——用户永远不是落点种子：检索落在知识上，永不落在人身上。
+- **引用语法是 `member-{channel}-{member}`**，当元组的类型是保留 token `user` 时由
+  `ingest` 解析（ADR-0004 的开放词汇表，`literal` 之后的第二个保留 token）。这个字符
+  串是 wire，永不作为名字存储，所以改名挪不动任何事实。未登记的成员让这条事实失败
+  ——什么都不创建。
+- **这一行是跨 keyspace 读的**：members 在 `channel` keyspace，事实在 `memory`。
+  经 channel 句柄做一次点查没问题；但一条事实的批永不跨这两个 keyspace（okm 的
+  `commit_batch` 只往它被调用的那个句柄里写）。
+
 ### 事实（ns 37）——边集合
 
 一条事实 = 两个节点 + 一条边；这一张是**边**（ADR-0010 §1）。声明：
@@ -336,7 +376,7 @@ pub struct EntityRow {
 ```rust
 #[derive(GraphEncode, ...)]
 #[ok_ns(37)]
-#[ok_nodes(FactNodes)]           // 成员节点集合：今天只有 Entities
+#[ok_nodes(FactNodes)]           // 成员节点集合：Members (42)、Entities (36)
 #[ok_index(
     by_since { fields(since) },          // 两个面，各有一个读者
     by_scope_weight { fields(scope, weight) },  // scope 前缀的排序面（PLAN 4a）
@@ -349,6 +389,8 @@ pub struct FactEdge { /* scope / since / confidence / weight / 五个计数器 *
   （PLAN 4a）。归属仍以端点为权威；这份副本是让那个面能用的东西。其余情况 scope 走**端点**：端点是
   `(ns, 主键)` 的引用，实体主键里带着 scope。遍历从带 scope 的节点出发，就一直在
   scope 内；只有整表扫描（「某个谓词的全部边」）跨 scope，按端点过滤是调用方的事。
+  **用户端点是唯一不带 scope 的端点**：成员是 store 全局的（一个 channel 属于一个
+  scope），把它留在事实写入的那个 scope 里的是边行自己那份冗余 `scope`。
   要在边键上带 per-scope 前缀，就得绕开库的边图手写这个集合——不值得。
 - 声明字段是关系 props 的**投影**（一个数据只有一个家）：`since`（调用方的钟，裁决
   输入）、`confidence`（写侧的，255 = 缺省即不惩罚）、`weight`（权重系统的毫单位
@@ -362,8 +404,10 @@ pub struct FactEdge { /* scope / since / confidence / weight / 五个计数器 *
 
 ### 访问面（mem-core `GraphStore`）
 
-`ingest(scope, fact)` 解一条 8 元组并跑 ADR-0010 §1 的步骤 1–2：两个端点经
-`entity_by_name` 解析（不存在则新建，并分配它的种类），随后关系要么挂一条新
+`ingest(scope, fact)` 解一条 8 元组并跑 ADR-0010 §1 的步骤 1–2：端点按它的类型槽解析
+——普通类型走 `entity_by_name`（不存在则新建，并分配它的种类）；保留 token `user` 则是
+把 `member-{channel}-{member}` **解析**成 ns 42 的 `NodeRef`（ADR-0014：什么都不创建，
+未登记的成员让这条事实失败）。随后关系要么挂一条新
 边，要么——当事实声明了 `functional`——与该源上该种类的在册边裁决（`since >`
 或 `confidence >=` 胜出：同一 `edge_id` 就地改写；否则这条事实被丢弃）。返回
 `IngestOutcome::{Linked, Rewritten, Dropped}`。

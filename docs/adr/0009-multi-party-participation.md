@@ -81,6 +81,11 @@ identity is admin-time and deterministic; profiles are run-time and
 extracted. Merging them would put extracted, revisable content into a
 table the serialization path treats as ground truth.
 
+**ADR-0014 replaces the BRIDGE between the layers, not the split.** The member
+row itself becomes a graph node (ns 42 in the fact graph's member set), the
+`member-{channel}-{member}` name rule retires as identity and survives as the
+wire's reference syntax, and the member-proxy entity row goes away.
+
 ### 2. The interrupt policy: same engine, tighter clock
 
 Passive participation reuses the ADR-0008 policy engine with a third

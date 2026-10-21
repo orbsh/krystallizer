@@ -24,7 +24,7 @@ One entity class = one ns (OKM rule). Current state:
 | 38  | Community sequence (the id issuer, one row per scope) | Implemented (2026-10-20) | ADR-0010 |
 | 39  | Read cursor (a channel pointer; multi-party only) | Implemented (2026-10-20) | ADR-0008 §2 |
 | 41  | Structured log (diagnostics; internal, no door) | Implemented (2026-10-20) | ADR-0011 |
-| 42  | Channel members (identity: display name + human/agent) | Implemented (2026-10-20) | ADR-0009 §1 |
+| 42  | Channel members (identity: display name + human/agent) | Implemented (2026-10-20); the graph's user node set is Declared (ADR-0014) | ADR-0009 §1, ADR-0014 |
 | —   | Initialization memory (persona / style) | Declared (ADR-0001) | ADR-0001 |
 
 The graph's read side (LPA, binning, the rendered community) landed with it
@@ -45,7 +45,8 @@ naming is 被动 / 主动, with 短期 / 长期 as the content horizon:
   any agent. The carrier is the fact graph (ns 36/37). Raw conversation is not
   this kind's business: the channel log (ns 33) already holds every message.
 - **初始化 (persona / style)** — graph-derived: a traversal from the user
-  node, delivered at the head of the projection. No ns assigned yet.
+  node (the member's node, ns 42), delivered at the head of the projection. No
+  ns assigned yet.
 
 ## Access-method inventory
 
@@ -300,10 +301,11 @@ one scope's corpus goes into one scope's index, and a bucket read stays inside
 one scope. The channel side has no scope — a channel already IS one scope's
 conversation.
 
-The 主动 (long-term) side's carrier: an okm node collection plus an okm
-edge collection, and the write-time resolution that lands one fact
-(ADR-0010 §1; landed 2026-10-17). Declared in
-`crates/mem-core/src/graph.rs`.
+The 主动 (long-term) side's carrier: okm node collections (entities, plus the
+members table as the user node set — ADR-0014) and an okm edge collection, and the
+write-time resolution that lands one fact (ADR-0010 §1; landed 2026-10-17).
+Declared in `crates/mem-core/src/graph.rs`; the members table it references is
+declared in `crates/mem-core/src/channel.rs`.
 
 ### Entities (ns 36) — node collection
 
@@ -347,10 +349,14 @@ first use and dropped on every write, not a declared face.
   indexed fields, so a prefix scan for `alpha` also reaches `alphabet`. An
   exact lookup therefore re-verifies the row's name AND the decoded key's
   scope — the price of keeping the name out of the key.
-- `name` is an ATTRIBUTE (never key material); `kind_id` allocates through
-  this collection's own PREDICATE VOCABULARY (fixed faces 0x04/0x05, okm ADR-0017
-  §3) — separate from the 0x02/0x03 vocabulary its props' names use, so no two
-  allocators share one id space.
+- `name` is an ATTRIBUTE (never key material); the kind is a CATEGORICAL FIELD —
+  the declared form is `kind: Vocab<u16>` (okm ADR-0032), whose label set is that
+  field's own data vocabulary, so a kind needs no allocation code and no reserved
+  faces, and the field is named `kind` rather than `kind_id` because the value is
+  the label and the id is only its encoding. The code today still declares
+  `kind_id: u16` and interns through the collection's `PREDICATE_VOCAB`; that
+  migration (rename + the field's own vocabulary, wire width unchanged at two
+  bytes) is owed — PLAN 4.6.
 - `literal_num` is a literal node's integer projection (0 otherwise): a
   declared, fixed-width, ordered field, so a numeric read later stays a range
   scan over a face rather than a vector-distance guess.
@@ -393,6 +399,44 @@ first use and dropped on every write, not a declared face.
   read side consumes the face as the community bucket. ADR-0010 §1 keeps the
   design.
 
+### Users (ns 42) — the identity collection, as a node set
+
+The one node collection k10r does NOT declare itself: `MemberRow` (ns 42,
+`crates/mem-core/src/channel.rs`) is the identity layer ADR-0009 §1 put on the
+channel side — `[channel_id][member_id]` → display name + human/agent. ADR-0014
+makes it a graph participant rather than a proxy row:
+
+```rust
+#[derive(KeyEncode, ...)]
+#[ok_ns(42)]
+pub struct MemberKey { pub channel_id: u64, pub member_id: u64 }
+
+#[derive(DocumentEncode, ...)]
+#[ok_ref(MemberKey)]
+#[ok_ns(42)]
+pub struct MemberRow { pub display_name: String, pub role: u8 }
+```
+
+- **CLOSED type**: "user" is one type, declared once, so the collection is the
+  type marker and the row needs no `kind_id`. Entities keep the open-kind shape
+  because their kinds arrive at ingest; people are registered, not discovered.
+- **The key needs no change to become a ref**: `[42][len][channel_id][member_id]`
+  is a self-describing endpoint like any other. `FactNodes` gains the variant —
+  `NS_VALUES = &[42, 36]` — and nothing else in the edge declaration moves.
+- **No faces, no vector.** The only readers are a point read (the key) and one
+  channel's members (a primary-key prefix scan); a declared face would have no
+  scanner of its own. And with no `embedding` — in a different collection — a user
+  is never a landing seed: retrieval lands on knowledge, never on people.
+- **The reference syntax is `member-{channel}-{member}`**, parsed by `ingest` when
+  the tuple's type is the reserved token `user` (ADR-0004's open vocabulary, second
+  reserved token after `literal`). The string is wire, never a stored name, so a
+  rename cannot move a fact. An unregistered member fails the fact — nothing is
+  created.
+- **The row is read across keyspaces**: members live in the `channel` keyspace,
+  the facts in `memory`. A point read through the channel handle is fine; a fact's
+  batch never spans the two (okm's `commit_batch` writes into the handle it was
+  called on).
+
 ### Facts (ns 37) — edge collection
 
 One fact = two nodes + one edge; this is the EDGE table (ADR-0010 §1). Declared:
@@ -400,7 +444,7 @@ One fact = two nodes + one edge; this is the EDGE table (ADR-0010 §1). Declared
 ```rust
 #[derive(GraphEncode, ...)]
 #[ok_ns(37)]
-#[ok_nodes(FactNodes)]           // member node sets: Entities, today
+#[ok_nodes(FactNodes)]           // member node sets: Members (42), Entities (36)
 #[ok_index(
     by_since { fields(since) },              // two faces, each naming its reader
     by_scope_weight { fields(scope, weight) },  // the scope-prefixed ranking (PLAN 4a)
@@ -417,7 +461,10 @@ pub struct FactEdge { /* scope / since / confidence / weight / five counters */ 
   `(ns, primary key)`, and an entity's primary key carries the scope. Traversal
   starts at a scoped node, so it stays inside one scope; only a whole-table scan
   ("every edge of one predicate") crosses scopes, and filtering by endpoint is
-  the caller's composition. Putting a per-scope prefix in the edge key would mean
+  the caller's composition. The USER endpoint is the one unscoped endpoint: a
+  member is store-global (a channel belongs to one scope), and the edge's own
+  denormalized `scope` is what keeps it in the scope the fact was written to.
+  Putting a per-scope prefix in the edge key would mean
   hand-writing this collection instead of using the library's edge graph — not
   worth it.
 - The declared fields are PROJECTIONS of the relation's props (one datum, one
@@ -438,8 +485,11 @@ pub struct FactEdge { /* scope / since / confidence / weight / five counters */ 
 ### Access (mem-core `GraphStore`)
 
 `ingest(scope, fact)` decodes one 8-slot tuple and runs ADR-0010 §1's steps
-1–2: both endpoints resolve through `entity_by_name` (created when absent,
-allocating the kind), then the relation either links a new edge or — when the
+1–2: an endpoint resolves by its type slot — `entity_by_name` for an ordinary
+type (created when absent, allocating the kind), and for the reserved token
+`user` a PARSE of `member-{channel}-{member}` into a `NodeRef` at ns 42
+(ADR-0014: nothing is created, an unregistered member fails the fact). Then the
+relation either links a new edge or — when the
 fact declares `functional` — is adjudicated against the incumbent edge of
 that kind out of that source (`since >` or `confidence >=` wins: the row is
 rewritten in place with the same `edge_id`, otherwise the fact is dropped).
