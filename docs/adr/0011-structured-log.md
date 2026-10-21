@@ -62,7 +62,7 @@ The OKM mapping, so the vocabulary stays straight: there is no "low-cardinality
 type". Low-cardinality FIELDS are declared fields (U8..U64 / FixedBytes / Str)
 that MAY carry a face; low-cardinality SETS are the multi-value func index
 (element → pkey), with an application-level bloom as the high-cardinality
-fallback; `#[ok_nodes(Enum)]` types node SETS, not fields.
+fallback; `#[ok_nodes(Table, …)]` types node SETS (the enum is generated from the listed tables), not fields.
 
 ### 3. The variable part rides the dynamic segment: locator + payload
 

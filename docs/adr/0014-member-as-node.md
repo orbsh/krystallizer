@@ -1,6 +1,6 @@
 # 0014 — The member is a node: identity rows join the graph
 
-Status: Accepted (2026-10-21)
+Status: Accepted (2026-10-21), LANDED the same day
 
 ## Context
 
@@ -29,8 +29,10 @@ wrong in the same direction:
 
 ### 1. The members collection IS the graph's user node set
 
-ns 42 joins the fact graph's member set: `FactNodes { Members, Entities }`,
-`NS_VALUES = &[42, 36]`. Nothing else is needed — an edge endpoint is a
+ns 42 joins the fact graph's member set by being NAMED in its `#[ok_nodes]`
+(`#[ok_nodes(EntityRow, MemberRow)]`, from which the derive generates
+`FactNodes { EntityRow, MemberRow }` and its ns list — the ns comes off each
+table's own `#[ok_ns]`). Nothing else is needed — an edge endpoint is a
 self-describing `[ns][len][pkey]`, so the member row's `[channel_id][member_id]`
 key becomes a node reference without a registry, a second table, or a name.
 
@@ -108,6 +110,20 @@ carrier's open endpoints exist for.
 - Existing member-proxy entity rows and the edges pointing at them (ns 36, name
   `member-…`) are a migration question, not a schema one — the same stance the
   legacy flat rows got (ADR-0002).
-- Tests to land with the code: an endpoint at ns 42 traverses in both directions;
-  an unknown `member-…` fails the fact; a user endpoint never appears in a landing
-  result; a rename changes the rendered name and no edge id.
+- **Landed (2026-10-21).** `#[ok_nodes(EntityRow, MemberRow)]`, generating
+  `FactNodes { EntityRow, MemberRow }` with `NS_VALUES = &[36, 42]`;
+  `ingest` resolves the reserved `user` token through
+  `parse_member_ref` and REFUSES (`IngestError::Refused`) a malformed or
+  unregistered reference, creating nothing; the endpoints became a write-side
+  `Endpoint` enum so a fact's batch still lands inside `memory` while the member
+  row is a point read on the channel handle (`GraphStore::with_channel`, attached
+  by `open_service`); `resolve_ref` answers a `NodeId`
+  (`Entity { scope, node_id }` | `User { channel, member }`) and renders a person
+  from the row's display name; the binning pass takes only entity endpoints, so a
+  user node never enters a community and never reaches the landing index. The
+  ref-taking traversal forms (`out_edges_of` / `in_edges_of` / `typed_out_of`,
+  `user_ref`) are the user-anchored entrance. Gates: mem-core graph 33/0 (two new
+  tests — `a_user_endpoint_is_a_node_of_the_identity_collection`,
+  `an_unregistered_user_reference_is_refused_and_creates_nothing`), every other
+  suite green, clippy 0. The kind field landed with it as `kind: Vocab<u16>`
+  (okm ADR-0032), retiring the hand-rolled `kind_id` + `PREDICATE_VOCAB` path.

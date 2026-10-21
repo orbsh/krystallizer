@@ -24,7 +24,7 @@ One entity class = one ns (OKM rule). Current state:
 | 38  | Community sequence (the id issuer, one row per scope) | Implemented (2026-10-20) | ADR-0010 |
 | 39  | Read cursor (a channel pointer; multi-party only) | Implemented (2026-10-20) | ADR-0008 §2 |
 | 41  | Structured log (diagnostics; internal, no door) | Implemented (2026-10-20) | ADR-0011 |
-| 42  | Channel members (identity: display name + human/agent) | Implemented (2026-10-20); the graph's user node set is Declared (ADR-0014) | ADR-0009 §1, ADR-0014 |
+| 42  | Channel members (identity: display name + human/agent), and the graph's user node set | Implemented (2026-10-20; graph participation 2026-10-21) | ADR-0009 §1, ADR-0014 |
 | —   | Initialization memory (persona / style) | Declared (ADR-0001) | ADR-0001 |
 
 The graph's read side (LPA, binning, the rendered community) landed with it
@@ -321,11 +321,11 @@ pub struct EntityKey {
 #[ok_ref(EntityKey)]
 #[ok_ns(36)]
 #[ok_index(
-    by_kind { fields(kind_id) },
+    by_kind { fields(kind) },        // the node-kind face
     by_name { fields(name) },
 )]
 pub struct EntityRow {
-    pub kind_id: u16,
+    pub kind: Vocab<u16>,            // a categorical field: interned on write
     pub literal_num: i64,
     pub name: String,
     pub embedding: Vector<f32>, // NO #[ok_index]: a vector has no key order, see below
@@ -344,19 +344,17 @@ first use and dropped on every write, not a declared face.
 - **A face carries the payload field first and the primary key last**: okm
   joins the key tail itself, and the derive accepts payload fields only (a
   key field inside `fields(...)` is a compile error). The entries land as
-  `[kind_id][scope][node_id]` and `[name][scope][node_id]`.
+  `[kind][scope][node_id]` and `[name][scope][node_id]`.
 - **Text-first regime**: `name` is variable-width and sits last among the
   indexed fields, so a prefix scan for `alpha` also reaches `alphabet`. An
   exact lookup therefore re-verifies the row's name AND the decoded key's
   scope — the price of keeping the name out of the key.
 - `name` is an ATTRIBUTE (never key material); the kind is a CATEGORICAL FIELD —
-  the declared form is `kind: Vocab<u16>` (okm ADR-0032), whose label set is that
-  field's own data vocabulary, so a kind needs no allocation code and no reserved
-  faces, and the field is named `kind` rather than `kind_id` because the value is
-  the label and the id is only its encoding. The code today still declares
-  `kind_id: u16` and interns through the collection's `PREDICATE_VOCAB`; that
-  migration (rename + the field's own vocabulary, wire width unchanged at two
-  bytes) is owed — PLAN 4.6.
+  `kind: Vocab<u16>` (okm ADR-0032): `put` interns the label on write and `get`
+  resolves it back through that field's own data vocabulary, so a kind needs no
+  allocation code and no reserved faces. The field is named `kind`, not
+  `kind_id`: the value IS the label and the id is only its encoding. The layout
+  is version 3 (the field's meaning changed, its wire width did not: two bytes).
 - `literal_num` is a literal node's integer projection (0 otherwise): a
   declared, fixed-width, ordered field, so a numeric read later stays a range
   scan over a face rather than a vector-distance guess.
@@ -421,8 +419,9 @@ pub struct MemberRow { pub display_name: String, pub role: u8 }
   type marker and the row needs no `kind_id`. Entities keep the open-kind shape
   because their kinds arrive at ingest; people are registered, not discovered.
 - **The key needs no change to become a ref**: `[42][len][channel_id][member_id]`
-  is a self-describing endpoint like any other. `FactNodes` gains the variant —
-  `NS_VALUES = &[42, 36]` — and nothing else in the edge declaration moves.
+  is a self-describing endpoint like any other. One type name joins the edge's
+  `#[ok_nodes(EntityRow, MemberRow)]` and nothing else in the declaration moves:
+  the member-set enum and its ns list are generated from those tables.
 - **No faces, no vector.** The only readers are a point read (the key) and one
   channel's members (a primary-key prefix scan); a declared face would have no
   scanner of its own. And with no `embedding` — in a different collection — a user
@@ -444,7 +443,7 @@ One fact = two nodes + one edge; this is the EDGE table (ADR-0010 §1). Declared
 ```rust
 #[derive(GraphEncode, ...)]
 #[ok_ns(37)]
-#[ok_nodes(FactNodes)]           // member node sets: Members (42), Entities (36)
+#[ok_nodes(EntityRow, MemberRow)]   // the member tables: entities (36), people (42)
 #[ok_index(
     by_since { fields(since) },              // two faces, each naming its reader
     by_scope_weight { fields(scope, weight) },  // the scope-prefixed ranking (PLAN 4a)
@@ -496,8 +495,9 @@ rewritten in place with the same `edge_id`, otherwise the fact is dropped).
 It returns `IngestOutcome::{Linked, Rewritten, Dropped}`.
 
 Reads: `entity(scope, node_id)`, `entity_by_name(scope, name)` →
-`(node_id, row)`, `entity_kind(kind_id)` → the token, `entity_props` /
-`fact_props` (the dynamic segments), `fact(edge_id)` → the decoded edge,
+`(node_id, row)` (the kind's label rides the row — `row.kind.as_str()`),
+`entity_props` / `fact_props` (the dynamic segments), `fact(edge_id)` → the
+decoded edge,
 `fact_in_scope(scope, edge_id)` → the deterministic point read (see below),
 `neighbours(scope, node_id)` → both directions out of one node (degree-cost, both
 sides are ref lists on the node rows), `anchored(scope, node_id)` → that
@@ -505,7 +505,12 @@ neighbourhood then the node's community slice, `timeline(scope, limit)` → fact
 `since`, newest first, walked over the `by_since` face (scope-blind, so other
 scopes' keys are skipped), `chain(scope, from, kind, hops)` → one predicate followed
 hop by hop,
-`out_edges` and `typed_out` (the traversal currency). For a bulk consumer
+`out_edges` and `typed_out` (the traversal currency), plus their
+ref-taking forms `out_edges_of` / `in_edges_of` / `typed_out_of` and
+`user_ref(channel, member)` — the entry a USER-anchored walk starts from
+(ADR-0014: identity is not scoped to the corpus, so those take a `NodeRef`),
+and `resolve_ref` answers a `NodeId` (`Entity { scope, node_id }` or
+`User { channel, member }`), never a bare id. For a bulk consumer
 (the visualization door) `scope_entities(scope)` and `scope_facts(scope)`
 return one scope whole — the scan is bounded by the primary-key prefix
 `[scope]`, and each edge is reached once because `ingest` puts both

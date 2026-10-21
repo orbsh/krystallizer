@@ -95,6 +95,11 @@ analysis 类的门读；它永不在消费者的回合路径上，也永不作�
 in-process 不是第二道门：`InProcessSurface` 在调用方进程内链接同一批原
 语（同机部署细节）；HTTP 是唯一的跨进程形态（ADR-0007 as revised）。
 
+**事实类载荷里的端点是"一对"，不是一个 id（ADR-0014）。** `node_id` 是实体的 id，
+当那一端是**用户节点**时为 `null`；此时 `user: [channel, member]` 点名那个人，`name`
+是身份行上的显示名。按 `node_id` 取值的消费方（可视化门的 `links[].source` /
+`target`）必须接受这个 null：身份不带 scope，所以没有实体 id 可报。
+
 ## 2. gravity 的操作 → 各自走的门
 
 这张表里的每个操作都走**核心**门（§1a）；分析类（§1b）在消费方的一轮里

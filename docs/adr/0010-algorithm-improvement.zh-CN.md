@@ -71,6 +71,11 @@ okm 规范的布局如下（ns 在落地时分配：实体 36 与事实 37 已�
   0x4/0x5 谓词词汇表  [kind_id u16] → 种类名 ／ [种类名] → kind_id
                      节点种类，与 props 的字段名（0x02/0x03）分开
 
+2026-10-21 更新：节点行的 kind 是 `kind: Vocab<u16>`——一个分类**字段**，标签住在该字段
+自己的数据词表里（okm ADR-0032），于是节点侧不再占用 0x04/0x05，也不需要分配代码。
+0x04/0x05 这本词表只归**图**（谓词），读方从行上直接取标签（`row.kind.as_str()`），
+不再解析 id。wire 宽度没变（两字节），布局版本 3。
+
 事实 —— 边集合（ns 37），每图一个 ns（okm ADR-0017）
   0x0 主表           [edge_id u64]
                      → 行体：[src NodeRef][dst NodeRef][predicate_id][since][confidence][weight]

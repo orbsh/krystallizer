@@ -23,7 +23,7 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
 | 38  | 社区序号（发号用，每 scope 一行） | 已实现（2026-10-20） | ADR-0010 |
 | 39  | 读游标（channel 的指针；仅多方） | 已实现（2026-10-20） | ADR-0008 §2 |
 | 41  | 结构化日志（诊断用；内部，无门） | 已实装（2026-10-20） | ADR-0011 |
-| 42  | Channel 成员（身份层：显示名 + 人或 agent） | 已实现（2026-10-20）；作为图的用户节点集合为「已声明」（ADR-0014） | ADR-0009 §1, ADR-0014 |
+| 42  | Channel 成员（身份层：显示名 + 人或 agent），兼作图的用户节点集合 | 已实现（2026-10-20；图参与 2026-10-21） | ADR-0009 §1, ADR-0014 |
 | —   | 初始化记忆（人设 / 风格） | 已声明（ADR-0001） | ADR-0001 |
 
 图的读侧（LPA、分箱、社区的渲染）已随之落地（2026-10-19/20）；会话日志缺的几块、
@@ -276,11 +276,11 @@ pub struct EntityKey {
 #[ok_ref(EntityKey)]
 #[ok_ns(36)]
 #[ok_index(
-    by_kind { fields(kind_id) },
+    by_kind { fields(kind) },        // 节点 kind 面
     by_name { fields(name) },
 )]
 pub struct EntityRow {
-    pub kind_id: u16,
+    pub kind: Vocab<u16>,            // 分类字段：写入时 intern
     pub literal_num: i64,
     pub name: String,
     pub embedding: Vector<f32>, // 没有 #[ok_index]：向量不按键序，见下
@@ -296,15 +296,14 @@ pub struct EntityRow {
   时从最后一个键恢复。
 - **面是「payload 字段在前、主键在后」**：key 尾由 okm 自己拼接，而派生只接受
   payload 字段（把 key 字段写进 `fields(...)` 是编译错误）。条目落成
-  `[kind_id][scope][node_id]` 与 `[name][scope][node_id]`。
+  `[kind][scope][node_id]` 与 `[name][scope][node_id]`。
 - **文本优先（text-first）形态**：`name` 变长且排在索引字段末位，所以按
   `alpha` 前缀扫描也会扫到 `alphabet`。精确查找因此要同时核验行里的 name
   与解出的 key 的 scope——这是把名字留在键之外要付的价。
 - `name` 是**属性**（永不进键）；kind 是**分类字段**——声明形态是 `kind: Vocab<u16>`
   （okm ADR-0032），标签集归该字段自己的数据词表，所以 kind 既不需要分配代码、
-  也不需要保留面；字段名用 `kind` 而不是 `kind_id`，因为值就是标签、id 只是它的编码。
-  今天的代码仍声明 `kind_id: u16` 并走本集合的 **谓词词汇表** intern；这次迁移
-  （改名 + 字段自己的词表，wire 宽度不变、仍是两字节）是欠账——PLAN 4.6。
+  也不需要保留面。字段名是 `kind` 而不是 `kind_id`：值**就是**标签，id 只是它的编码。
+  布局版本 3（字段的含义变了，wire 宽度没变：两字节）。
 - `literal_num` 是字面量节点的整数投影（其余为 0）：声明的、定宽的、有序的字
   段，于是将来的数值读仍然是对某个面做 range scan，而不是向量距离的猜测。
 - **实体属性是合并的。** 一个词项的属性（元组的 head/tail 属性）落在节点行的
@@ -356,8 +355,8 @@ pub struct MemberRow { pub display_name: String, pub role: u8 }
   `kind_id`。实体保持开放 kind 形态，因为它们的 kind 在摄入时才到达；人只能被登记，
   不能被"发现"。
 - **键不需要任何改动就成了一条引用**：`[42][len][channel_id][member_id]` 与其他端点
-  一样自描述。`FactNodes` 增加一个变体——`NS_VALUES = &[42, 36]`——边声明其余部分
-  一字不动。
+  一样自描述。边声明的 `#[ok_nodes(EntityRow, MemberRow)]` 里多一个类型名，其余一字
+  不动——成员集枚举与 ns 清单由这些表生成。
 - **没有面，也没有向量。** 读它的只有点查（键）和某个 channel 的全部成员（主键前缀
   扫）；另起一条声明面不会有自己的扫描方。而没有 `embedding`——又在另一个
   collection——用户永远不是落点种子：检索落在知识上，永不落在人身上。
@@ -376,7 +375,7 @@ pub struct MemberRow { pub display_name: String, pub role: u8 }
 ```rust
 #[derive(GraphEncode, ...)]
 #[ok_ns(37)]
-#[ok_nodes(FactNodes)]           // 成员节点集合：Members (42)、Entities (36)
+#[ok_nodes(EntityRow, MemberRow)]   // 成员表：实体（36）、人（42）
 #[ok_index(
     by_since { fields(since) },          // 两个面，各有一个读者
     by_scope_weight { fields(scope, weight) },  // scope 前缀的排序面（PLAN 4a）
@@ -413,13 +412,16 @@ pub struct FactEdge { /* scope / since / confidence / weight / 五个计数器 *
 `IngestOutcome::{Linked, Rewritten, Dropped}`。
 
 读：`entity(scope, node_id)`、`entity_by_name(scope, name)` → `(node_id, row)`、
-`entity_kind(kind_id)` → 词项、`entity_props` / `fact_props`（动态段）、
+`entity_props` / `fact_props`（动态段）（kind 的标签随行返回——`row.kind.as_str()`）、
 `fact(edge_id)` → 解出的事实、`fact_in_scope(scope, edge_id)` → 确定性点读（见下）、`neighbours(scope, node_id)` → 一个节点的
 双向边（代价随度数，两侧都是节点行上的引用表）、`anchored(scope, node_id)` → 该邻域再接上它的
 社区切片、`timeline(scope, limit)` → 按 `since` 的事实序（最新在前），走 `by_since` 面
 （该面不带 scope，所以别的 scope 的键会被跳过）、
 `chain(scope, from, kind, hops)` → 沿一个谓词逐跳、
-`out_edges` 与 `typed_out`（遍历通货）。批量消费者
+`out_edges` 与 `typed_out`（遍历通货），外加收 `NodeRef` 的 `out_edges_of` / `in_edges_of` /
+`typed_out_of` 与 `user_ref(channel, member)`——**用户锚定**的遍历从这里起步（ADR-0014：身份
+不带 scope，所以这几个收 `NodeRef`）；`resolve_ref` 答一个 `NodeId`（`Entity { scope, node_id }`
+或 `User { channel, member }`），不再是裸节点 id。批量消费者
 （可视化门）用 `scope_entities(scope)` 与 `scope_facts(scope)` 整取一个 scope——
 扫描以主键前缀 `[scope]` 为界，而每条边只被走到一次（`ingest` 把两个端点都建在
 调用时给的 scope 里）。函数式改写是**一个**引擎批——okm 的 `unlink_into` +

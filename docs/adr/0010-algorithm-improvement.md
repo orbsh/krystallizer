@@ -87,6 +87,13 @@ Entities — node collection (ns 36), one per graph
                      (the pair is okm's; an entity's kind rides it like a graph's predicate)
                      node kinds, separate from the props' field names (0x02/0x03)
 
+Update 2026-10-21: the node row's kind is `kind: Vocab<u16>` — a categorical
+FIELD whose labels live in that field's own data vocabulary (okm ADR-0032), so
+the node side no longer uses the 0x04/0x05 pair and needs no allocation code.
+The 0x04/0x05 vocabulary stays the GRAPH's (predicates only), and the reader
+takes the label from the row (`row.kind.as_str()`) instead of resolving an id.
+The wire width did not change (two bytes); the layout is version 3.
+
 Facts — edge collection (ns 37), one ns per graph (okm ADR-0017)
   0x0 primary        [edge_id u64]
                      → body: [src NodeRef][dst NodeRef][predicate_id][since][confidence][weight]

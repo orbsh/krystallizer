@@ -1,6 +1,6 @@
 # 0014 — 成员就是节点：身份行加入图
 
-状态：已接受（2026-10-21）
+状态：已接受（2026-10-21），同日落地
 
 ## 背景
 
@@ -14,7 +14,7 @@ ADR-0009 §1 把身份与画像分开：members 表（ns 42）持有确定性层
 
 ### 1. members collection 就是图的用户节点集合
 
-ns 42 进入事实图的成员集：`FactNodes { Members, Entities }`，`NS_VALUES = &[42, 36]`。别的什么都不需要——边的端点是自描述的 `[ns][len][pkey]`，所以成员行 `[channel_id][member_id]` 这个键本身就成了一条节点引用，不需要注册表、不需要第二张表、不需要名字。
+ns 42 进入事实图的成员集，方式是在 `#[ok_nodes]` 里点名它那张表（`#[ok_nodes(EntityRow, MemberRow)]`，成员集枚举与 ns 清单由 derive 生成，ns 取自各表自己的 `#[ok_ns]`）。别的什么都不需要——边的端点是自描述的 `[ns][len][pkey]`，所以成员行 `[channel_id][member_id]` 这个键本身就成了一条节点引用，不需要注册表、不需要第二张表、不需要名字。
 
 这是**封闭类型**的形态，而且是刻意的：user 只有一种类型、声明一次，于是 collection 就是类型标记。实体保持开放 kind 的形态（kind 是一个 collection 内部带索引的字段，ADR-0010 §1），因为它们的 kind 在摄入时才到达。人不会"到达"——人是被登记的。
 
@@ -48,4 +48,4 @@ ns 42 进入事实图的成员集：`FactNodes { Members, Entities }`，`NS_VALU
 - mem-core 的图路径通过 **channel keyspace** 的句柄读 members collection。两个 keyspace 是分开的（`channel`、`memory`），而 okm 的 `commit_batch` 只往它被调用的那个句柄里写，所以一条事实的批留在 `memory` 内、成员读是跨句柄的一次点查——永不进那个批。
 - 成员端点靠读自己那行来渲染（显示名、角色）。于是一条 recall 行每个用户端点要多付一次点查；替代方案——把显示名冗余到边上——会把管理期数据塞进一条抽出来的行，并把改名变成一次图迁移。
 - 现存的成员代理实体行以及指向它们的边（ns 36，名字 `member-…`）：属于迁移问题，不是 schema 问题——与当年遗留 flat 行同一个立场（ADR-0002）。
-- 随代码落地的测试：ns 42 的端点两个方向都能遍历；未登记的 `member-…` 让事实失败；用户端点永不出现在落点结果里；改名只改变渲染出的名字，不动任何 edge id。
+- **已落地（2026-10-21）。** `#[ok_nodes(EntityRow, MemberRow)]`，生成 `FactNodes { EntityRow, MemberRow }` 与 `NS_VALUES = &[36, 42]`；`ingest` 经 `parse_member_ref` 解析保留 token `user`，对畸形或未登记的引用**拒绝**（`IngestError::Refused`）且什么都不创建；端点变成写侧的 `Endpoint` 枚举，于是一条事实的批仍落在 `memory` 内、成员行是 channel 句柄上的一次点查（`GraphStore::with_channel`，由 `open_service` 接上）；`resolve_ref` 答一个 `NodeId`（`Entity { scope, node_id }` | `User { channel, member }`），人靠行上的显示名渲染；分桶只取实体端点，所以用户节点永不进社区、也永不进落点索引。收 `NodeRef` 的遍历形态（`out_edges_of` / `in_edges_of` / `typed_out_of`、`user_ref`）就是用户锚定的入口。门禁：mem-core graph 33/0（两个新测试——`a_user_endpoint_is_a_node_of_the_identity_collection`、`an_unregistered_user_reference_is_refused_and_creates_nothing`），其余套件全绿，clippy 0。kind 字段随同一批改成 `kind: Vocab<u16>`（okm ADR-0032），手写的 `kind_id` + `PREDICATE_VOCAB` 路径退役。

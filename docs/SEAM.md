@@ -111,6 +111,13 @@ never on a consumer's turn path and never a tool.
 primitives in the caller's process (a same-machine deployment detail); HTTP is
 the single cross-process form (ADR-0007 as revised).
 
+**Fact-shaped payloads carry the endpoint as a pair, not one id (ADR-0014).**
+`node_id` is the entity's id and is `null` when that end is a USER node; there
+`user: [channel, member]` names the person and `name` is its display name from
+the identity row. A consumer that keyed on `node_id` (the visualization door's
+`links[].source` / `target`) must accept the null: identity is not scoped to the
+corpus, so it has no entity id to report.
+
 ## 2. gravity's operations → the door each one uses
 
 Every operation in this table rides a CORE door (§1a); the analysis class
