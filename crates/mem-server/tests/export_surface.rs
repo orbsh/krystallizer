@@ -53,7 +53,7 @@ async fn a_table_leaves_as_a_parquet_file() {
         .unwrap();
 
     let response = client
-        .get(format!("{base}/export/33"))
+        .get(format!("{base}/export/messages"))
         .send()
         .await
         .unwrap();
@@ -70,14 +70,16 @@ async fn a_table_leaves_as_a_parquet_file() {
         .get(reqwest::header::CONTENT_DISPOSITION)
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default()
-        .contains("ns33.parquet"));
+        .contains("messages.parquet"));
     let body = response.bytes().await.unwrap();
     assert_eq!(&body[..4], b"PAR1", "a Parquet file, header and all");
     assert_eq!(shape(&body).0, 1, "the one message is in the file");
 }
 
+/// Every table answers a file — including the fact table, which used to name a gap
+/// here — and an unknown name is a 404 that points at the catalog.
 #[tokio::test]
-async fn every_document_table_answers_and_the_fact_table_names_its_gap() {
+async fn every_table_answers_and_an_unknown_name_is_a_404() {
     let (base, _dir) = spawn_server().await;
     let client = reqwest::Client::new();
     client
@@ -92,33 +94,36 @@ async fn every_document_table_answers_and_the_fact_table_names_its_gap() {
         .await
         .unwrap();
 
-    let code = client.get(format!("{base}/export/35")).send().await.unwrap();
+    let code = client.get(format!("{base}/export/code")).send().await.unwrap();
     assert_eq!(code.status(), 200);
     let body = code.bytes().await.unwrap();
     assert_eq!(shape(&body).0, 1, "the one code row is in the file");
 
     // An empty table still exports: an empty table is a fact about the backup.
-    for ns in [34u16, 36, 39, 41, 42] {
+    for table in ["checkpoints", "entities", "cursors", "log", "members", "facts"] {
         let response = client
-            .get(format!("{base}/export/{ns}"))
+            .get(format!("{base}/export/{table}"))
             .send()
             .await
             .unwrap();
-        assert_eq!(response.status(), 200, "ns {ns} answers");
-        assert!(response.bytes().await.unwrap().len() > 8, "ns {ns} is a file");
+        assert_eq!(response.status(), 200, "{table} answers a file");
+        assert!(
+            response.bytes().await.unwrap().len() > 8,
+            "{table} is a Parquet file"
+        );
     }
 
-    // Facts are GraphEncode entries: no columnar form until okm's Graph exports.
+    // Facts export now — as the edge table okm's Graph builds (ADR-0034 §3).
     let facts = client
-        .get(format!("{base}/export/37"))
+        .get(format!("{base}/export/facts"))
         .send()
         .await
         .unwrap();
-    assert_eq!(facts.status(), reqwest::StatusCode::NOT_IMPLEMENTED);
-    let reason = facts.text().await.unwrap();
-    assert!(reason.contains("okm"), "the gap names where it lives: {reason}");
+    assert_eq!(facts.status(), 200, "the fact table exports");
+    let body = facts.bytes().await.unwrap();
+    assert_eq!(shape(&body).0, 0, "an empty graph exports an empty edge table");
 
-    let nothing = client.get(format!("{base}/export/9")).send().await.unwrap();
+    let nothing = client.get(format!("{base}/export/nope")).send().await.unwrap();
     assert_eq!(nothing.status(), reqwest::StatusCode::NOT_FOUND);
 }
 
@@ -141,7 +146,7 @@ async fn the_export_is_a_snapshot_and_the_store_keeps_writing() {
             .unwrap();
     }
     let first = client
-        .get(format!("{base}/export/33"))
+        .get(format!("{base}/export/messages"))
         .send()
         .await
         .unwrap()
@@ -163,7 +168,7 @@ async fn the_export_is_a_snapshot_and_the_store_keeps_writing() {
         .await
         .unwrap();
     let second = client
-        .get(format!("{base}/export/33"))
+        .get(format!("{base}/export/messages"))
         .send()
         .await
         .unwrap()
@@ -171,4 +176,135 @@ async fn the_export_is_a_snapshot_and_the_store_keeps_writing() {
         .await
         .unwrap();
     assert_eq!(shape(&second).0, 3, "the second export sees the third write");
+}
+
+fn read_rows(body: &[u8]) -> arrow::record_batch::RecordBatch {
+    ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::copy_from_slice(body))
+        .expect("parquet")
+        .build()
+        .expect("footer")
+        .next()
+        .expect("one batch")
+        .expect("decodes")
+}
+
+/// The catalog is the door's index: every table by NAME, with the ns the store
+/// uses. A backup carries it so an import can go the other way.
+#[tokio::test]
+async fn the_catalog_names_every_table() {
+    let (base, _dir) = spawn_server().await;
+    let body = reqwest::Client::new()
+        .get(format!("{base}/export"))
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    let batch = read_rows(&body);
+    assert_eq!(batch.num_rows(), 8, "eight tables, eight catalog rows");
+    let names = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow::array::StringArray>()
+        .unwrap();
+    let mut got: Vec<&str> = (0..batch.num_rows()).map(|i| names.value(i)).collect();
+    got.sort_unstable();
+    assert_eq!(
+        got,
+        vec![
+            "checkpoints", "code", "cursors", "entities", "facts", "log", "members", "messages"
+        ]
+    );
+}
+
+/// A fact leaves as the edge table okm builds: (table, key) endpoints, the
+/// predicate's label, and the assertion's props in the `variant` column.
+#[tokio::test]
+async fn a_fact_exports_with_endpoints_and_props() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    client
+        .post(format!("{base}/memories/1"))
+        .json(&serde_json::json!([
+            "k10r", "system", {},
+            "DEPENDS_ON", { "why": "the backup reads it" },
+            "okm", "system", {}
+        ]))
+        .send()
+        .await
+        .unwrap();
+
+    let body = client
+        .get(format!("{base}/export/facts"))
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    let batch = read_rows(&body);
+    let schema = batch.schema();
+    assert_eq!(batch.num_rows(), 1);
+
+    let column = |name: &str| schema.index_of(name).expect(name);
+    let text = |name: &str| {
+        batch
+            .column(column(name))
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .unwrap()
+            .value(0)
+            .to_string()
+    };
+    assert_eq!(text("src_table"), "entities", "the catalog resolved the ns");
+    assert_eq!(text("dst_table"), "entities");
+    assert_eq!(text("predicate"), "DEPENDS_ON");
+    let variant = batch.column(column("variant"));
+    assert_eq!(variant.len(), 1);
+    assert!(variant.is_valid(0), "the props rode the variant column");
+}
+
+/// The derived reduce tables carry the watermarks — the thing a restore must
+/// replay before it allows another write.
+#[tokio::test]
+async fn the_reduce_tables_carry_the_watermarks() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    for description in ["first", "second"] {
+        client
+            .post(format!("{base}/code"))
+            .json(&PutCode {
+                language: "nu".into(),
+                description: description.into(),
+                parameters: "{}".into(),
+                source: "1".into(),
+            })
+            .send()
+            .await
+            .unwrap();
+    }
+
+    let body = client
+        .get(format!("{base}/export/code__reduces"))
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    let batch = read_rows(&body);
+    assert_eq!(batch.num_rows(), 1, "one whole-table group");
+    let value = batch
+        .column(3)
+        .as_any()
+        .downcast_ref::<arrow::array::BinaryArray>()
+        .unwrap()
+        .value(0)
+        .to_vec();
+    assert_eq!(
+        u64::from_be_bytes(value.try_into().unwrap()),
+        2,
+        "the watermark is the last id issued"
+    );
 }
