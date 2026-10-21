@@ -16,6 +16,18 @@
 路由声明在 `crates/mem-server/src/lib.rs`（router 块）；原语在
 `crates/mem-core/src/`。
 
+**门是怎么被打开的。** `crates/mem-server` 是一个库，所以有人托管 router 门就存在；
+托管形态是二进制 **`krystallizer`**（`crates/mem-server/src/main.rs`，该 crate 清单里的
+`[[bin]]`，按项目命名，于是进程管理器显示的是项目名而不是 crate 名）：
+
+```
+krystallizer --path <db-dir> [--addr <ip:port>]     # 默认 127.0.0.1:7760
+```
+
+只有两个参数，是有意的：库放哪、门在哪听。缺 `--path` 是用法错误而不是默认值——一个在
+「启动时所在目录」里自己建库的服务，下次换个目录启动就丢数据。打印的是**实际绑定**的地址，
+所以 `--addr 127.0.0.1:0`（让 OS 挑端口）仍然能告诉监管者去哪找。
+
 **门分两类，不可互换。**
 
 - **核心 API**——消费方的操作真正跑在它上面：循环的上下文读与追加、记忆答案、

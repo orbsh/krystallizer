@@ -17,6 +17,21 @@ agent with no turn loop) joins by adding a section, not a new mechanism.
 Routes are declared in `crates/mem-server/src/lib.rs` (the router block);
 primitives in `crates/mem-core/src/`.
 
+**How the doors are opened.** `crates/mem-server` is a library, so the doors exist
+as soon as somebody hosts the router; the hosted form is the binary **`krystallizer`**
+(`crates/mem-server/src/main.rs`, `[[bin]]` in that crate's manifest, named after the
+project so a process manager shows the project rather than the crate):
+
+```
+krystallizer --path <db-dir> [--addr <ip:port>]     # default 127.0.0.1:7760
+```
+
+Two flags, deliberately: where the database lives, and where the door listens. A
+missing `--path` is a usage error rather than a default, because a service that
+creates a database in whatever directory it was started from loses data the next
+time it starts somewhere else. The address printed is the BOUND one, so
+`--addr 127.0.0.1:0` (OS-picked port) still tells a supervisor where to look.
+
 **Two classes of door, and they are not interchangeable.**
 
 - **The CORE API** — what a consumer's operation actually runs on: the loop's

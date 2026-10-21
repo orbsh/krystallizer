@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# The binary is the PROJECT's name, not the crate's: a process manager should show
+# `krystallizer`, and the crate keeps the workspace's memory-core/ffi/server family.
+[[bin]]
+name = "krystallizer"
+path = "src/main.rs"
+
 [dependencies]
 mem-core = { path = "../mem-core" }
 axum.workspace = true
