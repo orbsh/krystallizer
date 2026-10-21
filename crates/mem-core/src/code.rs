@@ -24,7 +24,7 @@
 //! gravity is the only client (ADR-0001: the node never talks to
 //! krystallizer; the byte path is gravity → control path → node).
 
-use okm_core::{Document, DocumentEncode, FjallStore, KeyEncode};
+use okm_core::{Document, DocumentEncode, FjallStore, KeyEncode, ReduceCodec};
 
 /// Code identity: a surrogate id, nothing else (no name, no hash —
 /// gravity ADR-0003).
@@ -43,6 +43,11 @@ pub struct CodeKey {
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(CodeKey)]
 #[ok_ns(35)]
+// The surrogate counter is a WATERMARK (ADR-0023/0025, PLAN 2.9d): the highest
+// `code_id` ever written, maintained on every write, unfold a NO-OP. That is
+// exactly what an id allocator wants — a deleted row must not free its id for
+// reuse — and it is one point read at open instead of a scan of the last key.
+#[ok_reduce(HighWater(code_id))]
 pub struct CodeRow {
     pub language: String,
     pub description: String,
@@ -72,15 +77,20 @@ impl CodeStore {
 
     /// Attach the code table to an already-open store handle.
     pub fn wrap(store: FjallStore) -> Self {
+        // Surrogate ids are assigned here, so a fresh process must not hand out
+        // an id that collides with (and silently overwrites) a stored row. The
+        // watermark answers that in one point read: it is the highest `code_id`
+        // EVER written, so a withdrawn row does not free its id either. No
+        // watermark yet (a fresh table) → the counter starts at 1.
+        let water = okm_core::reduce::scan_reduces::<_, __OkmReduce_CodeRow_0>(
+            &store,
+            <CodeRow as Document>::NS_PREFIX,
+        )
+        .into_iter()
+        .next()
+        .map(|(_, acc)| acc);
         let table = <CodeRow as Document>::collection(store);
-        // Surrogate ids are assigned here, so a fresh process must not
-        // hand out an id that collides with (and silently overwrites) a
-        // stored row. `code_id` is the whole key: the last key in scan
-        // order carries the highest id. Empty table → counter starts 1.
-        let next_id = table
-            .scan_keys()
-            .last()
-            .map_or(1, |k| k.code_id.saturating_add(1));
+        let next_id = water.map_or(1, |w| w.saturating_add(1));
         Self { table, next_id }
     }
 

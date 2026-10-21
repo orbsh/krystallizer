@@ -2,7 +2,7 @@
 //! survives a reopen, the dynamic segment round-trips, and the table trims
 //! its oldest rows at the ceiling instead of growing without limit.
 
-use mem_core::log::{event, field, level};
+use mem_core::log::{event, field, level, source};
 use mem_core::{LogKey, LogStore, DEFAULT_MAX_ROWS};
 use okm_core::obj_dynamic::DynamicValue;
 use okm_core::KeyEncode;
@@ -46,6 +46,8 @@ fn a_row_round_trips_with_its_dynamic_fields() {
         1_700_000_000_000,
         level::WARN,
         event::COMPRESSION_VERDICT,
+        source::COMPRESS,
+        "",
         fields(&[
             (field::CHANNEL, DynamicValue::UInt(7)),
             (field::TRIGGER, DynamicValue::Str("cache_clock".into())),
@@ -76,7 +78,14 @@ fn a_row_round_trips_with_its_dynamic_fields() {
 fn a_row_without_dynamic_fields_is_an_event_line() {
     let dir = tempdir();
     let mut store = LogStore::open(dir.path()).expect("open");
-    let key = store.append(42, level::ERROR, event::ENGINE_ERROR, BTreeMap::new());
+    let key = store.append(
+        42,
+        level::ERROR,
+        event::ENGINE_ERROR,
+        "",
+        "",
+        BTreeMap::new(),
+    );
     let doc = store.get(&key).expect("row present");
     assert_eq!(doc.get(field::CHANNEL), None);
     assert_eq!(
@@ -91,9 +100,9 @@ fn a_row_without_dynamic_fields_is_an_event_line() {
 fn rows_read_in_time_order_and_same_millisecond_rows_keep_their_order() {
     let dir = tempdir();
     let mut store = LogStore::open(dir.path()).expect("open");
-    store.append(2, level::INFO, "second_ts", BTreeMap::new());
-    store.append(1, level::INFO, "first_ts", BTreeMap::new());
-    store.append(1, level::INFO, "first_ts_again", BTreeMap::new());
+    store.append(2, level::INFO, "second_ts", "", "", BTreeMap::new());
+    store.append(1, level::INFO, "first_ts", "", "", BTreeMap::new());
+    store.append(1, level::INFO, "first_ts_again", "", "", BTreeMap::new());
 
     let events: Vec<String> = store
         .entries()
@@ -113,12 +122,12 @@ fn seq_survives_a_reopen() {
     let dir = tempdir();
     let first = {
         let mut store = LogStore::open(dir.path()).expect("open");
-        store.append(5, level::INFO, "before", BTreeMap::new())
+        store.append(5, level::INFO, "before", "", "", BTreeMap::new())
     };
     assert_eq!(first.seq, 0);
 
     let mut store = LogStore::open(dir.path()).expect("reopen");
-    let second = store.append(5, level::INFO, "after", BTreeMap::new());
+    let second = store.append(5, level::INFO, "after", "", "", BTreeMap::new());
     assert_eq!(second.ts_ms, 5, "same millisecond on purpose");
     assert_eq!(second.seq, 1, "the counter continued past the stored key");
     assert_eq!(store.len(), 2, "both rows survive");
@@ -131,7 +140,7 @@ fn the_ceiling_drops_the_oldest_rows() {
     let dir = tempdir();
     let mut store = LogStore::open(dir.path()).expect("open").with_max_rows(3);
     for i in 0..5u64 {
-        store.append(i, level::INFO, &format!("e{i}"), BTreeMap::new());
+        store.append(i, level::INFO, &format!("e{i}"), "", "", BTreeMap::new());
     }
     assert_eq!(store.len(), 3);
     let events: Vec<String> = store
@@ -199,4 +208,72 @@ fn the_verdict_row_carries_the_decision_it_made() {
     assert_eq!(entry.0, key);
     assert_eq!(store.since(9_000).len(), 1);
     assert!(store.since(9_001).is_empty(), "the window is a lower bound");
+}
+
+/// The four declared fields (ADR-0011 §8): a level, an event, a source and a
+/// note. `event` and `source` are `Vocab<u16>` on disk — two bytes each — and
+/// come back as the labels they were written as, because okm interns on write
+/// and resolves on read. Nothing in this store touches the vocabulary.
+#[test]
+fn the_declared_fields_are_a_level_two_labels_and_a_note() {
+    let dir = tempdir();
+    let mut store = LogStore::open(dir.path()).expect("open");
+    let key = store.append(
+        7,
+        level::ERROR,
+        event::ENGINE_ERROR,
+        source::ENGINE,
+        "panic: boom",
+        BTreeMap::new(),
+    );
+
+    let row = store.row(&key).expect("row present");
+    assert_eq!(row.level, level::ERROR);
+    assert_eq!(row.event.as_str(), Some(event::ENGINE_ERROR));
+    assert_eq!(row.source.as_str(), Some(source::ENGINE));
+    assert_eq!(row.note, "panic: boom");
+
+    // A row whose fields already say everything writes no note; the empty label
+    // is a legal source, not a sentinel.
+    let bare = store.append(
+        8,
+        level::INFO,
+        event::COMPRESSION_LANDED,
+        "",
+        "",
+        BTreeMap::new(),
+    );
+    let bare = store.row(&bare).expect("row present");
+    assert_eq!(bare.note, "");
+    assert_eq!(bare.source.as_str(), Some(""));
+    assert_eq!(
+        bare.event.as_str(),
+        Some(event::COMPRESSION_LANDED),
+        "a second row in the same event resolves to the same label"
+    );
+}
+
+/// The counter is a WATERMARK, not a count of the rows present (PLAN 2.9d): the
+/// trim deletes from the front, and a counter derived from "the last stored key"
+/// would hand out a number already used once the table had been trimmed back to
+/// nothing. `HighWater(seq)` is maintained on every write and its unfold is a
+/// NO-OP, so the number keeps climbing across trims and restarts.
+#[test]
+fn the_counter_is_a_watermark_that_the_trim_cannot_rewind() {
+    let dir = tempdir();
+    let last_seq = {
+        let mut store = LogStore::open(dir.path()).expect("open").with_max_rows(1);
+        store.append(1, level::INFO, "a", "", "", BTreeMap::new());
+        let kept = store.append(2, level::INFO, "b", "", "", BTreeMap::new());
+        assert_eq!(store.len(), 1, "the trim keeps the ceiling");
+        kept.seq
+    };
+
+    let mut store = LogStore::open(dir.path()).expect("reopen");
+    let next = store.append(3, level::INFO, "c", "", "", BTreeMap::new());
+    assert_eq!(
+        next.seq,
+        last_seq + 1,
+        "a trimmed row's number is not handed out again"
+    );
 }

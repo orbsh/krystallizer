@@ -13,8 +13,9 @@
 //! writer of this table is the process itself, so ADR-0008 §3's rule (the
 //! caller owns the clock) does not reach here — that rule governs caller
 //! data, not the process's observations. `seq` is a process-local monotonic
-//! counter seeded from the last key at open, so a restart continues instead
-//! of overwriting a row written in the same millisecond.
+//! counter seeded from the `seq` WATERMARK at open (a declared `HighWater`
+//! reduce), so a restart continues instead of overwriting a row written in the
+//! same millisecond — and trimming rows does not rewind it.
 //!
 //! `level` and `event` are DECLARED fields — low cardinality, so a value is
 //! cheap and a face could be added later — and neither carries a 0x1 face:
@@ -29,7 +30,7 @@
 //! the accepted price: a diagnostic table, not a ledger.
 
 use okm_core::obj_dynamic::DynamicValue;
-use okm_core::{Collection, Document, DocumentEncode, FjallStore, KeyEncode};
+use okm_core::{Collection, Document, DocumentEncode, FjallStore, KeyEncode, ReduceCodec, Vocab};
 use std::collections::{BTreeMap, VecDeque};
 
 /// Severity, as a stored code. k10r never ACTS on it — a level is not a
@@ -56,6 +57,21 @@ pub mod event {
     pub const RETRIEVAL_INDEX: &str = "retrieval_index";
     /// An engine-level failure (the shell passes the original text through).
     pub const ENGINE_ERROR: &str = "engine_error";
+}
+
+/// Sources, as a vocabulary: the module or access path that emitted the row.
+/// An empty label means "none", which is legal — not a sentinel.
+pub mod source {
+    /// The compression policy (`compress::decide`).
+    pub const COMPRESS: &str = "compress";
+    /// The channel log's own writes (checkpoint, read clock).
+    pub const CHANNEL: &str = "channel";
+    /// The fact graph.
+    pub const GRAPH: &str = "graph";
+    /// The derived retrieval tables.
+    pub const RETRIEVAL: &str = "retrieval";
+    /// The storage engine and its batches.
+    pub const ENGINE: &str = "engine";
 }
 
 /// Dynamic-segment names this table uses. Not enforced by the store — listed
@@ -87,14 +103,35 @@ pub struct LogKey {
     pub seq: u64,
 }
 
-/// The fixed part of a log row. Two low-cardinality fields, both declared;
-/// everything else lives in the dynamic segment.
+/// The fixed part of a log row: four declared fields (ADR-0011 §8), everything
+/// else in the dynamic segment.
+///
+/// `event` and `source` are `Vocab<u16>` because each is a CLOSED, small,
+/// endlessly repeated set — a label in memory, two bytes on disk. Neither k10r
+/// nor this store interns anything: okm's write path does it (`Collection::put`
+/// → `__okm_intern`) and its read path resolves the label back (`get` →
+/// `__okm_deref_vocab`), so `append` takes `&str` and the call sites stay
+/// readable. The price is one document clone per write, the cost of `put(&R)`'s
+/// immutable signature — paid only because this row declares a Vocab field.
+///
+/// `note` is the ONE free-text field: a sentence about this row for a human (an
+/// engine error's original text, why an index was rebuilt). A value with a name
+/// of its own belongs in the dynamic segment, not here.
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(LogKey)]
 #[ok_ns(41)]
+// `seq` is a watermark (ADR-0023/0025, PLAN 2.9d), not a count of the rows
+// present: the trim deletes from the front, and a counter derived from "the last
+// key" would reuse a number after the whole table had been trimmed. The fold is
+// the highest `seq` ever written and the unfold is a NO-OP, which is precisely
+// the contract an id allocator needs.
+#[ok_reduce(HighWater(seq))]
 pub struct LogRow {
     pub level: u8,
-    pub event: String,
+    pub event: Vocab<u16>,
+    /// The module or access path that emitted the row; the empty label = none.
+    pub source: Vocab<u16>,
+    pub note: String,
 }
 
 /// One read row: the whole document, fixed fields and dynamic ones together.
@@ -129,11 +166,19 @@ impl LogStore {
 
     /// Attach the log table to an already-open store handle.
     pub fn wrap(store: FjallStore) -> Self {
+        // The watermark answers "where did the counter stop" in one point read,
+        // and it does not fall when the trim deletes the newest row — a scan of
+        // the last key would hand out a number already used.
+        let water = okm_core::reduce::scan_reduces::<_, __OkmReduce_LogRow_0>(
+            &store,
+            <LogRow as Document>::NS_PREFIX,
+        )
+        .into_iter()
+        .next()
+        .map(|(_, acc)| acc);
         let table = <LogRow as Document>::collection(store);
         let keys = table.scan_keys();
-        // The last key in scan order carries the highest `seq`; continuing
-        // past it keeps a restart from overwriting same-millisecond rows.
-        let seq = keys.last().map_or(0, |k| k.seq.saturating_add(1));
+        let seq = water.map_or(0, |w| w.saturating_add(1));
         let recent = keys
             .into_iter()
             .rev()
@@ -168,12 +213,16 @@ impl LogStore {
     }
 
     /// Append one diagnostic row. `fields` is the variable part — locator and
-    /// payload — and may be empty (a bare event line).
+    /// payload — and may be empty (a bare event line). `source` and `note` are
+    /// the two declared fields a caller may leave empty (`""`), which is the
+    /// honest default for a row whose fields already say everything.
     pub fn append(
         &mut self,
         ts_ms: u64,
         level: u8,
         event: &str,
+        source: &str,
+        note: &str,
         fields: BTreeMap<String, DynamicValue>,
     ) -> LogKey {
         let key = LogKey {
@@ -185,7 +234,9 @@ impl LogStore {
             &key,
             &LogRow {
                 level,
-                event: event.to_string(),
+                event: Vocab::of(event),
+                source: Vocab::of(source),
+                note: note.to_string(),
             },
         );
         if !fields.is_empty() {
@@ -237,7 +288,17 @@ impl LogStore {
         if let Some(gap) = verdict.max_gap_ms {
             fields.insert(field::MAX_GAP_MS.to_string(), DynamicValue::UInt(gap));
         }
-        self.append(now_ms, level::INFO, event::COMPRESSION_VERDICT, fields)
+        // No `note`: the fields above already say what happened, and a sentence
+        // repeating them is the kind of data that rots. `note` is for the rows
+        // the fields cannot carry.
+        self.append(
+            now_ms,
+            level::INFO,
+            event::COMPRESSION_VERDICT,
+            source::COMPRESS,
+            "",
+            fields,
+        )
     }
 
     /// Every row at or after `ts_ms`, in key order — a window over the table,
@@ -246,6 +307,14 @@ impl LogStore {
         let mut rows = self.entries();
         rows.retain(|(key, _)| key.ts_ms >= ts_ms);
         rows
+    }
+
+    /// The row's DECLARED fields, as stored (`event` and `source` resolve back to
+    /// their labels here). `get` returns the dynamic segment; this returns what
+    /// the row itself declares, which is what a test or an analysis reads when it
+    /// wants the level or the event without going through the map.
+    pub fn row(&mut self, key: &LogKey) -> Option<LogRow> {
+        self.table.get(key)
     }
 
     /// One row, fixed fields and dynamic ones together. `None` = absent.
