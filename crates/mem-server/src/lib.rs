@@ -114,6 +114,12 @@ pub fn open_with_compression(
         .route("/graph/{scope}/search", get(search_facts))
         .route("/graph/{scope}/top", get(top_facts))
         .route(
+            "/graph/{scope}/entities/{node_id}/anchored",
+            get(anchored_entity),
+        )
+        .route("/graph/{scope}/timeline", get(timeline_facts))
+        .route("/graph/{scope}/chain", get(chain_facts))
+        .route(
             "/graph/{scope}/facts/{edge_id}",
             get(fetch_fact).delete(withdraw_fact),
         )
@@ -719,6 +725,51 @@ pub struct FactSearchQuery {
     pub k: usize,
 }
 
+/// `GET /graph/{scope}/chain`'s query: where the chain starts, which predicate it
+/// follows, and how many hops are allowed. No default for `kind` — a chain over
+/// "whatever edges happen to point onward" is not a chain.
+#[derive(Deserialize)]
+pub struct ChainQuery {
+    pub from: u64,
+    pub kind: String,
+    pub hops: usize,
+}
+
+/// `GET /graph/{scope}/entities/{node_id}/anchored` — one node's memory, with the
+/// community it was binned into (`0` = not binned yet).
+#[derive(Serialize)]
+pub struct AnchoredDto {
+    pub node_id: u64,
+    pub community: u64,
+    pub facts: Vec<FactViewDto>,
+}
+
+impl From<mem_core::graph::Anchored> for AnchoredDto {
+    fn from(anchored: mem_core::graph::Anchored) -> Self {
+        Self {
+            node_id: anchored.node_id,
+            community: anchored.community,
+            facts: anchored.facts.into_iter().map(FactViewDto::from).collect(),
+        }
+    }
+}
+
+/// One hop of a causal chain: the depth it sits at, and the fact that takes it.
+#[derive(Serialize)]
+pub struct ChainHopDto {
+    pub depth: usize,
+    pub fact: FactViewDto,
+}
+
+impl From<mem_core::graph::ChainHop> for ChainHopDto {
+    fn from(hop: mem_core::graph::ChainHop) -> Self {
+        Self {
+            depth: hop.depth,
+            fact: FactViewDto::from(hop.fact),
+        }
+    }
+}
+
 /// `GET /graph/{scope}/top`'s query: how many, and nothing else. A ranking is not
 /// a search — no `q`, no clock, no format: the answer is the same shape as
 /// recall's facts.
@@ -804,6 +855,55 @@ async fn search_facts(
             )
         })
         .map_err(FactError::from)
+}
+
+/// `GET /graph/{scope}/entities/{node_id}/anchored` — the entity-anchored
+/// entrance (PLAN 4b): the facts that touch this node, then the rest of its
+/// community, heaviest first. Identity instead of similarity — no query, no
+/// embedding, no landing.
+async fn anchored_entity(
+    State(state): State<Arc<MemState>>,
+    Path((scope, node_id)): Path<(u64, u64)>,
+) -> Result<Json<AnchoredDto>, StatusCode> {
+    let mut graph = state.graph.lock().await;
+    graph
+        .anchored(scope, node_id)
+        .map(|anchored| Json(AnchoredDto::from(anchored)))
+        .ok_or(StatusCode::NOT_FOUND)
+}
+
+/// `GET /graph/{scope}/timeline?k=` — the temporal entrance: the scope's facts in
+/// the order they were learned, newest first.
+async fn timeline_facts(
+    State(state): State<Arc<MemState>>,
+    Path(scope): Path<u64>,
+    Query(query): Query<TopQuery>,
+) -> Json<Vec<FactViewDto>> {
+    let mut graph = state.graph.lock().await;
+    Json(
+        graph
+            .timeline(scope, query.k)
+            .into_iter()
+            .map(FactViewDto::from)
+            .collect(),
+    )
+}
+
+/// `GET /graph/{scope}/chain?from=&kind=&hops=` — the causal entrance: follow ONE
+/// predicate from a node, hop by hop. The answer's order IS the walk.
+async fn chain_facts(
+    State(state): State<Arc<MemState>>,
+    Path(scope): Path<u64>,
+    Query(query): Query<ChainQuery>,
+) -> Json<Vec<ChainHopDto>> {
+    let mut graph = state.graph.lock().await;
+    Json(
+        graph
+            .chain(scope, query.from, &query.kind, query.hops)
+            .into_iter()
+            .map(ChainHopDto::from)
+            .collect(),
+    )
 }
 
 /// One fact BY ITS ID — the deterministic read, the mirror of the write that

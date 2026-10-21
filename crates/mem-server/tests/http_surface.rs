@@ -624,3 +624,89 @@ async fn a_reference_link_rides_the_answer_as_an_address() {
         "and the address resolves"
     );
 }
+
+/// PLAN 4b over the wire: three entrances that need no query string query — an
+/// entity's anchored memory, the scope's timeline, and a causal chain over one
+/// predicate. Each answers from the structure the writes already laid down.
+#[tokio::test]
+async fn the_three_entrances_answer_without_a_query() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    for (src, since, dst) in [("a", 10, "b"), ("b", 20, "c"), ("c", 30, "a")] {
+        let response = client
+            .post(format!("{base}/memories/1"))
+            .json(&json!([src, "thing", {}, "LEADS_TO", {"since": since}, dst, "thing", {}]))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            response.status().is_success(),
+            "ingest failed: {} {:?}",
+            response.status(),
+            response.text().await.unwrap()
+        );
+    }
+    let a: serde_json::Value = client
+        .get(format!("{base}/memories/1/entities/a"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let a_id = a["node_id"].as_u64().unwrap();
+
+    let anchored: serde_json::Value = client
+        .get(format!("{base}/graph/1/entities/{a_id}/anchored"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(anchored["node_id"].as_u64().unwrap(), a_id);
+    assert!(
+        anchored["facts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["kind"] == "LEADS_TO"),
+        "the anchor's own facts are there"
+    );
+    assert_eq!(
+        client
+            .get(format!("{base}/graph/1/entities/999999/anchored"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "an unknown node has no anchored memory"
+    );
+
+    let timeline: Vec<serde_json::Value> = client
+        .get(format!("{base}/graph/1/timeline?k=2"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(timeline.len(), 2, "k bounds it");
+    assert_eq!(timeline[0]["since"].as_u64().unwrap(), 30, "newest first");
+    assert_eq!(timeline[1]["since"].as_u64().unwrap(), 20);
+
+    let chain: Vec<serde_json::Value> = client
+        .get(format!("{base}/graph/1/chain?from={a_id}&kind=LEADS_TO&hops=5"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let depths: Vec<u64> = chain
+        .iter()
+        .map(|hop| hop["depth"].as_u64().unwrap())
+        .collect();
+    assert_eq!(depths, vec![0, 1, 2], "the walk order IS the answer's order");
+}

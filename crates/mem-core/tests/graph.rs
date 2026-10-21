@@ -1086,3 +1086,87 @@ fn a_fact_can_point_at_another_fact_and_nothing_validates_the_pointer() {
     assert!(graph.fact_in_scope(1, detail).is_some());
     assert!(graph.fact_in_scope(1, 999_999).is_none());
 }
+
+/// PLAN 4b: the three entrances read the write-time structure instead of asking a
+/// question. Entity-anchored enters by identity, temporal by a fact's own clock,
+/// causal by following ONE predicate — none of them needs an embedding, a landing,
+/// or a graph algorithm on the read path.
+#[test]
+fn the_three_entrances_need_no_query() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap();
+    let ingest = |graph: &mut GraphStore, json: String| -> u64 {
+        match graph.ingest(1, &tuple(&json)).unwrap() {
+            IngestOutcome::Linked { edge_id }
+            | IngestOutcome::Rewritten { edge_id }
+            | IngestOutcome::Dropped { edge_id } => edge_id,
+        }
+    };
+
+    let a_leads_b = ingest(
+        &mut graph,
+        r#"["a","thing",{},"LEADS_TO",{"since":10},"b","thing",{}]"#.into(),
+    );
+    let b_leads_c = ingest(
+        &mut graph,
+        r#"["b","thing",{},"LEADS_TO",{"since":20},"c","thing",{}]"#.into(),
+    );
+    let c_leads_a = ingest(
+        &mut graph,
+        r#"["c","thing",{},"LEADS_TO",{"since":30},"a","thing",{}]"#.into(),
+    );
+    ingest(
+        &mut graph,
+        r#"["a","thing",{},"PREFERS",{"since":5},"x","thing",{}]"#.into(),
+    );
+
+    let a = graph.entity_by_name(1, "a").expect("a exists").0;
+
+    // Entity-anchored: everything that touches `a` comes back, and it comes back
+    // FIRST — the community's other facts, if any, follow it.
+    let anchored = graph.anchored(1, a).expect("a is a node");
+    assert_eq!(anchored.node_id, a);
+    let touch_a: Vec<u64> = anchored
+        .facts
+        .iter()
+        .filter(|f| f.src.node_id == a || f.dst.node_id == a)
+        .map(|f| f.edge_id)
+        .collect();
+    for id in [a_leads_b, c_leads_a] {
+        assert!(touch_a.contains(&id), "the anchor's own fact {id} is shown");
+    }
+    assert!(
+        anchored
+            .facts
+            .iter()
+            .take(touch_a.len())
+            .all(|f| f.src.node_id == a || f.dst.node_id == a),
+        "the anchor's facts lead the answer"
+    );
+    assert!(
+        graph.anchored(1, 999_999).is_none(),
+        "no node, no anchored read"
+    );
+
+    // Temporal: `since` is the order — newest first, no search involved.
+    let timeline = graph.timeline(1, 3);
+    let sinces: Vec<u64> = timeline.iter().map(|f| f.edge.since).collect();
+    assert_eq!(sinces, vec![30, 20, 10], "learned order, newest first");
+    assert!(graph.timeline(1, 0).is_empty());
+
+    // Causal: hop by hop over ONE predicate, cycle-safe and hop-bounded.
+    let chain = graph.chain(1, a, "LEADS_TO", 5);
+    let depths: Vec<usize> = chain.iter().map(|hop| hop.depth).collect();
+    assert_eq!(depths, vec![0, 1, 2], "a → b → c → a closes the loop");
+    assert_eq!(chain[0].fact.edge_id, a_leads_b);
+    assert_eq!(chain[1].fact.edge_id, b_leads_c);
+    assert_eq!(chain[2].fact.edge_id, c_leads_a);
+    assert!(
+        graph.chain(1, a, "LEADS_TO", 2).len() <= 2,
+        "the hop bound is a bound"
+    );
+    assert!(
+        graph.chain(1, a, "PREFERS", 3).len() == 1,
+        "only the named predicate is followed"
+    );
+}

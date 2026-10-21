@@ -43,8 +43,9 @@ pub use compress::{
 pub use config::{CompressionConfig, ConfigError, EmbeddingConfig, KrystallizerConfig, LogsConfig};
 pub use embedding::{EmbedError, Embedder};
 pub use graph::{
-    CommunitySeqKey, CommunitySeqRow, CommunitySlice, EntityKey, EntityRow, FactBody, FactEdge,
-    FactTuple, GraphStore, IngestError, IngestOutcome, Recall, Relation, Seed, Term, Touch,
+    Anchored, ChainHop, CommunitySeqKey, CommunitySeqRow, CommunitySlice, EntityKey, EntityRow,
+    FactBody, FactEdge, FactTuple, GraphStore, IngestError, IngestOutcome, Recall, REF_FIELD,
+    Relation, Seed, Term, Touch,
     COMMUNITY_NS, ENTITY_NS, FACT_NS, FUNCTIONAL_PROP, LANDING_FLOOR, LITERAL_KIND, LPA_RADIUS,
     LPA_ROUNDS, WEIGHT_SCALE,
 };

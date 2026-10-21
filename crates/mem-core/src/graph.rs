@@ -583,6 +583,23 @@ fn refs_of(value: &DynamicValue) -> Vec<u64> {
     }
 }
 
+/// One node's anchored memory (PLAN 4b): the facts that touch it, then its
+/// community's, and which community that was (`0` = not binned yet).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Anchored {
+    pub node_id: u64,
+    pub community: u64,
+    pub facts: Vec<FactView>,
+}
+
+/// One hop of a causal chain: how many steps out it is, and the fact that takes
+/// that step.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChainHop {
+    pub depth: usize,
+    pub fact: FactView,
+}
+
 /// The landing confidence floor (ADR-0003): below it nothing landed, and an
 /// EMPTY result is the legal answer — the caller injects no memory. One place,
 /// deliberately not a per-call parameter. It is a COSINE floor; the index
@@ -862,6 +879,123 @@ impl GraphStore {
             .unlink(edge_id)
             .map_err(IngestError::Storage)?;
         Ok(true)
+    }
+
+    /// Both directions out of one node — the symmetric neighbourhood. Cheap by
+    /// construction: each side is a ref list on the node rows (okm's `out_edges`
+    /// and `in_edges`), so the cost follows the NODE's degree, never the scope's
+    /// size. This is the entity-anchored entrance (PLAN 4b): a caller holding an
+    /// entity id gets its facts without a query, an embedding, or a landing.
+    pub fn neighbours(&mut self, scope: u64, node_id: u64) -> Vec<FactView> {
+        let node = self.node_ref(scope, node_id);
+        let mut ids = self.facts().out_edges(&node);
+        ids.extend(self.facts().in_edges(&node));
+        self.views_of(ids)
+    }
+
+    /// One node's anchored memory (PLAN 4b): the facts that touch it, heaviest
+    /// first, then the rest of its community — the same slice a recalled landing
+    /// renders, entered by IDENTITY instead of by similarity. A node with no
+    /// community yet (a fresh row) answers its own neighbourhood and nothing
+    /// else: `community_id == 0` means "not binned", not "community zero".
+    pub fn anchored(&mut self, scope: u64, node_id: u64) -> Option<Anchored> {
+        let row = self.entity(scope, node_id)?;
+        let own = self.neighbours(scope, node_id);
+        let mut seen: HashSet<u64> = own.iter().map(|f| f.edge_id).collect();
+        let mut facts = own;
+        if row.community_id != 0 {
+            let mut rest: Vec<FactView> = self
+                .community_facts(scope, row.community_id)
+                .into_iter()
+                .filter(|view| seen.insert(view.edge_id))
+                .collect();
+            rest.sort_by(|a, b| {
+                b.edge
+                    .weight
+                    .cmp(&a.edge.weight)
+                    .then_with(|| a.edge_id.cmp(&b.edge_id))
+            });
+            facts.extend(rest);
+        }
+        Some(Anchored {
+            node_id,
+            community: row.community_id,
+            facts,
+        })
+    }
+
+    /// The scope's facts in the order they were LEARNED, newest first (PLAN 4b's
+    /// temporal entrance): `since` is the fact's own clock, and a caller asking
+    /// "what changed lately" needs it as the order, not as a filter on a search.
+    ///
+    /// Like the weight ranking this bounds the RESULT, not the read: there is no
+    /// face on `since`, so this scans the scope and sorts. A `by_since` face is
+    /// the same owed seam as `by_weight`'s windowed walk — both wait on a range
+    /// scan over a declared `ok_index` in `okm-core`.
+    pub fn timeline(&mut self, scope: u64, limit: usize) -> Vec<FactView> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let mut facts = self.scope_facts(scope);
+        facts.sort_by(|a, b| {
+            b.edge
+                .since
+                .cmp(&a.edge.since)
+                .then_with(|| b.edge_id.cmp(&a.edge_id))
+        });
+        facts.truncate(limit);
+        facts
+    }
+
+    /// A causal chain (PLAN 4b): follow ONE predicate from `from`, hop by hop,
+    /// breadth-first, cycle-safe by node id and bounded by `max_hops`. No search
+    /// and no scoring — the order of the answer is the order of the walk, which is
+    /// what makes "A leads to B leads to C" readable as a sequence rather than a
+    /// pile of facts.
+    pub fn chain(&mut self, scope: u64, from: u64, kind: &str, max_hops: usize) -> Vec<ChainHop> {
+        let mut out: Vec<ChainHop> = Vec::new();
+        let mut visited: HashSet<u64> = HashSet::new();
+        visited.insert(from);
+        let mut frontier = vec![from];
+        for depth in 0..max_hops {
+            let mut next: Vec<u64> = Vec::new();
+            for node_id in frontier {
+                let ids = self.typed_out(scope, node_id, kind);
+                for edge_id in ids {
+                    let Some(view) = self.fact_view(edge_id) else {
+                        continue;
+                    };
+                    let target = view.dst.node_id;
+                    out.push(ChainHop { depth, fact: view });
+                    if visited.insert(target) {
+                        next.push(target);
+                    }
+                }
+            }
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
+        }
+        out
+    }
+
+    /// Deduplicate edge ids and order them weight-descending, ties by edge id —
+    /// the ordering every read that shows facts uses (ADR-0005).
+    fn views_of(&mut self, ids: Vec<u64>) -> Vec<FactView> {
+        let mut seen = HashSet::new();
+        let mut facts: Vec<FactView> = ids
+            .into_iter()
+            .filter(|id| seen.insert(*id))
+            .filter_map(|id| self.fact_view(id))
+            .collect();
+        facts.sort_by(|a, b| {
+            b.edge
+                .weight
+                .cmp(&a.edge.weight)
+                .then_with(|| a.edge_id.cmp(&b.edge_id))
+        });
+        facts
     }
 
     /// The heaviest facts of a scope, weight-descending, ties by edge id
