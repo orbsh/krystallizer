@@ -445,6 +445,11 @@ Reads: `entity(scope, node_id)`, `entity_by_name(scope, name)` →
 `(node_id, row)`, `entity_kind(kind_id)` → the token, `entity_props` /
 `fact_props` (the dynamic segments), `fact(edge_id)` → the decoded edge,
 `fact_in_scope(scope, edge_id)` → the deterministic point read (see below),
+`neighbours(scope, node_id)` → both directions out of one node (degree-cost, both
+sides are ref lists on the node rows), `anchored(scope, node_id)` → that
+neighbourhood then the node's community slice, `timeline(scope, limit)` → facts by
+`since`, newest first, `chain(scope, from, kind, hops)` → one predicate followed
+hop by hop,
 `out_edges` and `typed_out` (the traversal currency). For a bulk consumer
 (the visualization door) `scope_entities(scope)` and `scope_facts(scope)`
 return one scope whole — the scan is bounded by the primary-key prefix

@@ -64,6 +64,9 @@ analysis 类的门读；它永不在消费者的回合路径上，也永不作�
 | `GET /graph/{scope}` | `GraphStore::scope_entities` + `scope_facts`（一个 scope 作为节点 + 连边——渲染方的批量读；节点带 `community_id`） | 实体（36）+ 事实（37） | 已落（2026-10-17） |
 | `GET /graph/{scope}/search?q=&k=` | `GraphStore::retrieve`（**只有落点**：节点向量、内积、0.35 地板；无 engine = 200 + `[]`）——`recall` 回答之前做的那一步 | 实体（36） | 已落（2026-10-19） |
 | `GET /graph/{scope}/entities/{node_id}/edges` | `GraphStore::out_facts`（一跳，两端都已解析）——检视用；调用方要自己组更深的走法也从这里起步 | 事实（37）+ 实体（36） | 已落（2026-10-17） |
+| `GET /graph/{scope}/entities/{node_id}/anchored` | `GraphStore::anchored`——实体锚定入口（PLAN 4b）：先给碰这个节点的边，再接它的 `community_id` 切片，权重降序；未知节点 404 | 实体（36）+ 事实（37） | 已落（2026-10-20） |
+| `GET /graph/{scope}/timeline?k=` | `GraphStore::timeline`——时间入口：该 scope 的事实按 `since` 排，最新在前（这次读要扫 scope：还没有 `by_since` 面） | 事实（37） | 已落（2026-10-20） |
+| `GET /graph/{scope}/chain?from=&kind=&hops=` | `GraphStore::chain`——因果入口：沿一个具名谓词逐跳，防环、有界；每行的 `depth` 就是行走的顺序 | 事实（37）+ 实体（36） | 已落（2026-10-20） |
 | `GET /graph/{scope}/facts/{edge_id}` | `GraphStore::fact_in_scope`——**确定性**读：写返回的那个 `edge_id` 直接读回来，没有查询、没有向量；scope 与边自身的端点核对，所以别的 scope 的 id 是 404（这正是参考链接的地址） | 事实（37） | 已落（2026-10-20） |
 | `DELETE /graph/{scope}/facts/{edge_id}` | `GraphStore::withdraw`（okm 的 `unlink`：行与全部派生面条目在**一个**批里删净；204，或 id 在本 scope 不存在时 404） | 事实（37） | 已落（2026-10-20） |
 | — 无路由 | `entity` / `entity_props` / `fact` / `fact_props` / `typed_out`（核心其余**读**原语） | 事实图（36/37） | core 已落、无路由——审计读 |

@@ -368,7 +368,10 @@ pub struct FactEdge { /* since / confidence / weight / 五个计数器 */ }
 
 读：`entity(scope, node_id)`、`entity_by_name(scope, name)` → `(node_id, row)`、
 `entity_kind(kind_id)` → 词项、`entity_props` / `fact_props`（动态段）、
-`fact(edge_id)` → 解出的事实、`fact_in_scope(scope, edge_id)` → 确定性点读（见下）、
+`fact(edge_id)` → 解出的事实、`fact_in_scope(scope, edge_id)` → 确定性点读（见下）、`neighbours(scope, node_id)` → 一个节点的
+双向边（代价随度数，两侧都是节点行上的引用表）、`anchored(scope, node_id)` → 该邻域再接上它的
+社区切片、`timeline(scope, limit)` → 按 `since` 的事实序（最新在前）、
+`chain(scope, from, kind, hops)` → 沿一个谓词逐跳、
 `out_edges` 与 `typed_out`（遍历通货）。批量消费者
 （可视化门）用 `scope_entities(scope)` 与 `scope_facts(scope)` 整取一个 scope——
 扫描以主键前缀 `[scope]` 为界，而每条边只被走到一次（`ingest` 把两个端点都建在

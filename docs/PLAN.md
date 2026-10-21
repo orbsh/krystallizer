@@ -367,10 +367,30 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     the face and the O(n) read disappears. Gates: graph 26/0 (the ranking + scope
     isolation + `k=0`), http_surface 7/0 (the touched fact ranks first, `k` bounds
     the answer, an empty scope answers `[]`), 114/0 total, clippy 0.
-  - [ ] 4b. The three view shapes: entity-anchored, temporal, causal-chain — each
-    reads the write-time structure (community id + `by_community` + the rendered
-    community) rather than running a graph algorithm on the read path (ADR-0010),
-    plus the progressive fill the ranking above makes possible.
+  - [x] 4b. THE THREE ENTRANCES LANDED 2026-10-20 — each reads the write-time
+    structure instead of asking a question, which is the gap `recall` left: a
+    memory answer was only reachable by a vector landing.
+    - entity-anchored: `GraphStore::anchored(scope, node_id)` — the facts that
+      touch the node (both directions, from the node rows' ref lists, so the cost
+      follows its DEGREE) first, then the rest of its `community_id` slice from
+      the `by_community` face, heaviest first. A node with `community_id == 0`
+      answers its neighbourhood only: 0 means "not binned yet", not "community
+      zero". Dorr: `GET /graph/{scope}/entities/{node_id}/anchored` (404 for an
+      unknown node).
+    - temporal: `GraphStore::timeline(scope, limit)` — the scope's facts in the
+      order they were LEARNED (`since`, newest first). HONEST LIMIT: no face on
+      `since`, so this scans the scope and sorts; a `by_since` face waits on the
+      same okm seam as 4a (`by_weight`'s windowed walk). Door:
+      `GET /graph/{scope}/timeline?k=`.
+    - causal: `GraphStore::chain(scope, from, kind, max_hops)` — follow ONE named
+      predicate hop by hop, breadth-first, cycle-safe by node id, bounded by
+      `max_hops`. The answer's order IS the walk (`depth`), which is what makes
+      "A leads to B leads to C" readable as a sequence. Door:
+      `GET /graph/{scope}/chain?from=&kind=&hops=` (no default `kind`: a chain over
+      whatever edges point onward is not a chain).
+    Gates: graph 28/0 (anchor's facts lead, a cycle closes without re-expanding,
+    hop bound, one-predicate-only, `since` order, `k=0`), http_surface 10/0,
+    122/0 total, clippy 0.
   - [x] 4c. REFERENCE LINKS LANDED 2026-10-20: a fact names another fact's id in
     its props under `ref` — ONE id (`{"ref": 41}`) or a list (`{"ref": [41,57]}`) —
     and `FactView.refs` carries the result, so every answer that shows a fact also
