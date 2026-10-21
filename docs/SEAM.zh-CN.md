@@ -43,7 +43,7 @@ community id），但**维护**那个结构从来不是消费方的活儿。所�
 | `GET /memories/{scope}/entities/{name}` | `GraphStore::entity_by_name`（名/别名精确入口；未知名字 404） | 实体（36） | 已落（2026-10-17） |
 | `POST /memories/{scope}/edges/{id}/touch` | `GraphStore::touch`（调用方上报的工具调用：计数加一、权重重折；未知边或别的 scope 404） | facts (37) | 已落（2026-10-19） |
 | `POST /code` | `CodeStore::put` | code (35) | 已落 |
-| `GET /code` | `CodeStore::list`（池读：id + language + description，无 source） | code (35) | 已落 |
+| `GET /code` | ——2026-10-20 撤除（从来没有客户端读它；gravity 读的是 `GET /code/{id}`） | code (35) | 已不存在 |
 | `GET /code/{id}` | `CodeStore::get`（整行，含 source） | code (35) | 已落 |
 
 已从这一类撤除（2026-10-19，随 flat 记忆）：`POST /memory`、
@@ -88,7 +88,7 @@ in-process 不是第二道门：`InProcessSurface` 在调用方进程内链接�
 | 任务进度（一步一 task 行；读随轮首投影，完成在执行点写） | ADR-0003 §3/§4 | 读侧随 `GET /channels/{c}/members/{m}/session`；写侧尚无路由 | 任务顶点 + `task_links` 边，与事实同图 | 已声明——第三个接口面（ADR-0001）；gravity Phase 2.6 |
 | `recall_memory`——长期事实 | 工具面（未进代码） | `GET /memories/{scope}/recall?q=`（落点 + 着陆到的社区，已渲染）与 `GET /memories/{scope}/entities/{name}`（精确入口） | `GraphStore::recall` / `entity_by_name` | 图的门已落（2026-10-20）；工具面是后续件（gravity 侧） |
 | `commit_memory`——写事实 | 工具面 | `POST /memories/{scope}` | `GraphStore::ingest(fact)` | 门已落（2026-10-17）；工具本身是后续件（gravity 侧） |
-| `resolve_skills`——可选 skills 列表 | 工具面 | `GET /code`（bring-up：池读） | `CodeStore::list` | bring-up 形态已落；skill 节点（前置 / 步骤 / 经验 / 后验）是 Phase 5+ deferred |
+| `resolve_skills`——可选 skills 列表 | 工具面 | ——（无门：bring-up 的池读 2026-10-20 随零客户端一起撤除） | —— | skill 节点（前置 / 步骤 / 经验 / 后验）是 Phase 5+ deferred；列表跟它一起到，不提前 |
 | `invoke_skill`——计划里取码那一步 | 工具面 | `GET /code/{id}` | `CodeStore::get` | 已落 |
 | `invoke_skill`——调用本身 | 计划里的一步 | **不走 k10r**（见 §3） | — | gravity Phase 4.6 |
 | 初始化记忆（人设 / 风格） | 调用方无操作：它随投影到达 | — | 装配是 k10r 内部细节（从用户节点出发遍历，注入上下文头部） | 已声明（ADR-0001） |

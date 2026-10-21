@@ -3,9 +3,9 @@
 Phases reference ADRs; design content lives in the ADRs, never here.
 
 - [x] Phase 0 — Skeleton: mem-core crate + Fjall engine + PyO3 binding channel smoke test (one store / one search). (ADR-0002)
-- [ ] Phase 1 — Flat memory parity: store / search / forget / list / stats semantics on Fjall; retrieval = built-in local embedding model (in-process, no API, model locked with the data) landing into the landed community (rendered as id-bearing text), plus an exact name/alias point lookup as the second entrance. PG exit gate: end-to-end recall comparison on a fixed query set. (ADR-0002, ADR-0003, ADR-0007)
+- [x] Phase 1 — Flat memory parity: SUPERSEDED 2026-10-20, not abandoned unfinished — every goal here was re-answered on the graph by Phase 3 and the doors that came with it (the flat table itself was withdrawn in 3d), so the phase closes as "its successor did it" rather than staying open with an empty box. The original text stays for the record: store / search / forget / list / stats semantics on Fjall; retrieval = built-in local embedding model (in-process, no API, model locked with the data) landing into the landed community (rendered as id-bearing text), plus an exact name/alias point lookup as the second entrance. PG exit gate: end-to-end recall comparison on a fixed query set. (ADR-0002, ADR-0003, ADR-0007)
   - [x] 1a. Semantics: store / search (user-prefix scan) / forget / list / stats; config loading (`config/krystallizer.kdl`, knus, env-resolved secrets)
-  - [ ] 1b. Built-in embedder: local small model loaded in-process (no endpoint, no key), embeddings written as `Vector<f32>` frames; name/alias → node id point lookup
+  - [x] 1b. Built-in embedder — CLOSED 2026-10-20, its two halves landing elsewhere: the in-process model (no endpoint, no key) landed as `mem-core/src/embedding.rs` and writes `Vector<f32>` frames, but on the ENTITY row rather than a flat-memory row, and the vector table + Top-K it wanted landed as 1c on the graph; the name/alias → node point lookup landed as 3a's `GET /memories/{scope}/entities/{name}`. Nothing is owed here that another item did not pay.
     - Engine half LANDED 2026-10-17: `mem-core/src/embedding.rs` (`Embedder`: candle BERT, WordPiece tokenize → BERT → CLS pooling → L2 normalize), config `embedding { model-dir … }` + `KRYSTALLIZER_MODEL_DIR` override, model = BAAI/bge-small-zh-v1.5 (512-dim, artifact under `~/.local/share/krystallizer/models/`, not in the repo). Gates: mem-core 8/0 (embedding 3 — a missing artifact names the file it could not read; a Chinese sentence embeds to 512 unit-length floats; related text beats unrelated — the two inference tests skip when the machine has no artifact, so the default gate stays runnable anywhere), clippy 0, fmt clean.
     - Frame half LANDED 2026-10-17: `MemoryRow.embedding: Vector<f32>` (cold frame, ANY length — no `#[ok_len]` contract, because a model swap changes the data rather than the wire); `MemoryStore::store(…, embedding: &[f32])` states the vector and `get()` reads a row back; the SHELL embeds at the door — a `mem_core::Embedder` rides `mem-server`'s state (`open_with(path, Some(engine))`), while `open()` = no engine and rows then land with an empty frame. Gates: mem-core 8/0 lib + 6/0 smoke (a row's vector round-trips through a reopen, including a 512-wide one; an empty frame is not a zero vector), mem-server 5/0 memory_surface (an engine-attached door still round-trips), clippy 0, fmt clean. The mem-ffi binding passes an empty slice — it attaches no engine.
     - Owed: the per-user in-memory vector table + brute-force Top-K (1c), reading rows through `get` / a bulk vector read. Note: no door returns a row's VECTOR (2 KB per hit is what the code store's own pool-read rule refuses), so the vector's contents are asserted in mem-core and the door's test asserts that embedding does not change the surface.
@@ -194,9 +194,11 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   group, the two memory-keyspace tables declare different ns, a second
   open of the directory is refused), mem-server 8/0 (round trip, 404, pool
   shape, code + channel coexisting in one database), clippy 0, fmt clean.
-  Owed: `list()` is the declared
-  bring-up posture for a resolver's pool read — the graph's retrieval
-  replaces it.
+  CLOSED 2026-10-20: `list()` and its `GET /code` door were WITHDRAWN — gravity
+  reads one row by id at call time and never issued the pool read (verified: no
+  `/code` call in gravity or prism), so the "the graph's retrieval replaces it"
+  posture resolved to "nothing replaces it; the list arrives with the skill node
+  (Phase 5+)". Gates: 123/0.
 - [x] Phase 2.9 — Structured log (ADR-0011): one append-only table at ns 41,
   keyed `[ts_ms][seq]` (k10r's own clock; `seq` seeded from the last key at
   open), declared `level` + `event` from vocabulary constants and NO faces yet,
@@ -355,7 +357,7 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     `edge_id`, row rewritten in place), and a field-level `PATCH` would owe a
     ruling on who may change what and what happens to the weight. Gates:
     http_surface 8/0, 115/0 total, clippy 0.
-- [ ] Phase 4 — Clustered retrieval: entity-anchored / temporal / causal-chain views; progressive loading (a scope-wide Top-K by weight — the `by_scope_weight` declared face, `[scope][weight][edge_id]`, maintained as an index entry rather than a projection table; ADR-0005). Reads the write-time structure ADR-0010 lands (the node's community id + the `by_community` face + the rendered community) instead of running a graph algorithm on the read path. (ADR-0005, ADR-0010)
+- [x] Phase 4 — Clustered retrieval: LANDED 2026-10-20 (4a / 4b / 4c below). entity-anchored / temporal / causal-chain views; progressive loading (a scope-wide Top-K by weight — the `by_scope_weight` declared face, `[scope][weight][edge_id]`, maintained as an index entry rather than a projection table; ADR-0005). Reads the write-time structure ADR-0010 lands (the node's community id + the `by_community` face + the rendered community) instead of running a graph algorithm on the read path. (ADR-0005, ADR-0010)
   - [x] 4a. THE WEIGHT RANKING LANDED 2026-10-20: `GraphStore::top_by_weight(scope, k)`
     — the scope's heaviest facts, weight-descending, ties by edge id — and
     `GET /graph/{scope}/top?k=`. This is the progressive-loading face: a caller

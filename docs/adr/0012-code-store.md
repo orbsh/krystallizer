@@ -69,8 +69,11 @@ that uses it.
 
 ### 5. `list()` is a bring-up posture, not the interface
 
-`GET /code` returns identity + language + description and **no source**: enough to
-choose from, not enough to execute. It is the declared shape for a resolver's pool read
+The bring-up pool read (`GET /code`, identity + language + description and **no
+source**) was WITHDRAWN 2026-10-20: no consumer ever issued it — gravity reads one
+row by id at call time, and the resolver's "which step points at which code" question
+is the graph's (Phase 5+). A door nobody calls is a surface to keep honest for
+nothing. It was described as
 while skills do not yet link to code; when the graph's retrieval can answer "which code
 does a step of this skill point at", that query replaces the list.
 

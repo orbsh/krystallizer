@@ -50,7 +50,7 @@ sit here were exactly that (retired 2026-10-20).
 | `GET /memories/{scope}/entities/{name}` | `GraphStore::entity_by_name` (the exact name/alias entrance; 404 on an unknown name) | entities (36) | landed (2026-10-17) |
 | `POST /memories/{scope}/edges/{id}/touch` | `GraphStore::touch` (a caller-reported TOOL consult: counters bump, weight folds; 404 for an unknown edge or another scope's) | facts (37) | landed (2026-10-19) |
 | `POST /code` | `CodeStore::put` | code (35) | landed |
-| `GET /code` | `CodeStore::list` (pool read: id + language + description, no source) | code (35) | landed |
+| `GET /code` | — WITHDRAWN 2026-10-20 (no client ever read it; `GET /code/{id}` is the read gravity makes) | code (35) | gone |
 | `GET /code/{id}` | `CodeStore::get` (the whole row, source included) | code (35) | landed |
 
 Withdrawn from this class (2026-10-19, with flat memory): `POST /memory`,
@@ -98,7 +98,7 @@ Every operation in this table rides a CORE door (§1a); the analysis class
 | Task progress (one task row per step; read with the turn-start projection, completion written at the call site) | ADR-0003 §3/§4 | read side rides `GET /channels/{c}/members/{m}/session`; the write face has no route yet | task vertices + `task_links` edges in the same graph as the facts | Declared — the third interface surface (ADR-0001; gravity Phase 2.6 |
 | `recall_memory` — long-term facts | tool face (not in code yet) | `GET /memories/{scope}/recall?q=` (landing + the landed community, rendered) beside `GET /memories/{scope}/entities/{name}` (the exact entrance) | `GraphStore::recall` / `entity_by_name` | graph doors landed (2026-10-20); the tool face is a FOLLOW-UP (gravity side) |
 | `commit_memory` — write facts | tool face | `POST /memories/{scope}` | `GraphStore::ingest(fact)` | door landed (2026-10-17); the tool itself is a FOLLOW-UP (gravity side) |
-| `resolve_skills` — the selectable skill list | tool face | `GET /code` (bring-up: the pool read) | `CodeStore::list` | bring-up form landed; the skill NODE (preconditions / steps / experience / verification) is Phase 5+ deferred |
+| `resolve_skills` — the selectable skill list | tool face | — (no door: the bring-up pool read was withdrawn 2026-10-20 with zero clients) | — | the skill NODE (preconditions / steps / experience / verification) is Phase 5+ deferred; the list arrives with it, not before |
 | `invoke_skill` — plan step: fetch the code row | tool face | `GET /code/{id}` | `CodeStore::get` | landed |
 | `invoke_skill` — the call itself | plan step | **not k10r** (see §3) | — | gravity Phase 4.6 |
 | Initialization memory (persona / style) | — the caller performs no operation: it arrives inside the projection | — | assembly is k10r-internal (a traversal from the user node, injected at the head of the context) | Declared (ADR-0001 |
