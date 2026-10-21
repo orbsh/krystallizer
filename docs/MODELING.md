@@ -461,11 +461,14 @@ row and every derived face entry in one batch (okm's `unlink`) — and
 same `edge_id` the write returned. Nothing in that loop needs a search: a
 reference is an id.
 
-**Reference links.** A fact may name another fact's id in its props when the
-other one is not central enough to sit in the head; the reader then decides
-whether to follow it (`fact_in_scope`, one id) or not. The same shape skills
-use one level up — a pointer the reader may take, not a subtree the writer
-forces in.
+**Reference links.** A fact names another fact's id in its props under `ref` —
+one id or a list — when the other one is not central enough to sit in the head;
+the reader then decides whether to follow it (`fact_in_scope`, one id) or not.
+`FactView.refs` carries the ids, the doors carry them as `refs`, and the renderers
+print them as addresses (`· refs=#41,#57`): a pointer the reader may take, never a
+subtree the writer forces in — the shape skills use one level up. Nothing
+validates the target: a dangling link is the reader's 404, and a `ref` that is not
+an id is not a reference at all.
 
 ### Storage assembly
 

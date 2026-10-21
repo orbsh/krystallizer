@@ -371,13 +371,23 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     reads the write-time structure (community id + `by_community` + the rendered
     community) rather than running a graph algorithm on the read path (ADR-0010),
     plus the progressive fill the ranking above makes possible.
-  - [ ] 4c. REFERENCE LINKS (ruled 2026-10-20, encoding owed): a fact may name
-    another fact's id in its props when that one is not central enough to sit in
-    the head; the reader decides whether to follow it (`fact_in_scope`, one id) or
-    stop — the mechanism skills use one level up: a pointer the reader may take,
-    never a subtree the writer forces in. Owed: the prop NAME (and whether it
-    holds one id or a list), and whether the head renderer prints it as a link or
-    keeps it invisible.
+  - [x] 4c. REFERENCE LINKS LANDED 2026-10-20: a fact names another fact's id in
+    its props under `ref` — ONE id (`{"ref": 41}`) or a list (`{"ref": [41,57]}`) —
+    and `FactView.refs` carries the result, so every answer that shows a fact also
+    shows what it points at. The renderers print the pointer as an ADDRESS
+    (`… · refs=#41,#57`) rather than inlining the target: an id is a place the
+    reader may go (`GET /graph/{scope}/facts/{id}`), never a subtree the writer
+    forces in. The head keeps its names-not-ids rule for IDENTITY and still shows
+    the pointer, because an address without the id would be useless.
+    Deliberately unvalidated: the target may be missing (a dangling link is the
+    reader's 404, not a write error) and a value that is not an id is not a
+    reference at all (`refs_of` drops it) — a writer's mistake must not become a
+    phantom target. Cost, stated rather than hidden: one extra point read per shown
+    fact (the props read), which is what makes the pointer visible in the answer.
+    Gates: graph 27/0 (one id, a list kept in order with a dangling entry, no
+    `ref`, a non-id ref), render 8/0 (the tail appears only when there are refs),
+    http_surface 9/0 (`refs` rides the DTO and the address resolves), 120/0 total,
+    clippy 0.
 - [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), SKILL topological four-part nodes, Aura Actor nodes. (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.) ADR-0010 takes the incremental LOCAL form of community detection onto the write side and leaves OPEN whether that promotes a slice of Phase 5 ahead of Phase 3/4 — an open ruling, not settled.
 
 Deferred gates:
