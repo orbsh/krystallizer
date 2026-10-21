@@ -72,6 +72,7 @@ fn entity_key_layout_is_hex_locked() {
 #[test]
 fn edge_payload_layout_is_locked() {
     let edge = FactEdge {
+        scope: 3,
         since: 7,
         confidence: 200,
         weight: 3,
@@ -84,19 +85,20 @@ fn edge_payload_layout_is_locked() {
     let payload = edge.encode_payload();
     assert_eq!(
         payload.len(),
-        3 + 8 + 1 + 4 + 4 + 4 + 4 + 8 + 8,
+        3 + 8 + 8 + 1 + 4 + 4 + 4 + 4 + 8 + 8,
         "header + the fixed fields"
     );
     assert_eq!(payload[0], 2, "layout version");
-    assert_eq!(&payload[1..3], &41u16.to_be_bytes(), "hot_len");
-    assert_eq!(&payload[3..11], &7u64.to_be_bytes(), "since");
-    assert_eq!(payload[11], 200, "confidence");
-    assert_eq!(&payload[12..16], &3u32.to_be_bytes(), "weight");
-    assert_eq!(&payload[16..20], &5u32.to_be_bytes(), "read_count");
-    assert_eq!(&payload[20..24], &2u32.to_be_bytes(), "write_count");
-    assert_eq!(&payload[24..28], &9u32.to_be_bytes(), "tool_count");
-    assert_eq!(&payload[28..36], &1_000u64.to_be_bytes(), "last_read");
-    assert_eq!(&payload[36..44], &900u64.to_be_bytes(), "last_write");
+    assert_eq!(&payload[1..3], &49u16.to_be_bytes(), "hot_len");
+    assert_eq!(&payload[3..11], &3u64.to_be_bytes(), "scope");
+    assert_eq!(&payload[11..19], &7u64.to_be_bytes(), "since");
+    assert_eq!(payload[19], 200, "confidence");
+    assert_eq!(&payload[20..24], &3u32.to_be_bytes(), "weight");
+    assert_eq!(&payload[24..28], &5u32.to_be_bytes(), "read_count");
+    assert_eq!(&payload[28..32], &2u32.to_be_bytes(), "write_count");
+    assert_eq!(&payload[32..36], &9u32.to_be_bytes(), "tool_count");
+    assert_eq!(&payload[36..44], &1_000u64.to_be_bytes(), "last_read");
+    assert_eq!(&payload[44..52], &900u64.to_be_bytes(), "last_write");
     assert_eq!(FactEdge::decode_payload(&payload), edge);
 }
 
@@ -1169,4 +1171,70 @@ fn the_three_entrances_need_no_query() {
         graph.chain(1, a, "PREFERS", 3).len() == 1,
         "only the named predicate is followed"
     );
+}
+
+/// PLAN 4a: the scope rides the row because a face cannot be probed by something
+/// the index does not carry. It is a copy — the endpoints stay the authority — so
+/// the test pins both the copy and the fact that a functional rewrite (same
+/// `edge_id`, new payload) keeps it.
+#[test]
+fn the_scope_is_denormalized_onto_the_row_and_a_rewrite_keeps_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap();
+    let IngestOutcome::Linked { edge_id } = graph
+        .ingest(
+            7,
+            &tuple(
+                r#"["deploy_target","thing",{},"RUNS",{"functional":true,"since":10},"box_a","thing",{}]"#,
+            ),
+        )
+        .unwrap()
+    else {
+        panic!("first fact links");
+    };
+    assert_eq!(graph.fact_in_scope(7, edge_id).unwrap().edge.scope, 7);
+    assert!(
+        graph.fact_in_scope(8, edge_id).is_none(),
+        "the copy agrees with the endpoints, which is what the face depends on"
+    );
+
+    let IngestOutcome::Rewritten { edge_id: again } = graph
+        .ingest(
+            7,
+            &tuple(
+                r#"["deploy_target","thing",{},"RUNS",{"functional":true,"since":20},"box_b","thing",{}]"#,
+            ),
+        )
+        .unwrap()
+    else {
+        panic!("a functional relation rewrites");
+    };
+    assert_eq!(again, edge_id, "same row");
+    let view = graph.fact_in_scope(7, edge_id).unwrap();
+    assert_eq!(view.edge.scope, 7, "the copy survives the rewrite");
+    assert_eq!(view.dst.name, "box_b", "the endpoints are the new ones");
+}
+
+/// The time face is scope-blind, so the walk skips other scopes' keys instead of
+/// trusting them — and the answer says so by never showing them.
+#[test]
+fn the_timeline_skips_other_scopes_on_a_scope_blind_face() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap();
+    graph
+        .ingest(
+            1,
+            &tuple(r#"["a","thing",{},"KNOWS",{"since":10},"b","thing",{}]"#),
+        )
+        .unwrap();
+    graph
+        .ingest(
+            2,
+            &tuple(r#"["x","thing",{},"KNOWS",{"since":99},"y","thing",{}]"#),
+        )
+        .unwrap();
+
+    let timeline = graph.timeline(1, 10);
+    assert_eq!(timeline.len(), 1, "only scope 1's fact");
+    assert_eq!(timeline[0].edge.scope, 1);
 }

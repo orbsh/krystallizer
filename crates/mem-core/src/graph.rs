@@ -182,6 +182,8 @@ pub struct EntityRow {
 }
 
 use __OkmIndex_EntityRow_by_community as ByCommunity;
+use __OkmIndex_FactEdge_by_scope_weight as ByScopeWeight;
+use __OkmIndex_FactEdge_by_since as BySince;
 /// The fact row's weight face (ADR-0005 `W:{weight}:{edge_id}`), declared on
 /// `FactEdge` — the progressive read's ordering, ascending in the index and
 /// walked in reverse for the heaviest first.
@@ -215,8 +217,19 @@ use __OkmIndex_EntityRow_by_name as ByName;
     by_since { fields(since) },
     by_confidence { fields(confidence) },
     by_weight { fields(weight) },
+    // The scope-prefixed ranking (PLAN 4a): `by_weight` alone cannot answer "the
+    // heaviest facts of scope 7" without fetching a row per key, because the scope
+    // lives on the endpoints, not in the index. This face puts it first, so one
+    // probe yields that scope's keys in weight order.
+    by_scope_weight { fields(scope, weight) },
 )]
 pub struct FactEdge {
+    /// The scope this fact lives in — a DENORMALIZED copy of its source
+    /// endpoint's scope, written once and never changed. It exists so the
+    /// `by_scope_weight` face can be probed by scope (PLAN 4a); the endpoints
+    /// remain the authority, and `write_edge` sets this from the call's scope.
+    #[ok_default(0)]
+    pub scope: u64,
     #[ok_default(0)]
     pub since: u64,
     #[ok_default(255)]
@@ -925,26 +938,44 @@ impl GraphStore {
     }
 
     /// The scope's facts in the order they were LEARNED, newest first (PLAN 4b's
-    /// temporal entrance): `since` is the fact's own clock, and a caller asking
-    /// "what changed lately" needs it as the order, not as a filter on a search.
+    /// temporal entrance).
     ///
-    /// Like the weight ranking this bounds the RESULT, not the read: there is no
-    /// face on `since`, so this scans the scope and sorts. A `by_since` face is
-    /// the same owed seam as `by_weight`'s windowed walk — both wait on a range
-    /// scan over a declared `ok_index` in `okm-core`.
+    /// It walks the `by_since` face instead of the rows: one probe (empty — the
+    /// whole face), reverse order, and only the rows it keeps are decoded and
+    /// resolved. The face carries `since` + edge id, so the walk's order IS the
+    /// answer's order, newest first, ties by edge id descending.
+    ///
+    /// The face is scope-blind, so the walk skips the keys of other scopes; that
+    /// costs a row read per key until `limit` of this scope are found. A
+    /// scope-prefixed time face (`by_scope_since`) would remove that, and it is
+    /// the same declaration shape as `by_scope_weight` — worth it only when a
+    /// scope carries enough facts for the skip to matter.
     pub fn timeline(&mut self, scope: u64, limit: usize) -> Vec<FactView> {
         if limit == 0 {
             return Vec::new();
         }
-        let mut facts = self.scope_facts(scope);
-        facts.sort_by(|a, b| {
-            b.edge
-                .since
-                .cmp(&a.edge.since)
-                .then_with(|| b.edge_id.cmp(&a.edge_id))
-        });
-        facts.truncate(limit);
-        facts
+        let ids: Vec<u64> = {
+            let facts = self.facts();
+            okm_core::model::index::scan_index::<_, BySince>(facts.store(), FactEdge::NS_PREFIX, &[])
+                .into_iter()
+                .rev()
+                .map(|key| key.decoded.0)
+                .collect()
+        };
+        let mut out = Vec::new();
+        for id in ids {
+            let Some(fact) = self.fact_view(id) else {
+                continue;
+            };
+            if fact.edge.scope != scope {
+                continue;
+            }
+            out.push(fact);
+            if out.len() == limit {
+                break;
+            }
+        }
+        out
     }
 
     /// A causal chain (PLAN 4b): follow ONE predicate from `from`, hop by hop,
@@ -998,29 +1029,43 @@ impl GraphStore {
         facts
     }
 
-    /// The heaviest facts of a scope, weight-descending, ties by edge id
-    /// (Phase 4's progressive read).
+    /// The heaviest facts of a scope, weight-descending, ties by edge id — the
+    /// progressive face (PLAN 4a).
     ///
-    /// It reads the scope's facts and keeps `k` — a bounded RESULT, not yet a
-    /// bounded READ. The ordering this wants is a lazy reverse walk over the
-    /// `by_weight` face (ADR-0005's `W:{weight}:{edge_id}`), and okm's `Graph`
-    /// exposes an exact-face lookup (`by_attr_face`) but no range iterator. The
-    /// face is maintained on every write already, so the walk is a small addition
-    /// to `okm-core` (a range scan over a declared `ok_index`), not a redesign —
-    /// PLAN Phase 4 records it as the owed seam. Until then this is correct and
-    /// bounded, and pays O(n) reads for O(k) rows.
+    /// One probe of the `by_scope_weight` face gives this scope's keys in weight
+    /// order (`[scope][weight][edge_id]`), the walk stops at `k` keys, and only
+    /// those k rows are decoded — so the read is O(k rows) + O(scope keys), not
+    /// O(scope rows). The keys belong to one scope by construction, which is why
+    /// the scope is a denormalized field on the row: a face cannot be probed by
+    /// something the index does not carry.
     pub fn top_by_weight(&mut self, scope: u64, k: usize) -> Vec<FactView> {
         if k == 0 {
             return Vec::new();
         }
-        let mut facts = self.scope_facts(scope);
+        let ids: Vec<u64> = {
+            let facts = self.facts();
+            okm_core::model::index::scan_index::<_, ByScopeWeight>(
+                facts.store(),
+                FactEdge::NS_PREFIX,
+                &scope.to_be_bytes(),
+            )
+            .into_iter()
+            .rev()
+            .take(k)
+            .map(|key| key.decoded.0)
+            .collect()
+        };
+        let mut facts: Vec<FactView> = ids.into_iter().filter_map(|id| self.fact_view(id)).collect();
+        // The face orders by (scope, weight, edge_id) ascending; reversed that is
+        // weight-descending with the tie on edge id DESCENDING. The documented
+        // order keeps ties ascending, so the k rows are put back in it here — k
+        // rows, never the scope.
         facts.sort_by(|a, b| {
             b.edge
                 .weight
                 .cmp(&a.edge.weight)
                 .then_with(|| a.edge_id.cmp(&b.edge_id))
         });
-        facts.truncate(k);
         facts
     }
 
@@ -1519,6 +1564,7 @@ impl GraphStore {
             }
         }
         let edge = FactEdge {
+            scope,
             since,
             confidence,
             ..Default::default()
