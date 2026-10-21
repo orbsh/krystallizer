@@ -223,7 +223,7 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     bound in key order, bounded by `max_rows`. Covered at the row level (mem-core
     log 8/0); the door's single call is compiled but not asserted end to end —
     that needs either a read door (ADR-0011 says none) or a debug endpoint.
-  - [ ] 2.9c. THE LOG'S FIELD SHAPE (ruled 2026-10-20, NOT landed): `event` and
+  - [x] 2.9c. THE LOG'S FIELD SHAPE LANDED 2026-10-20: `event` and
     `source` become `Vocab<u16>` (a closed, small, endlessly repeated set — two
     bytes, no spellings), `note Str` is the ONE free-text field, `level u8` and
     `ts_ms u64` stay, everything else rides the dynamic segment (ADR-0011 §8). The
@@ -232,14 +232,26 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     `get` runs `__okm_deref_vocab`), so `append` keeps taking `&str` — it gains a
     `source` argument and builds `Vocab::of(..)` internally, and no call site
     changes. The one cost is a document clone per write on a vocab-declaring table.
-    Layout break is clean (pre-production, ADR-0018 — no migration).
-  - [ ] 2.9d. INTERNAL COUNTERS VIA `ok_reduce`'s HighWater (ruled 2026-10-20):
+    Layout break is clean (pre-production, ADR-0018 — no migration). It waited on
+    one thing only: krystallizer's pinned okm rev predated Vocab document fields
+    (`DocumentEncode: unsupported type Vocab<u16>`), so the lock moved e0842a7 →
+    49c7406 — the vocabulary commits — and the row compiled as ruled. `LogStore::
+    row(key)` now returns the declared fields (the map read gives the dynamic
+    segment), which is what the test asserts. Gates: log 9/0, 116/0 total,
+    clippy 0.
+  - [x] 2.9d. INTERNAL COUNTERS LANDED ON `ok_reduce`'s HighWater 2026-10-20:
     `LogStore::seq` and `CodeStore::next_id` currently recover their high-water by
     reading the table's last key at open. `#[ok_reduce(HighWater(field))]` with no
     `group(…)` is ONE whole-table group maintained on every write — unfold is a
     NO-OP, a watermark must not fall when the newest row is deleted — and read in
-    O(1) via `reduce_get`. The non-resetting semantics is what an internal id
-    wants: deleting the highest id must not make the next one reuse it.
+    O(1) via `scan_reduces` (one entry: no group segment). The non-resetting
+    semantics is what an internal id wants: deleting the highest id must not make
+    the next one reuse it. Landed on both: `LogRow` declares `HighWater(seq)`
+    (`seq` is a KEY field — okm's two-source rule resolves it) and `CodeRow`
+    declares `HighWater(code_id)`; each store reads the watermark once at open
+    instead of scanning keys. The log test proves the point the scan got wrong:
+    trim the table back to one row, reopen, and the counter continues past the
+    number the trim deleted. Gates: log 10/0, 117/0 total, clippy 0.
 - [x] Phase 3 — Atomic-fact graph: fact node/edge tables, ingestion of the 8-slot fact tuple (the facts arrive by the model's ACTIVE add — the caller routes that call to `ingest(fact)`; no compression pass and no trailing extraction worker, ADR-0008, write-time fusion (in-domain id / out-of-domain embedding convergence + small-candidate LLM decision — the LLM decision is gravity's, per ADR-0007's boundary), weight system (the counters on the edge row, read-write quadrants, tool_invoke_count); initialization memory (人设/风格) — a traversal from the user node, delivered at the context head; the task graph (task vertices + `task_links` dependency edges) shares that same graph — tasks are the third interface surface, their instance state structured rather than approximate. Write-time resolution (upsert on a new fact) and cognitive binning ride this side per ADR-0010 (fact node / community reverse index / the community sequence; ns 36/37 for the graph, 38 for the sequence). Scope note: append-first covers THIS side (node/edge rows, weights, derived entries) — the log does not (ADR-0002. Flat memory (ns 32) and its HTTP door are withdrawn in this landing: the graph is its successor (ADR-0001's carrier line, "flat memory, then the graph") — flat was the pre-graph form of the same extracted knowledge, and a text row carries no per-fact identity. What is owed with it: the fate of legacy flat rows (ADR-0002's PG migration imports them as-is) is a migration question, not a schema one. (ADR-0001, ADR-0002, ADR-0004, ADR-0005, ADR-0007, ADR-0010)
   - [x] 3a. The write side's steps 1–2 LANDED (2026-10-17): the entities
     collection (ns 36) + the facts edge collection (ns 37) and the

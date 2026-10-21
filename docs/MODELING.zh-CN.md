@@ -160,13 +160,14 @@ ADR-0011。表与 store 在 `crates/mem-core/src/log.rs`。第一个写者是压
 `trigger`（词）/ `assembled_bytes`，以及真正触发的信号，键用 k10r 自己的钟；
 没触发的信号不写字段。读是窗口（`since(ts_ms)`），不是查询语言。
 
-字段形状**已裁决、尚未落地**（ADR-0011 §8）：`event` 与 `source` 改成 `Vocab<u16>`——
+字段形状（ADR-0011 §8，2026-10-20 已落地）：`event` 与 `source` 改成 `Vocab<u16>`——
 封闭、小、无限重复的集合正是词汇表的用武之地，2 字节拼不错，拼错从「谁也 group 不了的行」
 变成编译错误——`note Str` 留作唯一的自由文本字段，`level u8` 留作代码要比较的一小块
 有序域。内化是**类型**的事，不是 store 的事：okm 写时自己内化（`Collection::put` →
 `__okm_intern`）、读时自己解回标签（`get` → `__okm_deref_vocab`），所以 `append` 照样收
 `&str`、内部 `Vocab::of(..)`，调用点一行不改；代价是声明了 Vocab 字段的表每次写多一次
-文档克隆。已裁决未落地，一次干净的断代（预生产，ADR-0018）——见 PLAN 2.9c。
+文档克隆。`LogStore::row(key)` 返回声明字段（map 读给的是动态段），所以读 level 不必
+走名字。见 PLAN 2.9c。
 
 ### `LogKey` / `LogRow`（ns 41）
 
@@ -178,10 +179,12 @@ pub struct LogRow { pub level: u8, pub event: String }   // 另有动态段
 - 键 `[ts_ms 8B][seq 8B]`——BE 定宽，字节序即时间序：「最近 N 条」「T 附近的窗口」
   与回放都是前缀/区间扫。`ts_ms` 是 **k10r 自己的钟**（写者就是进程；ADR-0008 §3
   的「调用方持钟」管的是调用方数据，不是进程自己的观察）。`seq` 是进程内单调计数，
-  开库时从最后一个键续上（与 id 恢复同一套做法），所以重启是接着写而不是覆盖。
-- 行：`level u8`（trace/debug/info/warn/error）与 `event String`，两个都取自常量
-  词汇表，都是声明字段，且**都不挂 0x1 面**——面是每行多一条索引写，换来一个当前
-  没人发的查询；等某个查询成了热路径再加。
+  开库时从它自己的**水位**续上——一条声明式 `HighWater(seq)` reduce，fold 取「历史最大值」，
+  unfold 是 NO-OP——所以重启是接着写而不是覆盖，裁剪也不会把号码发第二次。
+- 行：`level u8`（trace/debug/info/warn/error）、`event Vocab<u16>`、
+  `source Vocab<u16>`（模块或访问路径，空 = 无）、`note Str`（唯一的自由文本字段）。
+  标签取自 `log::event` / `log::source` 的常量，且**都不挂 0x1 面**——面是每行多一条索引写，
+  换来一个当前没人发的查询；等某个查询成了热路径再加。
 - 变的部分全在槽 1 的动态段：**定位**（`channel` / `scope` / `entity` / `edge` /
   `msg`，哪个适用记哪个）与**载荷**（参数快照、信号实测值、切分点、错误原文）。
   嵌套值走 `put_frame_named`。
@@ -239,7 +242,7 @@ pub struct CodeRow {
 ### 访问面（mem-core `CodeStore`）
 
 `put(language, description, parameters, source)` → store 分配的
-`code_id`（代理键，重启后扫末键恢复）；
+`code_id`（代理键，重启后从 `HighWater(code_id)` 水位恢复——被撤掉的行不会把 id 让出来）；
 `get(code_id)` → 该行，未知 id = 不存在；`list()` →
 `(code_id, language, description)` 按 id 序——解析方或关联方挑选的依据，
 也是声明的 bring-up 姿态（全表扫描，由图谱检索取代，ADR-0003/0018）。

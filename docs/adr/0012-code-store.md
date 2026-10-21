@@ -37,6 +37,11 @@ the little a caller must know before executing them.
   stored". Two identical scripts delivered twice are two deliverables with two
   parameter definitions.
 
+The allocator is a watermark, not a scan: the row declares `HighWater(code_id)`, so
+the highest id ever written is one point read at open and the unfold is a NO-OP —
+withdrawing a row never frees its id for the next delivery. A counter recovered from
+"the last key" would do exactly that, silently, the first time a table was emptied.
+
 ### 2. The row carries what a caller needs BEFORE reading the source
 
 `CodeRow { language, description, parameters, source }`.

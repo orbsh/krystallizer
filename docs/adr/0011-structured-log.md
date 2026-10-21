@@ -33,7 +33,9 @@ order IS time order: replay and range scans are prefix scans).
   ADR-0008 §3's "the caller owns the clock" does not apply — that rule governs
   caller-supplied business data, not the process's own observations.
 - `seq` is a process-local monotonic counter (`u64`), seeded at open from the
-  table's last key (the same recovery pattern the existing tables use for their
+  table's `seq` WATERMARK (`#[ok_reduce(HighWater(seq))]`, ADR-0023's preset) —
+  the same recovery pattern the code store uses for its ids, and unlike a scan of
+  the last key it cannot rewind when the trim deletes from the front (the
   ids), so a restart continues instead of colliding. It separates several rows in
   one millisecond; two processes cannot write at once (Fjall's directory lock
   keeps a single writer).
@@ -140,7 +142,7 @@ typo becomes a compile error at the call site instead of a row nobody can group 
 not a name. `level` stays `u8` because it is a tiny ordered domain the code compares,
 not a label it prints.
 
-Status: RULED 2026-10-20, NOT LANDED. What the change actually is: the row's FIELD
+Status: LANDED 2026-10-20. What the change was: the row's FIELD
 TYPES, nothing else. Interning is the type's own business — okm's write path interns
 a `Vocab` field when the row type declares one (`Collection::put` clones the document
 and runs `__okm_intern`), and the read path resolves the label back (`get` runs
@@ -148,7 +150,10 @@ and runs `__okm_intern`), and the read path resolves the label back (`get` runs
 up. `append` keeps taking `&str` and builds `Vocab::of(event)` internally, so no call
 site changes. The one honest cost: a table that declares a Vocab field pays a document
 clone on every write (the price of `put(&R)`'s immutable signature). The layout break
-is clean (pre-production, ADR-0018 — no migration). PLAN 2.9c.
+was a clean one (pre-production, ADR-0018 — no migration). It waited on the pinned okm
+rev, which predated Vocab document fields; the lock moved `e0842a7` → `49c7406` and the
+row compiled as ruled. `LogStore::row(key)` returns the declared fields, which is how a
+reader gets the level without walking the dynamic map. PLAN 2.9c.
 
 ## Why Not
 

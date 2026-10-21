@@ -188,7 +188,7 @@ writes `channel` / `split_ts` / `split_sub` / `trigger` (a word) /
 signal that did not fire writes no field. Reads are windows (`since(ts_ms)`), not
 a query language.
 
-The field shape is RULED and not yet landed (ADR-0011 §8): `event` and `source`
+The field shape (ADR-0011 §8, landed 2026-10-20): `event` and `source`
 become `Vocab<u16>` — a closed, small, endlessly repeated set is what a vocabulary
 is for, two bytes cannot be misspelled, and the typo moves from a row nobody can
 group by to a compile error — while `note Str` stays the one free-text field and
@@ -196,8 +196,9 @@ group by to a compile error — while `note Str` stays the one free-text field a
 business, not the store's: okm interns on write (`Collection::put` → `__okm_intern`)
 and resolves the label on read (`get` → `__okm_deref_vocab`), so `append` still
 takes `&str`, builds `Vocab::of(..)` internally, and no call site changes. The cost
-is one document clone per write on a table that declares a Vocab field. Ruled, not
-landed — a clean layout break (pre-production, ADR-0018) — PLAN 2.9c.
+is one document clone per write on a table that declares a Vocab field.
+`LogStore::row(key)` returns the declared fields — the map read gives the dynamic
+segment — so a reader gets the level without walking names. PLAN 2.9c.
 
 ### `LogKey` / `LogRow` (ns 41)
 
@@ -210,12 +211,15 @@ pub struct LogRow { pub level: u8, pub event: String }   // + the dynamic segmen
   last N rows", "the window around T" and a replay are prefix/range scans.
   `ts_ms` is k10r's OWN clock (the writer is the process; ADR-0008 §3's
   caller-clock rule governs caller data, not the process's observations). `seq`
-  is a process-local monotonic counter seeded at open from the last key (the
-  id-recovery pattern), so a restart continues instead of overwriting.
-- Row: `level u8` (trace/debug/info/warn/error) and `event String`, both from
-  vocabulary constants, both DECLARED and NEITHER carrying a 0x1 face — a face is
-  one extra index write per row for a query nobody issues yet; add it when a query
-  turns hot.
+  is a process-local monotonic counter seeded at open from its `seq` watermark — a
+  declared `HighWater(seq)` reduce, fold = highest ever written, unfold a NO-OP —
+  so a restart continues instead of overwriting, and a trim cannot hand a number
+  out twice.
+- Row: `level u8` (trace/debug/info/warn/error), `event Vocab<u16>`,
+  `source Vocab<u16>` (module or access path; empty = none) and `note Str` (the one
+  free-text field). The labels come from constants in `log::event` / `log::source`
+  and no field carries a 0x1 face — a face is one extra index write per row for a
+  query nobody issues yet; add it when a query turns hot.
 - Everything variable rides slot 1's dynamic segment: the LOCATOR (`channel` /
   `scope` / `entity` / `edge` / `msg`, whichever applies) and the PAYLOAD
   (parameter snapshots, measured signals, the split point, error text). Nested
@@ -280,7 +284,7 @@ pub struct CodeRow {
 ### Access (mem-core `CodeStore`)
 
 `put(language, description, parameters, source)` → the store-assigned
-`code_id` (a surrogate id: recovered on reopen by scanning the last key); `get(code_id)` → the row, or absent for an
+`code_id` (a surrogate id: recovered on reopen from its `HighWater(code_id)` watermark, so a withdrawn row never frees its id); `get(code_id)` → the row, or absent for an
 unknown id; `list()` → `(code_id, language, description)` in id order —
 what a resolver or a linker picks from, and the declared bring-up
 posture (a whole-table scan that the graph's retrieval replaces,
