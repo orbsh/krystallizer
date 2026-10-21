@@ -52,6 +52,7 @@ sit here were exactly that (retired 2026-10-20).
 | `POST /code` | `CodeStore::put` | code (35) | landed |
 | `GET /code` | — WITHDRAWN 2026-10-20 (no client ever read it; `GET /code/{id}` is the read gravity makes) | code (35) | gone |
 | `GET /code/{id}` | `CodeStore::get` (the whole row, source included) | code (35) | landed |
+| `GET /export/{ns}` | one table as a Parquet file (okm's eager bridge reading the row declaration; `Content-Disposition: ns<N>.parquet`, `Content-Type: application/vnd.apache.parquet`). 404 = no such table; **501 for ns 37** — facts are `GraphEncode` entries, so the export surface belongs on okm's `Graph` (ADR-0013 §4) | every table | landed 2026-10-20 |
 
 Withdrawn from this class (2026-10-19, with flat memory): `POST /memory`,
 `GET /memory/{user_id}/search?q=`, and `MemoryStore::forget` / `list` /

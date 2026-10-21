@@ -44,6 +44,7 @@ community id），但**维护**那个结构从来不是消费方的活儿。所�
 | `POST /memories/{scope}/edges/{id}/touch` | `GraphStore::touch`（调用方上报的工具调用：计数加一、权重重折；未知边或别的 scope 404） | facts (37) | 已落（2026-10-19） |
 | `POST /code` | `CodeStore::put` | code (35) | 已落 |
 | `GET /code` | ——2026-10-20 撤除（从来没有客户端读它；gravity 读的是 `GET /code/{id}`） | code (35) | 已不存在 |
+| `GET /export/{ns}` | 一张表导成 Parquet 文件（okm 的 eager 桥按行声明生成列；`Content-Disposition: ns<N>.parquet`，`Content-Type: application/vnd.apache.parquet`）。404 = 没有这张表；**ns 37 是 501**——事实是 `GraphEncode` 条目，导出面应该长在 okm 的 `Graph` 上（ADR-0013 §4） | 全部表 | 2026-10-20 已落 |
 | `GET /code/{id}` | `CodeStore::get`（整行，含 source） | code (35) | 已落 |
 
 已从这一类撤除（2026-10-19，随 flat 记忆）：`POST /memory`、
