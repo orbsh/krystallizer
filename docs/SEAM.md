@@ -52,7 +52,8 @@ sit here were exactly that (retired 2026-10-20).
 | `POST /code` | `CodeStore::put` | code (35) | landed |
 | `GET /code` | — WITHDRAWN 2026-10-20 (no client ever read it; `GET /code/{id}` is the read gravity makes) | code (35) | gone |
 | `GET /code/{id}` | `CodeStore::get` (the whole row, source included) | code (35) | landed |
-| `GET /export/{ns}` | one table as a Parquet file (okm's eager bridge reading the row declaration; `Content-Disposition: ns<N>.parquet`, `Content-Type: application/vnd.apache.parquet`). 404 = no such table; **501 for ns 37** — facts are `GraphEncode` entries, so the export surface belongs on okm's `Graph` (ADR-0013 §4) | every table | landed 2026-10-20 |
+| `GET /export` | the catalog: `(table, ns)` per row, as Parquet. Generated from the declarations at request time — analysis does not read it, an import does (ADR-0013 §2) | import, operators | landed 2026-10-21 |
+| `GET /export/{table}` | one table by NAME as Parquet (okm's bridge reading the row declaration; declared fields + a `variant` column for the dynamic segment; `Content-Disposition: <table>.parquet`). Edges export as the edge table okm's `Graph` builds: `(src_table, src_pkey, dst_table, dst_pkey, predicate)` + declared fields + props variant. `log__reduces` / `code__reduces` are the derived reduce tables. 404 = no such name (points at the catalog), 200 + empty file for an empty table | every table | landed 2026-10-21 |
 
 Withdrawn from this class (2026-10-19, with flat memory): `POST /memory`,
 `GET /memory/{user_id}/search?q=`, and `MemoryStore::forget` / `list` /

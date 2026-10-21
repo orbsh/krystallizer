@@ -431,22 +431,27 @@ Deferred gates:
   transport-free so the server is additive.
 - Delta-append weight counts: single-process serial start uses direct RMW;
   key layout stays delta-compatible so multi-agent switchover changes no schema.
-- Backup export: LANDED 2026-10-20 as `GET /export/{ns}` (ADR-0013) — one table
-  per file, Parquet via okm's eager Arrow bridge reading the ROW DECLARATION, so
-  the columns cannot drift from the rows and no k10r format exists. Answers: the
-  table granularity question came out per-ns (a partial restore is a table, and a
-  single archive hides which table failed); the "reuse okm's export surface"
-  question was yes — `bridge::tooling::parquet_io::export_parquet`, with the
-  `parquet` feature on in this build. Empty tables export as empty files; an
-  unknown ns is a 404. **Owed: ns 37 (facts)** — edges are `GraphEncode` entries
-  (`EdgeKey` + `EdgeBody` frames) and okm's bridge reads `Document` collections
-  only, so the door answers 501 with that reason. The fix belongs on okm's
-  `Graph`; a k10r-written dump beside the real export would be the wrong answer,
-  because a backup that cannot be read back is not a backup. Restore
-  (`import_parquet`) is a separate door with its own rulings — not started.
-  Gates: 126/0 (export_surface 3 — a real Parquet reader opens the body, every
-  document table answers, an empty table is a file, the fact table names its gap,
-  and a second export sees a write the first did not).
+- Backup export: LANDED (ADR-0013). **2026-10-21 revision** — the door is addressed
+  by TABLE NAME (`GET /export/{table}`), because an ns is the store's own addressing
+  and means nothing to whoever opens the file. Names are declared where the ns is
+  declared: okm `#[ok_name("...")]` → `Document::TABLE_NAME` (okm ADR-0034 §1), so
+  k10r keeps no second list. `GET /export` is the catalog, `(table, ns)`, generated
+  from the declarations at request time — analysis does not read it, an import does.
+  Format is still okm's eager bridge reading the ROW DECLARATION (typed columns,
+  `Vocab` as labels, `parquet` feature on): one table, one file, `Content-Disposition:
+  <table>.parquet`; an empty table is a valid empty file; an unknown name is a 404
+  pointing at the catalog. Two things the first cut missed and now carry:
+  the dynamic segment as a `variant` column (`export_parquet_with_variant`), and the
+  FACT table — 501 no longer, it exports as okm's edge table
+  (`Graph::to_record_batch_table`): `(src_table, src_pkey, dst_table, dst_pkey,
+  predicate)` + the declaration's fields + a props variant, endpoint keys raw.
+  `log__reduces` / `code__reduces` are the derived reduce tables
+  (`(table, reduce, group, value)`), because a restore must replay the watermark
+  before it allows another write. Owed: restore itself (`import_parquet` is a
+  separate door with its own rulings — target table, replace vs merge, an unknown
+  `Vocab` label, pushing the watermark). Gates: 129/0 (export_surface 6 — catalog
+  lists eight names, a fact exports with endpoints and props, the reduce table
+  carries the watermark, a real Parquet reader opens every body).
 - Graph visualization endpoint: LANDED 2026-10-17 as
   `GET /graph/{scope}` (`GraphStore::scope_entities` + `scope_facts`) —
   one read-only bulk read over the same HTTP boundary (ADR-0007), no new
