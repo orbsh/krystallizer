@@ -1,6 +1,6 @@
 # Krystallizer — Agent Memory Core
 
-Graph-native agent memory: session control, atomic-fact graph, vector-landing retrieval — as an embedded Rust core with Python bindings.
+Graph-native agent memory: session control, atomic-fact graph, vector-landing retrieval — as a Rust core, reached over HTTP by a process you can run (`krystallizer --path <db-dir>`) or linked in-process as a crate.
 
 ## What it is
 
@@ -46,11 +46,22 @@ and [图谱化记忆](https://github.com/orbsh/wiki/blob/main/graph-memory.md):
 | Crate | Role |
 |---|---|
 | `mem-core` | Storage + retrieval core. Zero LLM dependency, zero transport dependency. |
-| `mem-ffi` | PyO3 bindings (maturin). |
 | `mem-server` | axum HTTP surface — the single cross-process form (ADR-0007 as revised). It serves TWO classes of door, kept apart in `docs/SEAM.md`: the CORE API a consumer runs on (session projection and appends, `POST /memories/{scope}`, `GET /memories/{scope}/recall`, the exact name entrance, `.../edges/{id}/touch`, the code store) and the ANALYSIS API for audit and visualization (the render graph `GET /graph/{scope}`, the landing alone, one hop). |
 
 Storage: Fjall, with schemas declared via OKM derive macros (compile-time key
 encoding, hex stability tests).
+
+## Run
+
+```
+cargo build --release
+./target/release/krystallizer --path <db-dir> [--addr 127.0.0.1:7760]
+```
+
+`--path` is required: a service that creates a database in whatever directory it
+was started from loses data the next time it starts somewhere else. The address it
+prints is the BOUND one, so `--addr 127.0.0.1:0` (OS-picked port) still tells a
+supervisor where to look.
 
 ## Status
 

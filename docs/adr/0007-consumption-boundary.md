@@ -11,8 +11,8 @@ ADR-0004 placed the extraction pipeline's LLM orchestration in "the
 Python layer (skillforge side, later the mem adapter package)". That
 reflected how skillforge happened to be implemented, not a property of
 this project. Krystallizer's direction is **Python-free**: it is a
-Rust memory core consumed by other projects; mem-ffi is one binding,
-not an architecture layer.
+Rust memory core consumed by other projects, and it does not need a
+language binding to be one (FFI's withdrawal is item 3 below).
 
 The consumer of k10r is settled (ADR-0006): gravity, the stateless
 agent. Two boundaries are already fixed elsewhere and carry over:
@@ -43,10 +43,18 @@ occupies no ns.**
    deployment choice on one machine, invisible to the boundary. The
    MemorySurface seam (in-process / HTTP implementations) is gravity's
    concern, not a krystallizer access mode.
-3. **FFI stays** (mem-ffi, PyO3): it has existing bindings and remains
-   the Phase 0 binding smoke test. It is a consumption channel, not a
-   layer of krystallizer; other bindings (or none) are equally
-   legitimate.
+3. **FFI is WITHDRAWN** (2026-10-21; `mem-ffi`, PyO3, is deleted). It was
+   kept on two claims — "it has existing bindings" and "it remains the Phase 0
+   binding smoke test" — and neither survived inspection: nothing in any repo
+   consumed it, the crate carried no test of its own, and gravity's Phase 0
+   links `mem-core` directly as a Rust dependency. Two reasons it could not have
+   been repaired by adding tests: the binding attaches no embedding engine, so
+   the most valuable read (`retrieve` / `recall`) answers EMPTY on that channel —
+   a second shape of the same core that silently degrades is worse than no
+   second shape; and a per-language binding multiplies by host language (Python
+   today, whatever tomorrow), while HTTP does not. It also contradicted rule 1
+   above rather than complementing it: putting the core inside another process
+   IS a third form.
 
 The earlier "three access modes" framing is withdrawn: there are not
 three ways to reach k10r across a process boundary — there is exactly
