@@ -60,7 +60,7 @@ const QUERIES: &[(&str, &str)] = &[
 /// An off-corpus query: nothing should land above the floor.
 const OFF_CORPUS: &str = "今天北京天气怎么样，要不要带伞";
 
-fn local_embedder() -> Option<Arc<mem_core::Embedder>> {
+fn local_embedder() -> Option<Arc<dyn mem_core::Embedder>> {
     let cfg_path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/krystallizer.kdl");
     let cfg = KrystallizerConfig::load(&cfg_path).ok()?;
@@ -69,9 +69,9 @@ fn local_embedder() -> Option<Arc<mem_core::Embedder>> {
         eprintln!("skipping: no embedding model in {}", dir.display());
         return None;
     }
-    Some(Arc::new(
-        mem_core::Embedder::load(&dir).expect("model loads"),
-    ))
+    let engine: Arc<dyn mem_core::Embedder> =
+        Arc::new(mem_core::LocalEmbedder::load(&dir).expect("model loads"));
+    Some(engine)
 }
 
 #[test]

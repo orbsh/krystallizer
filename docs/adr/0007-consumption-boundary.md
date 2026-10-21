@@ -138,10 +138,17 @@ than a directory literally named `$HOME`.
   endpoints first (append / fetch_full / append_checkpoint), then the code
   store, grown as consumers need; the flat-memory door landed and was then
   withdrawn with the flat table (2026-10-19).
-- **The core's outbound network surface is empty.** The embedding model is
-  built in (ADR-0003), so where this ADR originally conceded exactly one
-  call there is now none: no LLM client, no transport framework, no
-  embedding API. The boundary is strictly narrower, not a new freedom.
+- **The crate's outbound network surface stayed empty; the SHELL's is exactly
+  one call, and it is the deployment's choice.** The embedding model is built in
+  (ADR-0003), so where this ADR originally conceded exactly one call there was
+  none: no LLM client, no transport framework, no embedding API. Ruled
+  2026-10-21: `mode "remote"` in the `embedding` node lets a deployment send
+  that ONE call to an OpenAI-shaped embeddings service. The boundary that
+  matters is unchanged, and it is now drawn by CRATE rather than by sentence:
+  `mem-core` still owns no client (the seam is a trait), and the process that
+  already speaks HTTP to consumers is the one that speaks HTTP to a model. No
+  LLM client, no model-bound decision and no consumer traffic rides that
+  surface — it carries one text and one vector.
 - A private config-parsing crate (knus-based, env-merge included) is
   planned once the third consumer need (KDL-shaped CLI) is real; for
   now knus alone covers decode, env reads stay one `std::env::var`

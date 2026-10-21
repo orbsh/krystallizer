@@ -41,8 +41,12 @@ pub use compress::{
     evaluate as evaluate_compression, Params as CompressionParams, Trigger as CompressionTrigger,
     Verdict as CompressionVerdict, TAIL_PROMPT,
 };
-pub use config::{CompressionConfig, ConfigError, EmbeddingConfig, KrystallizerConfig, LogsConfig};
-pub use embedding::{EmbedError, Embedder};
+pub use config::{
+    CompressionConfig, ConfigError, EmbeddingConfig, EmbeddingEngine, KrystallizerConfig,
+    LocalEmbedding, LogsConfig, RemoteEmbedding, DEFAULT_TIMEOUT_MS, MODE_LOCAL, MODE_NODE,
+    MODE_REMOTE,
+};
+pub use embedding::{l2_normalize, EmbedError, Embedder, LocalEmbedder};
 pub use graph::{
     Anchored, ChainHop, CommunitySeqKey, CommunitySeqRow, CommunitySlice, EntityKey, EntityRow,
     FactBody, FactEdge, FactTuple, GraphStore, IngestError, IngestOutcome, Recall, REF_FIELD,

@@ -46,7 +46,7 @@ and [图谱化记忆](https://github.com/orbsh/wiki/blob/main/graph-memory.md):
 | Crate | Role |
 |---|---|
 | `mem-core` | Storage + retrieval core. Zero LLM dependency, zero transport dependency. |
-| `mem-server` | axum HTTP surface — the single cross-process form (ADR-0007 as revised). It serves TWO classes of door, kept apart in `docs/SEAM.md`: the CORE API a consumer runs on (session projection and appends, `POST /memories/{scope}`, `GET /memories/{scope}/recall`, the exact name entrance, `.../edges/{id}/touch`, the code store) and the ANALYSIS API for audit and visualization (the render graph `GET /graph/{scope}`, the landing alone, one hop). |
+| `mem-server` | axum HTTP surface — the single cross-process form (ADR-0007 as revised). It serves TWO classes of door, kept apart in `docs/SEAM.md`: the CORE API a consumer runs on (session projection and appends, `POST /memories/{scope}`, `GET /memories/{scope}/recall`, the exact name entrance, `.../edges/{id}/touch`, the code store) and the ANALYSIS API for audit and visualization (the render graph `GET /graph/{scope}`, the landing alone, one hop). It also owns the ONLY outbound client in the project: the embeddings client for `mode "remote"` (ADR-0003), which is why `mem-core` can stay transport-free. |
 
 Storage: Fjall, with schemas declared via OKM derive macros (compile-time key
 encoding, hex stability tests).
@@ -59,14 +59,20 @@ cargo build --release
 ```
 
 The service's parameters are ONE config file, `krystallizer.kdl`: `storage.data-dir`
-(the database's directory, created if absent, `$HOME` allowed), the `embedding` model
-directory, the `compression` numbers and the `logs` ceiling. `--config` names the
-file; without it the binary reads the one BESIDE ITSELF, so a deployment ships the
-two together (`config/krystallizer.kdl` in this repo, copied next to the binary). A
-missing config is a boot failure, never a fallback: a service that creates a database
-in whatever directory it happened to start from loses data the next time it starts
-somewhere else. The address it prints is the BOUND one, so `--addr 127.0.0.1:0`
-(OS-picked port) still tells a supervisor where to look.
+(the database's directory, created if absent, `$HOME` allowed), the `embedding`
+engine — the built-in model in-process (`mode "local"`), or an OpenAI-shaped
+embeddings service on another machine (`mode "remote"`: `base-url` / `model` /
+`api-key-env` / `timeout-ms`) — the `compression` numbers and the `logs` ceiling.
+`--config` names the file; without it the binary reads the one BESIDE ITSELF, so a
+deployment ships the two together (`config/krystallizer.kdl` in this repo, copied
+next to the binary). A missing config is a boot failure, never a fallback: a service
+that creates a database in whatever directory it happened to start from loses data
+the next time it starts somewhere else. The address it prints is the BOUND one, so
+`--addr 127.0.0.1:0` (OS-picked port) still tells a supervisor where to look.
+
+Both embedding modes are proven at boot: a missing artifact, an unreachable service,
+or a width that disagrees with `dimensions` stops the process, because rows written
+without a working engine would be rows nobody can retrieve.
 
 ## Status
 

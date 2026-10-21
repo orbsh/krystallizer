@@ -42,6 +42,38 @@ the engine the serving process attached, so the HTTP client never sends one;
 a row written with no engine attached carries an EMPTY frame — a legal row the
 retrieval side skips, never a zero vector.
 
+**The engine is a MODE, not one implementation (ruled 2026-10-21).** What the
+store needs is a contract: one text in, one UNIT-length vector out at the
+declared `dimensions`. WHO computes it is a deployment property, so the
+`embedding` node states it:
+
+- `mode "local"` — the built-in model in this process. The default, unchanged:
+  no endpoint, no key, no transport hop.
+- `mode "remote"` — an OpenAI-shaped embeddings service
+  (`POST {base-url}/embeddings`), so the vectors can be computed on a machine
+  with a GPU and k10r keeps its own storage, its own clock and its own
+  contract. That shape is chosen because this operation has effectively ONE
+  wire form (vLLM, sglang, Ollama, LM Studio and the hosted APIs all speak it);
+  a per-provider adapter would buy maintenance and nothing else.
+
+The tag chooses a SHAPE, not a branch: `mode` is the tag of the node, and each
+mode's field set is its own type, so a field of the other mode is a decode error
+on that line rather than a name a validator has to remember to refuse.
+
+The seam is a trait in mem-core (`Embedder`) with the local engine as one
+implementation, and the client for the remote one lives in `mem-server`: the
+core keeps its zero-transport surface (it owns the contract, not a client), and
+the shell that already speaks HTTP to consumers speaks HTTP to a model. Both
+modes are PROVEN at boot — a missing artifact, an unreachable service, or a
+width that disagrees with the config is a start failure, because two vector
+spaces in one table is not a condition the store can survive. The remote
+answer is normalized HERE rather than trusted, the bearer token is named by
+`api-key-env` (a variable name; the key itself never enters the file), and
+requests are serialized on one client thread — the store's own single-writer
+discipline, not a new bottleneck. The trade the mode buys with is latency: an
+in-process embed is a memory operation, a remote one adds a round trip to every
+ingest and every landing.
+
 **Vector search: `okm-vector`'s index over a per-ns in-memory table.** The
 corpus is per-user; tens of thousands of vectors fit memory by orders of
 magnitude, so the exact path answers in sub-millisecond time and no other
@@ -132,9 +164,16 @@ only complex ones (PageRank, community detection) earn a dependency.
   precision@1 0.929, precision@3 1.000, lowest true-hit score 0.637 (floor
   0.35), off-corpus query lands nothing. The floor is therefore not cutting
   true hits — the whole point the constant exists to be checked against.
-- The `embedding` node is LOCAL (landed 2026-10-17): `base-url` / `endpoint` /
-  `api-key-env` / `timeout-ms` are gone, and `model-dir` names the artifact
-  directory (`config.json` / `model.safetensors` / `tokenizer.json` are found
-  by name inside it) with `KRYSTALLIZER_MODEL_DIR` overriding it. The artifact
-  itself is host-local and NOT in the repo — this is the standing rule for
-  anything of model size.
+- The `embedding` node became LOCAL on 2026-10-17 (landed): `base-url` /
+  `endpoint` / `api-key-env` / `timeout-ms` were removed, and `model-dir` named
+  the artifact directory (`config.json` / `model.safetensors` / `tokenizer.json`
+  are found by name inside it) with `KRYSTALLIZER_MODEL_DIR` overriding it. The
+  artifact itself is host-local and NOT in the repo — this is the standing rule
+  for anything of model size. **Reopened 2026-10-21 as a MODE**: the same node
+  now also accepts `base-url` / `model` / `api-key-env` / `timeout-ms` under
+  `mode "remote"`. The local-only shape had quietly made "no external compute"
+  a repo-level assumption, and the alternative to naming it — a second memory
+  backend for GPU hosts — would have broken the ONE thing this ADR binds: the
+  vector space belongs to the memory system. The removed fields come back for
+  the mode that needs them; the local mode's fields are refused there, so a
+  half-edited file cannot serve.

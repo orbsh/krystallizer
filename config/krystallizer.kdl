@@ -22,17 +22,32 @@ storage {
 }
 
 // === embedding ===
-// The built-in local embedding model for mem-core retrieval (ADR-0003):
-// it runs IN this process — no endpoint, no key, no transport hop — so
-// the node names the artifact's local DIRECTORY, not a provider. The
-// three files are found by name inside it (config.json / model.safetensors
-// / tokenizer.json); the artifact itself is not in this repo (this
-// machine keeps bge-small-zh-v1.5, 512-dim, CLS pooling, under
-// $HOME/.local/share/krystallizer/models/). A deployment parameter, so the
-// environment variable KRYSTALLIZER_MODEL_DIR overrides this value.
-// The engine is loaded at boot: no artifact means no start, because a
-// service that cannot embed cannot serve retrieval.
+// WHICH embedding engine retrieval runs on (ADR-0003). Both modes must produce
+// one unit-length vector per text at `dimensions`, so the store never learns
+// where the vector came from.
+//
+//   mode "local"  — the built-in model runs IN this process: no endpoint, no
+//                   key, no transport hop. It names the artifact's local
+//                   DIRECTORY; the three files are found by name inside it
+//                   (config.json / model.safetensors / tokenizer.json). The
+//                   artifact itself is not in this repo (this machine keeps
+//                   bge-small-zh-v1.5, 512-dim, CLS pooling, under
+//                   $HOME/.local/share/krystallizer/models/). A deployment
+//                   parameter, so KRYSTALLIZER_MODEL_DIR overrides it.
+//
+//   mode "remote" — an OpenAI-shaped embeddings service (POST
+//                   {base-url}/embeddings) computes the vectors, e.g. on a GPU
+//                   box. Required: base-url (WITHOUT the /embeddings suffix),
+//                   model. Optional: api-key-env (the NAME of the variable
+//                   holding the bearer token — never the key), timeout-ms.
+//                   The width that comes back is checked against `dimensions`,
+//                   and the vector is normalized here, not trusted.
+//
+// Either mode is proven at BOOT: a missing artifact or an unreachable/wrong-width
+// service is a start failure, because a k10r that cannot embed cannot serve
+// retrieval. A field belonging to the other mode is a typo and fails the start.
 embedding {
+    mode "local"
     model-dir "$HOME/.local/share/krystallizer/models/bge-small-zh-v1.5"
     dimensions 512
     metric "cosine"

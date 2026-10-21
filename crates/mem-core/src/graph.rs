@@ -705,10 +705,11 @@ pub struct GraphStore {
     store: FjallStore,
     next_node: u64,
     next_edge: u64,
-    /// The built-in embedding engine (ADR-0003). `None` = no engine attached:
+    /// The embedding engine (ADR-0003). `None` = no engine attached:
     /// rows land with an EMPTY vector frame and retrieval has nothing to
-    /// rank (a legal, empty result — never an error).
-    embedder: Option<Arc<Embedder>>,
+    /// rank (a legal, empty result — never an error). WHICH engine (the built-in
+    /// model, or a service the shell talks to) is behind the trait, not here.
+    embedder: Option<Arc<dyn Embedder>>,
     /// Per-scope vector indexes, built from the KV on first use (ADR-0003).
     /// The scan is okm-vector's; this map only decides when to rebuild and how
     /// much derived state may be held — see `TABLE_BUDGET_BYTES`.
@@ -763,10 +764,10 @@ impl GraphStore {
         }
     }
 
-    /// Attach the built-in embedding engine (ADR-0003). `open_service` cannot
+    /// Attach the embedding engine (ADR-0003). `open_service` cannot
     /// know about it — the engine is a serving-process concern — so the
     /// serving side attaches it here, before the store goes behind its lock.
-    pub fn with_embedder(mut self, engine: Arc<Embedder>) -> Self {
+    pub fn with_embedder(mut self, engine: Arc<dyn Embedder>) -> Self {
         self.embedder = Some(engine);
         self
     }

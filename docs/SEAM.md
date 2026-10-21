@@ -30,10 +30,12 @@ The service's parameters are ONE file, `krystallizer.kdl`, and it is read from t
 directory the BINARY lives in unless `--config` names another — a deployment ships
 the two together, so a supervisor's command line states no policy. What the file
 carries: `storage.data-dir` (the database's directory, `$HOME` allowed), the
-`embedding` model directory (the engine is attached at boot: a missing artifact is a
-boot failure, not rows landing with empty vectors), the `compression` numbers, and
-the `logs` ceiling. Two flags remain because neither is a policy: which config, and
-where the door listens. A missing config is a boot failure that names the file —
+`embedding` engine — the built-in model in-process (`mode "local"`) or an OpenAI-shaped
+embeddings service (`mode "remote"`), both attached and PROVEN at boot, so a missing
+artifact or an unreachable service is a boot failure rather than rows landing with
+empty vectors — the `compression` numbers, and the `logs` ceiling. Two flags remain
+because neither is a policy: which config, and where the door listens. A missing
+config is a boot failure that names the file —
 never a fallback, because a service that creates a database in whatever directory it
 was started from loses data the next time it starts somewhere else. The address
 printed is the BOUND one, so `--addr 127.0.0.1:0` (OS-picked port) still tells a

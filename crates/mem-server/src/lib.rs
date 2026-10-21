@@ -25,6 +25,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+pub mod embedding;
+
 /// Shared server state: one keyspace, one writer domain. The store is
 /// behind a tokio mutex — mem-core's append/checkpoint take `&mut self`
 /// and the channel log is a single-writer table by design (gravity's
@@ -75,7 +77,7 @@ pub fn open(path: PathBuf) -> Result<Router, fjall::Error> {
 /// one handle and one lock per keyspace.
 pub fn open_with(
     path: PathBuf,
-    embedder: Option<Arc<mem_core::Embedder>>,
+    embedder: Option<Arc<dyn mem_core::Embedder>>,
 ) -> Result<Router, fjall::Error> {
     build(
         path,
@@ -90,7 +92,7 @@ pub fn open_with(
 /// engine the ones its config file carries).
 pub fn open_with_compression(
     path: PathBuf,
-    embedder: Option<Arc<mem_core::Embedder>>,
+    embedder: Option<Arc<dyn mem_core::Embedder>>,
     compression: mem_core::CompressionParams,
 ) -> Result<Router, fjall::Error> {
     build(path, embedder, compression, mem_core::DEFAULT_MAX_ROWS)
@@ -148,13 +150,13 @@ impl From<fjall::Error> for OpenError {
 
 /// Open the service the way a DEPLOYMENT does: everything from the one config
 /// file. The database's directory is `storage.data-dir` (`$HOME` expanded), the
-/// embedding engine comes from the `embedding` node and is ATTACHED — a
-/// deployment that cannot embed cannot serve retrieval, so a missing artifact
-/// is a boot failure, never rows landing with empty vectors — and the
-/// compression numbers and the log's ceiling come from their own nodes.
+/// engine comes from the `embedding` node — the built-in model in-process, or a
+/// service over HTTP (ADR-0003), and BOTH are proven at boot, because a deployment
+/// that cannot embed cannot serve retrieval — and the compression numbers and the
+/// log's ceiling come from their own nodes.
 pub fn open_from_config(cfg: &mem_core::KrystallizerConfig) -> Result<Router, OpenError> {
     let dir = cfg.storage.data_dir()?;
-    let engine = Arc::new(mem_core::Embedder::from_config(&cfg.embedding)?);
+    let engine = engine_from(cfg)?;
     Ok(build(
         dir,
         Some(engine),
@@ -163,12 +165,43 @@ pub fn open_from_config(cfg: &mem_core::KrystallizerConfig) -> Result<Router, Op
     )?)
 }
 
+/// Build the engine the file names. Local = the artifact is loaded (a missing one is
+/// a boot failure); remote = the client connects AND answers one probe (an
+/// unreachable service or a wrong width is a boot failure). Neither mode is allowed
+/// to open the doors onto a store that cannot embed.
+fn engine_from(
+    cfg: &mem_core::KrystallizerConfig,
+) -> Result<Arc<dyn mem_core::Embedder>, OpenError> {
+    match cfg.embedding.engine()? {
+        mem_core::EmbeddingEngine::Local { model_dir } => {
+            let engine: Arc<dyn mem_core::Embedder> =
+                Arc::new(mem_core::LocalEmbedder::load(&model_dir)?);
+            Ok(engine)
+        }
+        mem_core::EmbeddingEngine::Remote {
+            base_url,
+            model,
+            api_key_env,
+            timeout_ms,
+        } => {
+            let engine: Arc<dyn mem_core::Embedder> = Arc::new(embedding::RemoteEmbedder::connect(
+                &base_url,
+                &model,
+                api_key_env.as_deref(),
+                timeout_ms,
+                cfg.embedding.dimensions() as usize,
+            )?);
+            Ok(engine)
+        }
+    }
+}
+
 /// The one assembly path: every public constructor above is this function with
 /// different numbers, so a deployment and a test differ in their PARAMETERS and
 /// never in the shape of what they open.
 fn build(
     path: PathBuf,
-    embedder: Option<Arc<mem_core::Embedder>>,
+    embedder: Option<Arc<dyn mem_core::Embedder>>,
     compression: mem_core::CompressionParams,
     log_max_rows: usize,
 ) -> Result<Router, fjall::Error> {

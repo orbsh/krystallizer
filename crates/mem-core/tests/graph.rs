@@ -442,7 +442,7 @@ fn ids_are_recovered_across_reopen() {
 /// has none — the default gate stays runnable anywhere, and a machine that HAS
 /// the model exercises the real inference path (the discipline `embedding.rs`
 /// uses).
-fn local_embedder() -> Option<std::sync::Arc<mem_core::Embedder>> {
+fn local_embedder() -> Option<std::sync::Arc<dyn mem_core::Embedder>> {
     let cfg_path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/krystallizer.kdl");
     let cfg = mem_core::KrystallizerConfig::load(&cfg_path).ok()?;
@@ -451,9 +451,10 @@ fn local_embedder() -> Option<std::sync::Arc<mem_core::Embedder>> {
         eprintln!("skipping: no embedding model in {}", dir.display());
         return None;
     }
-    Some(std::sync::Arc::new(
-        mem_core::Embedder::load(&dir).expect("model loads"),
-    ))
+    let engine: std::sync::Arc<dyn mem_core::Embedder> = std::sync::Arc::new(
+        mem_core::LocalEmbedder::load(&dir).expect("model loads"),
+    );
+    Some(engine)
 }
 
 /// Vector landing: an exact-name query lands on that node with score 1.0 (the

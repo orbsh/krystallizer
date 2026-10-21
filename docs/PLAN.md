@@ -419,6 +419,7 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     `ref`, a non-id ref), render 8/0 (the tail appears only when there are refs),
     http_surface 9/0 (`refs` rides the DTO and the address resolves), 120/0 total,
     clippy 0.
+- [ ] Phase 4.5 — The user node (ADR-0014, DECLARED 2026-10-21, nothing in code yet): the members table (ns 42) joins the fact graph's member set (`FactNodes { Members, Entities }`, `NS_VALUES = &[42, 36]`) and the `member-{channel}-{member}` name rule becomes a wire reference syntax parsed by `ingest` under the reserved type token `user` (nothing created on a miss — an unregistered member fails the fact). Retires the member-proxy entity row, which today sits in the landing index (a query can land on a person) and duplicates the identity layer. To land: `FactNodes` variant + ns 42 in `NS_VALUES`; the `user` arm in the type-slot resolution (mem-core's graph reading the members collection through the CHANNEL keyspace handle — a point read, never inside the fact's batch); member endpoints rendering by row read; the four tests ADR-0014 lists. Owed with it: the fate of existing `member-…` entity rows and their edges (a migration question, ADR-0002's stance). Docs already in sync: MODELING pair + ADR-0014 pair.
 - [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), SKILL topological four-part nodes, Aura Actor nodes. (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.) ADR-0010 takes the incremental LOCAL form of community detection onto the write side and leaves OPEN whether that promotes a slice of Phase 5 ahead of Phase 3/4 — an open ruling, not settled.
 
 Deferred gates:
@@ -490,6 +491,22 @@ Deferred gates:
   the config and data paths. Gates: 134/0 (mem-core config 8 + boot 3 — the config
   beside the binary is the one read, `--config` wins and `$HOME` expands against the
   CHILD's environment, a missing config fails the boot naming the file), clippy 0.
-  Noted, not built: a REMOTE embedding mode (an external compute node) is a reserved
-  direction — it would be the `embedding` node's mode and one seam behind
-  `Embedder`, not a second path through mem-core.
+  Noted, not built at the time: a REMOTE embedding mode (an external compute node)
+  was a reserved direction. **It LANDED 2026-10-21** as `mode "remote"` in the same
+  node: an OpenAI-shaped service (`POST {base-url}/embeddings`), `base-url` /
+  `model` / `api-key-env` (a VARIABLE name) / `timeout-ms`. The seam is a trait
+  (`mem_core::Embedder`) with `LocalEmbedder` as one implementation; the client
+  (`mem_server::embedding::RemoteEmbedder`) lives in the shell, so mem-core still
+  owns no transport. Both modes are proven at boot (missing artifact / unreachable
+  service / width ≠ `dimensions` = start failure), the remote answer is L2-normalized
+  locally, requests are serialized on one client thread (the store's single-writer
+  discipline), and a width mismatch is refused rather than truncated. The node is
+  TAGGED (`mode` child): the decode picks the variant and that variant's struct IS the
+  field set, so a field of the other mode is an unknown child at that line, and the
+  hand-kept list of stray names is gone. The client
+  lives on its own thread because `reqwest::blocking` builds a runtime that panics
+  when dropped inside tokio's. Gates: 142/0 (remote 6 — the OpenAI shape on the wire,
+  no header without a key, wrong width and non-2xx as boot failures, the key variable
+  named when unset, and a fact ingested through the door retrievable by landing),
+  clippy 0. ADR-0003 records the mode and ADR-0007 the one outbound call the SHELL
+  may now make.

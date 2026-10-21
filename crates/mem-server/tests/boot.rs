@@ -138,6 +138,7 @@ fn config_text(data_dir: &str, model_dir: &Path) -> String {
     data-dir "{data}"
 }}
 embedding {{
+    mode "local"
     model-dir "{model}"
     dimensions 512
     metric "cosine"

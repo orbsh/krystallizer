@@ -25,10 +25,10 @@ use tokenizers::{Tokenizer, TruncationParams};
 use crate::config::{ARCH_FILE, MODEL_FILE, TOKENIZER_FILE};
 use crate::EmbeddingConfig;
 
-/// Everything that can go wrong loading or running the local model. A
-/// file error names the FILE (a mis-named artifact directory is the
-/// likeliest cause, and "No such file or directory" alone does not say
-/// which one).
+/// Everything that can go wrong obtaining a vector, in EITHER mode. A file error
+/// names the FILE (a mis-named artifact directory is the likeliest cause, and "No
+/// such file or directory" alone does not say which one); a service error names the
+/// URL and carries the service's own words.
 #[derive(Debug, thiserror::Error)]
 pub enum EmbedError {
     /// The configured directory itself could not be resolved (`$HOME` with no
@@ -51,6 +51,19 @@ pub enum EmbedError {
     Tokenizer(String),
     #[error("embedding model: {0}")]
     Model(#[from] candle_core::Error),
+    /// The remote service did not answer usefully: transport, status, or a body
+    /// that is not the documented shape. `detail` is its own words, never a
+    /// re-worded summary.
+    #[error("embedding service {url}: {detail}")]
+    Service { url: String, detail: String },
+    /// The service answered the WRONG WIDTH. Two vector spaces in one table is a
+    /// correctness failure the store cannot survive, so it is refused here —
+    /// never truncated, never zero-padded.
+    #[error("embedding service {url} answered width {got}, the config declares {want}")]
+    Width { url: String, got: usize, want: usize },
+    /// An empty vector, or one whose norm is zero: nothing can rank against it.
+    #[error("embedding from {origin} is degenerate (zero length)")]
+    Degenerate { origin: String },
 }
 
 /// Read one artifact file, carrying its path into the error.
@@ -61,15 +74,31 @@ fn read_artifact(path: &Path) -> Result<Vec<u8>, EmbedError> {
     })
 }
 
+/// The ONE thing retrieval needs from an engine (ADR-0003): a width, and one
+/// text in → one vector out, UNIT length, so `cosine` is a plain inner product
+/// downstream.
+///
+/// WHO computes it is the deployment's business, and that is the whole point of
+/// this being a trait: [`LocalEmbedder`] runs the built-in model in-process (no
+/// endpoint, no key, no transport), while the HTTP shell can supply a client for
+/// an OpenAI-shaped embeddings service. mem-core owns the first and the contract;
+/// it owns no transport of its own.
+pub trait Embedder: Send + Sync {
+    /// The vector width every answer has (and the store's row declares).
+    fn dims(&self) -> usize;
+    /// One text embedded, unit length.
+    fn embed(&self, text: &str) -> Result<Vec<f32>, EmbedError>;
+}
+
 /// The in-process embedder: one loaded model, one tokenizer, one width.
-pub struct Embedder {
+pub struct LocalEmbedder {
     model: BertModel,
     tokenizer: Tokenizer,
     device: Device,
     dims: usize,
 }
 
-impl Embedder {
+impl LocalEmbedder {
     /// Load a model DIRECTORY: the three artifact files are found by
     /// name inside it, so a model swap is a directory swap.
     pub fn load(dir: &Path) -> Result<Self, EmbedError> {
@@ -125,20 +154,39 @@ impl Embedder {
         // CLS = position 0 of the last hidden state.
         let cls = hidden.narrow(1, 0, 1)?.squeeze(1)?.squeeze(0)?;
         let v: Vec<f32> = cls.to_vec1()?;
-        Ok(l2_normalize(v))
+        l2_normalize(v).ok_or_else(|| EmbedError::Degenerate {
+            origin: "the in-process model".to_string(),
+        })
+    }
+}
+
+impl Embedder for LocalEmbedder {
+    fn dims(&self) -> usize {
+        self.dims
+    }
+
+    fn embed(&self, text: &str) -> Result<Vec<f32>, EmbedError> {
+        LocalEmbedder::embed(self, text)
     }
 }
 
 /// L2 normalization: the contract's metric is cosine, so the stored and
 /// queried vectors are unit-length and ranking is an inner product.
-fn l2_normalize(mut v: Vec<f32>) -> Vec<f32> {
+///
+/// `None` for a zero-norm input — a zero vector has no direction, so it can never
+/// be ranked against anything. Both modes share this rule rather than each
+/// inventing one (the remote service's answers are normalized HERE, not trusted).
+pub fn l2_normalize(mut v: Vec<f32>) -> Option<Vec<f32>> {
     let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > 0.0 {
-        for x in v.iter_mut() {
-            *x /= norm;
-        }
+    // `is_finite` rather than `> 0.0` compared backwards: a NaN norm is as unusable
+    // as a zero one, and folding it into the same branch says so once.
+    if !norm.is_finite() || norm <= 0.0 {
+        return None;
     }
-    v
+    for x in v.iter_mut() {
+        *x /= norm;
+    }
+    Some(v)
 }
 
 #[cfg(test)]
@@ -152,20 +200,24 @@ mod tests {
     /// real inference path. The configured value is expanded (`$HOME` in
     /// the shipped file) but NOT env-resolved, so an environment override
     /// in another test cannot turn this into a silent skip.
-    fn local_embedder() -> Option<Embedder> {
+    fn local_embedder() -> Option<LocalEmbedder> {
         let cfg_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/krystallizer.kdl");
         let cfg = crate::KrystallizerConfig::load(&cfg_path).ok()?;
-        let dir = crate::config::expand_home(&cfg.embedding.model_dir).ok()?;
+        let EmbeddingConfig::Local(local) = &cfg.embedding else {
+            eprintln!("skipping: the repo config does not name a local model");
+            return None;
+        };
+        let dir = local.resolved_model_dir().ok()?;
         if !dir.join(MODEL_FILE).exists() {
             eprintln!("skipping: no embedding model in {}", dir.display());
             return None;
         }
-        Some(Embedder::load(&dir).expect("model loads"))
+        Some(LocalEmbedder::load(&dir).expect("model loads"))
     }
 
     #[test]
     fn a_missing_artifact_names_the_file_it_could_not_read() {
-        let err = Embedder::load(Path::new("/nonexistent/model-dir"))
+        let err = LocalEmbedder::load(Path::new("/nonexistent/model-dir"))
             .err()
             .expect("load fails");
         let msg = err.to_string();

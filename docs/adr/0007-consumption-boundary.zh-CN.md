@@ -106,9 +106,14 @@ Rust，无 Python 层。它不是 aura 公民：不注册摊位、不被 aura sp
 - mem-server 是交付物而非预留壳：先落 channel-log 端点（append /
   fetch_full / append_checkpoint），随后是 code 存储，随消费需求增长；flat
   记忆那扇门落地过，又随 flat 表一起撤除（2026-10-19）。
-- **核心的出网面是空的。** embedding 模型内置（ADR-0003），所以本文档
-  当初让出的那一次调用现在并不存在：无 LLM client、无传输框架、无
-  embedding API。边界是严格变窄，不是新增自由。
+- **crate 的出网面仍然是空的；壳的出网面恰好一次调用，且由部署选择。**
+  embedding 模型内置（ADR-0003），所以本文档当初让出的那一次调用本来并不存在：
+  无 LLM client、无传输框架、无 embedding API。2026-10-21 裁决：`embedding`
+  节点的 `mode "remote"` 允许部署把那**一次**调用发给 OpenAI 形状的嵌入服务。
+  真正要守的边界没变，只是现在由 **crate** 划、而不是由一句话划：`mem-core`
+  仍然不拥有客户端（接缝是一个 trait），而已经在跟消费方说 HTTP 的那个进程去跟
+  模型说 HTTP。那条面上没有 LLM client、没有绑定模型的决策、也不走消费方流量
+  ——它只运一句话和一个向量。
 - 私有配置解析 crate（基于 knus，含 env 合并）在第三个消费需求
   （KDL 形态的 CLI）真实落地后再建；当下 knus 单独覆盖 decode，env
   读取离 `std::env::var` 只有一行。
