@@ -448,7 +448,8 @@ Reads: `entity(scope, node_id)`, `entity_by_name(scope, name)` →
 `neighbours(scope, node_id)` → both directions out of one node (degree-cost, both
 sides are ref lists on the node rows), `anchored(scope, node_id)` → that
 neighbourhood then the node's community slice, `timeline(scope, limit)` → facts by
-`since`, newest first, `chain(scope, from, kind, hops)` → one predicate followed
+`since`, newest first, walked over the `by_since` face (scope-blind, so other
+scopes' keys are skipped), `chain(scope, from, kind, hops)` → one predicate followed
 hop by hop,
 `out_edges` and `typed_out` (the traversal currency). For a bulk consumer
 (the visualization door) `scope_entities(scope)` and `scope_facts(scope)`

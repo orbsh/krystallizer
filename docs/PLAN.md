@@ -356,15 +356,17 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     — the scope's heaviest facts, weight-descending, ties by edge id — and
     `GET /graph/{scope}/top?k=`. This is the progressive-loading face: a caller
     walks "the important part of the scope first" instead of asking a question.
-    HONEST LIMIT: the RESULT is bounded (k), the READ is not — it scans the scope
-    and sorts. The ordering it wants is a lazy reverse walk over `by_weight`
-    (ADR-0005's `W:{weight}:{edge_id}`, already maintained on every write through
-    `link_into`/`unlink_into`), and okm's `Graph` exposes an exact-face lookup
-    (`by_attr_face`) but NO range iterator. The owed seam is therefore in
-    `okm-core`: a range scan over a declared `ok_index` (its `Collection` already
-    has `scan_range_iter`, which is a `DoubleEndedIterator` — the graph wrapper
-    needs to forward it). Then `top_by_weight` becomes `walk.rev().take(k)` over
-    the face and the O(n) read disappears. Gates: graph 26/0 (the ranking + scope
+    THE BOUNDED READ LANDED 2026-10-20, and it needed no change in okm: the row
+    declares `scope` (a denormalized copy of its source endpoint's scope, written
+    once) and a `by_scope_weight { fields(scope, weight) }` face, and the read
+    probes that face through okm's public `scan_index` (with `Graph::store()`
+    handing out the engine) — so it takes this scope's keys in weight order, stops
+    at k, and decodes only those k rows: O(k rows) + O(scope keys), not O(scope
+    rows). Reversal puts ties on edge id DESCENDING, so the k rows are re-sorted
+    into the documented (weight desc, edge id asc) order — k rows, never the scope.
+    Still open, and genuinely an okm addition: a LAZY walk
+    (`Collection::scan_range_iter`'s DoubleEnded behaviour forwarded by the graph
+    wrapper) — it would save the key scan itself, which is the cheap half. Gates: graph 26/0 (the ranking + scope
     isolation + `k=0`), http_surface 7/0 (the touched fact ranks first, `k` bounds
     the answer, an empty scope answers `[]`), 114/0 total, clippy 0.
   - [x] 4b. THE THREE ENTRANCES LANDED 2026-10-20 — each reads the write-time
@@ -378,9 +380,13 @@ Phases reference ADRs; design content lives in the ADRs, never here.
       zero". Dorr: `GET /graph/{scope}/entities/{node_id}/anchored` (404 for an
       unknown node).
     - temporal: `GraphStore::timeline(scope, limit)` — the scope's facts in the
-      order they were LEARNED (`since`, newest first). HONEST LIMIT: no face on
-      `since`, so this scans the scope and sorts; a `by_since` face waits on the
-      same okm seam as 4a (`by_weight`'s windowed walk). Door:
+      order they were LEARNED (`since`, newest first), walked over the existing
+      `by_since` face (reverse order, rows decoded only for the keys it keeps).
+      The face is scope-BLIND, so the walk skips other scopes' keys — a row read
+      per skipped key until `limit` of this scope are found. A `by_scope_since`
+      face would remove the skip; it is the same declaration shape as
+      `by_scope_weight` and is worth declaring only when a scope carries enough
+      facts for the skip to matter. Door:
       `GET /graph/{scope}/timeline?k=`.
     - causal: `GraphStore::chain(scope, from, kind, max_hops)` — follow ONE named
       predicate hop by hop, breadth-first, cycle-safe by node id, bounded by
