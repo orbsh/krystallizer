@@ -79,7 +79,7 @@ never on a consumer's turn path and never a tool.
 | `GET /graph/{scope}/facts/{edge_id}` | `GraphStore::fact_in_scope` — the DETERMINISTIC read: the same `edge_id` the write answered with, no query and no embedding; the scope is checked against the edge's own endpoint, so another scope's id is a 404 (the address of a reference link) | facts (37) | landed (2026-10-20) |
 | `DELETE /graph/{scope}/facts/{edge_id}` | `GraphStore::withdraw` (okm's `unlink`: row + every derived face entry in ONE batch; 204, or 404 when the id names nothing here) | facts (37) | landed (2026-10-20) |
 | — no route | `entity` / `entity_props` / `fact` / `fact_props` / `typed_out` (the rest of the core's READ primitives) | fact graph (36/37) | core landed, no route — audit reads |
-| `GET /graph/{scope}/top?k=` | `GraphStore::top_by_weight` (the scope's heaviest facts, weight-descending, ties by edge id; the ordering is the declared `by_weight` face — ADR-0005's `W:{weight}:{edge_id}`, maintained on every write — and the RESULT is bounded by `k`) | facts (37) | landed (2026-10-20; the lazy windowed walk is owed in okm-core — the read is still O(n)) |
+| `GET /graph/{scope}/top?k=` | `GraphStore::top_by_weight` (the scope's heaviest facts, weight-descending, ties by edge id; the ordering is the declared `by_weight` face — ADR-0005's `W:{weight}:{edge_id}`, maintained on every write — and the RESULT is bounded by `k`) | facts (37) | landed (2026-10-20; O(k rows) + O(scope keys) via the `by_scope_weight` face — the lazy key walk is still owed in okm-core) |
 
 `in-process` is not a second door: `InProcessSurface` links the same
 primitives in the caller's process (a same-machine deployment detail); HTTP is

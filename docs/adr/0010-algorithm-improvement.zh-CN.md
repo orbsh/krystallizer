@@ -75,7 +75,8 @@ okm 规范的布局如下（ns 在落地时分配：实体 36 与事实 37 已�
   0x0 主表           [edge_id u64]
                      → 行体：[src NodeRef][dst NodeRef][predicate_id][since][confidence][weight]
   0x1 动态段         [edge_id u64] → 关系的开放 props + `functional` 标志
-  0x1 声明字段面（每条**声明**的 #[ok_index] 一面：since / confidence / weight）
+  0x1 声明字段面（每条**声明**的 #[ok_index] 一面：since / confidence / weight /
+  scope+weight——最后这个就是按 scope 的权重排序面，它把行上那份冗余的 `scope` 放在前面，PLAN 4a）
                      [字段值][edge_id u64]
   0x4/0x5 谓词词汇表   [谓词名] → predicate_id ／ [predicate_id] → 谓词名
   0x6 谓词索引       [predicate_id][edge_id u64]

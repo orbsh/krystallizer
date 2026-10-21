@@ -173,7 +173,8 @@ ADR-0011。表与 store 在 `crates/mem-core/src/log.rs`。第一个写者是压
 
 ```rust
 pub struct LogKey { pub ts_ms: u64, pub seq: u64 }
-pub struct LogRow { pub level: u8, pub event: String }   // 另有动态段
+pub struct LogRow { pub level: u8, pub event: Vocab<u16>,
+                    pub source: Vocab<u16>, pub note: String }   // 另有动态段
 ```
 
 - 键 `[ts_ms 8B][seq 8B]`——BE 定宽，字节序即时间序：「最近 N 条」「T 附近的窗口」
@@ -337,14 +338,17 @@ pub struct EntityRow {
 #[ok_ns(37)]
 #[ok_nodes(FactNodes)]           // 成员节点集合：今天只有 Entities
 #[ok_index(
-    by_since { fields(since) },          // 三个声明面，各一个 0x1 条目
+    by_since { fields(since) },          // 四个声明面，各一个 0x1 条目
     by_confidence { fields(confidence) },
     by_weight { fields(weight) },
+    by_scope_weight { fields(scope, weight) },  // scope 前缀的排序面（PLAN 4a）
 )]
-pub struct FactEdge { /* since / confidence / weight / 五个计数器 */ }
+pub struct FactEdge { /* scope / since / confidence / weight / 五个计数器 */ }
 ```
 
-- **边集合自己造键，所以这一侧没有 scope 段。** 归属边界走**端点**：端点是
+- **边集合自己造键，所以**键里**没有 scope 段。** 但**行上**有一个 `scope`——源端点 scope 的
+  冗余副本，写一次不再改——因为面只能用索引里编码的东西做探针，而权重排序是按 scope 问的
+  （PLAN 4a）。归属仍以端点为权威；这份副本是让那个面能用的东西。其余情况 scope 走**端点**：端点是
   `(ns, 主键)` 的引用，实体主键里带着 scope。遍历从带 scope 的节点出发，就一直在
   scope 内；只有整表扫描（「某个谓词的全部边」）跨 scope，按端点过滤是调用方的事。
   要在边键上带 per-scope 前缀，就得绕开库的边图手写这个集合——不值得。

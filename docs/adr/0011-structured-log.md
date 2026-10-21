@@ -43,14 +43,16 @@ order IS time order: replay and range scans are prefix scans).
   one user's memory. Finding "rows for channel X" uses the LOCATOR FIELDS on the
   row (§3) — a scan, which is cheap on a bounded table.
 
-### 2. The fixed part is the low-cardinality pair, and "declared" is not "indexed"
+### 2. The fixed part is the low-cardinality set, and "declared" is not "indexed"
 
 - `level u8`: trace / debug / info / warn / error, values from a constants module
   (`level::WARN` and friends) so no call site invents a number.
-- `event String`: the event name, also from a constants vocabulary
-  (`event::COMPRESSION_VERDICT`, …), which turns a typo into a compile-time
-  problem instead of a data problem.
-- Both are DECLARED fields (hot segment, fixed encoding) and NEITHER carries a
+- `event Vocab<u16>`: the event name, from a constants vocabulary
+  (`event::COMPRESSION_VERDICT`, …), two bytes on disk — the typo is a compile
+  error at the call site, and one event cannot be spelled three ways.
+- `source Vocab<u16>` and `note Str` (§8): where the row came from, and the one
+  free-text field for the rows whose fields cannot say it.
+- All four are DECLARED fields (hot segment, fixed encoding) and NONE carries a
   0x1 face: a face is a real entry per (value, pkey), so a face here costs one
   extra index write per row in exchange for a query nobody issues yet. The table
   is bounded and a time-range scan is cheap; add the face when a query becomes

@@ -204,7 +204,8 @@ segment — so a reader gets the level without walking names. PLAN 2.9c.
 
 ```rust
 pub struct LogKey { pub ts_ms: u64, pub seq: u64 }
-pub struct LogRow { pub level: u8, pub event: String }   // + the dynamic segment
+pub struct LogRow { pub level: u8, pub event: Vocab<u16>,
+                    pub source: Vocab<u16>, pub note: String }   // + the dynamic segment
 ```
 
 - Key `[ts_ms 8B][seq 8B]` — BE fixed width, so byte order IS time order: "the
@@ -401,15 +402,20 @@ One fact = two nodes + one edge; this is the EDGE table (ADR-0010 §1). Declared
 #[ok_ns(37)]
 #[ok_nodes(FactNodes)]           // member node sets: Entities, today
 #[ok_index(
-    by_since { fields(since) },              // three declared faces, one 0x1 entry each
+    by_since { fields(since) },              // four declared faces, one 0x1 entry each
     by_confidence { fields(confidence) },
     by_weight { fields(weight) },
+    by_scope_weight { fields(scope, weight) },  // the scope-prefixed ranking (PLAN 4a)
 )]
-pub struct FactEdge { /* since / confidence / weight / five counters */ }
+pub struct FactEdge { /* scope / since / confidence / weight / five counters */ }
 ```
 
-- **The edge collection builds its own keys, so this side carries no scope
-  segment.** Scope rides the ENDPOINTS: an endpoint is a reference to
+- **The edge collection builds its own keys, so the KEY carries no scope
+  segment.** The ROW does carry a `scope` — a denormalized copy of its source
+  endpoint's scope, written once — because a face can only be probed by what the
+  index encodes, and the weight ranking is asked per scope (PLAN 4a). The endpoints
+  stay the authority for membership; the copy is what makes the face usable.
+  Scope otherwise rides the ENDPOINTS: an endpoint is a reference to
   `(ns, primary key)`, and an entity's primary key carries the scope. Traversal
   starts at a scoped node, so it stays inside one scope; only a whole-table scan
   ("every edge of one predicate") crosses scopes, and filtering by endpoint is

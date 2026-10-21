@@ -91,8 +91,10 @@ Facts — edge collection (ns 37), one ns per graph (okm ADR-0017)
   0x0 primary        [edge_id u64]
                      → body: [src NodeRef][dst NodeRef][predicate_id][since][confidence][weight]
   0x1 dynamic segment [edge_id u64] → the relation's open props + the `functional` flag
-  0x1 declared-field face per DECLARED #[ok_index] (since / confidence / weight)
-                     [field value][edge_id u64]
+  0x1 declared-field face per DECLARED #[ok_index]
+                     (since / confidence / weight / scope+weight)
+                     [field value][edge_id u64]  — the scope-prefixed ranking's face
+                     carries the row's denormalized `scope` first (PLAN 4a)
   0x4/0x5 predicate dict  [predicate name] → predicate_id  /  [predicate_id] → name
   0x6 predicate index [predicate_id][edge_id u64]
   0x7 out-edges      [src NodeRef][edge_id u64]
