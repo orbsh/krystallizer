@@ -1,6 +1,6 @@
 # Krystallizer — Agent Memory Core
 
-Graph-native agent memory: session control, atomic-fact graph, vector-landing retrieval — as a Rust core, reached over HTTP by a process you can run (`krystallizer --path <db-dir>`) or linked in-process as a crate.
+Graph-native agent memory: session control, atomic-fact graph, vector-landing retrieval — as a Rust core, reached over HTTP by a process you can run (`krystallizer`) or linked in-process as a crate.
 
 ## What it is
 
@@ -55,13 +55,18 @@ encoding, hex stability tests).
 
 ```
 cargo build --release
-./target/release/krystallizer --path <db-dir> [--addr 127.0.0.1:7760]
+./target/release/krystallizer [--config <path>] [--addr 127.0.0.1:7760]
 ```
 
-`--path` is required: a service that creates a database in whatever directory it
-was started from loses data the next time it starts somewhere else. The address it
-prints is the BOUND one, so `--addr 127.0.0.1:0` (OS-picked port) still tells a
-supervisor where to look.
+The service's parameters are ONE config file, `krystallizer.kdl`: `storage.data-dir`
+(the database's directory, created if absent, `$HOME` allowed), the `embedding` model
+directory, the `compression` numbers and the `logs` ceiling. `--config` names the
+file; without it the binary reads the one BESIDE ITSELF, so a deployment ships the
+two together (`config/krystallizer.kdl` in this repo, copied next to the binary). A
+missing config is a boot failure, never a fallback: a service that creates a database
+in whatever directory it happened to start from loses data the next time it starts
+somewhere else. The address it prints is the BOUND one, so `--addr 127.0.0.1:0`
+(OS-picked port) still tells a supervisor where to look.
 
 ## Status
 

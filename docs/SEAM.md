@@ -23,14 +23,21 @@ as soon as somebody hosts the router; the hosted form is the binary **`krystalli
 project so a process manager shows the project rather than the crate):
 
 ```
-krystallizer --path <db-dir> [--addr <ip:port>]     # default 127.0.0.1:7760
+krystallizer [--config <path>] [--addr <ip:port>]     # default 127.0.0.1:7760
 ```
 
-Two flags, deliberately: where the database lives, and where the door listens. A
-missing `--path` is a usage error rather than a default, because a service that
-creates a database in whatever directory it was started from loses data the next
-time it starts somewhere else. The address printed is the BOUND one, so
-`--addr 127.0.0.1:0` (OS-picked port) still tells a supervisor where to look.
+The service's parameters are ONE file, `krystallizer.kdl`, and it is read from the
+directory the BINARY lives in unless `--config` names another — a deployment ships
+the two together, so a supervisor's command line states no policy. What the file
+carries: `storage.data-dir` (the database's directory, `$HOME` allowed), the
+`embedding` model directory (the engine is attached at boot: a missing artifact is a
+boot failure, not rows landing with empty vectors), the `compression` numbers, and
+the `logs` ceiling. Two flags remain because neither is a policy: which config, and
+where the door listens. A missing config is a boot failure that names the file —
+never a fallback, because a service that creates a database in whatever directory it
+was started from loses data the next time it starts somewhere else. The address
+printed is the BOUND one, so `--addr 127.0.0.1:0` (OS-picked port) still tells a
+supervisor where to look.
 
 **Two classes of door, and they are not interchangeable.**
 

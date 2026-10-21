@@ -7,9 +7,11 @@
 //! after the project so a process manager shows `krystallizer` rather than the
 //! workspace's internal vocabulary.
 //!
-//! The flags are deliberately two: where the database lives, and where the door
-//! listens. A service that grows configuration grows it in the config, not in a
-//! command line that a process manager has to reproduce.
+//! The service's parameters are ONE config file (`krystallizer.kdl`), not a command
+//! line a supervisor has to reproduce: the database's directory, the embedding
+//! model, the compression thresholds and the log's ceiling all live there. Two
+//! flags remain, and neither states a policy: which config file (when it is not the
+//! one beside the binary) and where the door listens.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -18,27 +20,36 @@ use std::path::PathBuf;
 /// beyond that is a deployment decision (`--addr 0.0.0.0:7760`), never a surprise.
 const DEFAULT_ADDR: &str = "127.0.0.1:7760";
 
-const USAGE: &str = "\
-usage: krystallizer --path <db-dir> [--addr <ip:port>]
+/// The one config file's name. Its DEFAULT location is beside the binary: a
+/// deployment ships the two together, so a supervisor starts `krystallizer` and the
+/// process knows what it is serving without a command line kept in sync with the
+/// file by hand.
+const CONFIG_FILE: &str = "krystallizer.kdl";
 
-  --path <db-dir>     where the database lives (created if absent)
-  --addr <ip:port>    where the HTTP door listens (default 127.0.0.1:7760)
-  -h, --help          this text
-";
+const USAGE: &str = "\
+usage: krystallizer [--config <path>] [--addr <ip:port>]
+
+  --config <path>    the KDL config (default: krystallizer.kdl beside this binary)
+  --addr <ip:port>   where the HTTP door listens (default 127.0.0.1:7760)
+  -h, --help         this text
+
+Everything else is the config: `storage.data-dir` (the database's directory,
+`$HOME` allowed), the `embedding` model directory, the `compression` numbers and
+the `logs` ceiling.";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut path: Option<PathBuf> = None;
+    let mut config: Option<PathBuf> = None;
     let mut addr: SocketAddr = DEFAULT_ADDR.parse().expect("the default address parses");
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--path" => {
+            "--config" => {
                 let value = args
                     .next()
-                    .ok_or_else(|| format!("--path needs a directory\n{USAGE}"))?;
-                path = Some(PathBuf::from(value));
+                    .ok_or_else(|| format!("--config needs a path\n{USAGE}"))?;
+                config = Some(PathBuf::from(value));
             }
             "--addr" => {
                 let value = args
@@ -55,17 +66,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             other => return Err(format!("unknown argument `{other}`\n{USAGE}").into()),
         }
     }
-    // A missing path is a usage error, not a default: a service that silently
-    // creates a database in whatever directory it was started from is a service
-    // that loses data on the next start somewhere else.
-    let dir = path.ok_or_else(|| format!("--path is required\n{USAGE}"))?;
+    let config_path = match config {
+        Some(path) => path,
+        None => default_config_path()?,
+    };
+    // A missing or unreadable config is a boot failure, never a fallback: every
+    // directory this process writes to is stated there, and guessing one is how a
+    // service ends up creating a second, invisible database.
+    let cfg = mem_core::KrystallizerConfig::load(&config_path).map_err(|e| {
+        format!(
+            "{e}\n(krystallizer reads ONE config file: put `{CONFIG_FILE}` beside the binary \
+             or pass --config <path>)"
+        )
+    })?;
+    // Resolved here as well, because the boot line names the directory being served:
+    // an operator watching a process start must see WHERE its state lives.
+    let data_dir = cfg.storage.data_dir()?;
 
-    let app = mem_server::open(dir)?;
+    let app = mem_server::open_from_config(&cfg)?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     // The bound address, not the requested one: `--addr 127.0.0.1:0` is how a test
     // or a supervisor asks the OS to pick, and it needs the answer back.
     let bound = listener.local_addr()?;
     println!("krystallizer listening on http://{bound}");
+    println!("  config {}", config_path.display());
+    println!("  data   {}", data_dir.display());
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// The config read when no `--config` names one: the file beside this binary.
+///
+/// `current_exe` is canonicalized because a supervisor starts the binary through a
+/// symlink (a store path, a `bin/` link) — the config ships beside the REAL
+/// executable, not beside every link pointing at it.
+fn default_config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let exe = std::fs::canonicalize(std::env::current_exe()?)
+        .map_err(|e| format!("cannot resolve this binary's own path: {e}"))?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| format!("this binary has no directory: {}", exe.display()))?;
+    Ok(dir.join(CONFIG_FILE))
 }

@@ -2,8 +2,25 @@
 // node. Credentials are NEVER stored here — every secret is referenced
 // by the environment variable name that holds it.
 //
+// The file is named `krystallizer.kdl`. The service reads the one BESIDE
+// ITS BINARY unless `--config <path>` names another, so a deployment ships
+// the binary and this file together. In this repo it lives under config/.
+//
+// Path values may carry `$HOME` (the one placeholder there is; anything
+// else, `$FOO`, stays literal text). A machine's home directory is a
+// deployment fact, not a property of the software.
+//
 // Node names are kebab-case (knus maps Rust field names via kebab-case).
 //
+// === storage ===
+// The database's home on disk (ADR-0002: k10r owns its Fjall directory).
+// One directory, one lock file, every table group inside it. It is stated
+// here and not on the command line because it is the service's own state:
+// a flag is a supervisor remembering something the file could say.
+storage {
+    data-dir "$HOME/.local/share/krystallizer/data"
+}
+
 // === embedding ===
 // The built-in local embedding model for mem-core retrieval (ADR-0003):
 // it runs IN this process — no endpoint, no key, no transport hop — so
@@ -11,10 +28,12 @@
 // three files are found by name inside it (config.json / model.safetensors
 // / tokenizer.json); the artifact itself is not in this repo (this
 // machine keeps bge-small-zh-v1.5, 512-dim, CLS pooling, under
-// ~/.local/share/krystallizer/models/). A deployment parameter, so the
+// $HOME/.local/share/krystallizer/models/). A deployment parameter, so the
 // environment variable KRYSTALLIZER_MODEL_DIR overrides this value.
+// The engine is loaded at boot: no artifact means no start, because a
+// service that cannot embed cannot serve retrieval.
 embedding {
-    model-dir "/home/master/.local/share/krystallizer/models/bge-small-zh-v1.5"
+    model-dir "$HOME/.local/share/krystallizer/models/bge-small-zh-v1.5"
     dimensions 512
     metric "cosine"
 }

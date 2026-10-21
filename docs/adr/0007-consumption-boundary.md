@@ -100,9 +100,12 @@ any caller — owns embedding consistency, and callers never supply
 vectors. Write and query paths compute embeddings in-process.
 
 **Secrets never enter the config file.** Configuration is one KDL
-document (`config/krystallizer.kdl`, one top-level node per
-subsystem); every secret is referenced by the environment variable
-name that holds it.
+document (`krystallizer.kdl`, one top-level node per subsystem), read
+from beside the binary unless `--config` names another; every secret is
+referenced by the environment variable name that holds it. A path value
+may carry `$HOME` — the machine's home is deployment data, not a
+property of the software — and an unset `HOME` is a boot failure rather
+than a directory literally named `$HOME`.
 
 ## Consequences
 

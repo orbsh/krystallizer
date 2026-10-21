@@ -476,3 +476,20 @@ Deferred gates:
   node now carries `community_id` (ADR-0010 §6), so the colour is available;
   `docs/viz-style.js` still colours by kind, which is the demo's own open
   slice rather than a missing field.
+- Boot from the config file LANDED 2026-10-21: the service's parameters are ONE
+  file, `krystallizer.kdl`, read from the directory of the BINARY (canonicalized, so
+  a supervisor's symlink still finds it) unless `--config` names another; `--path` is
+  withdrawn — the database's directory is `storage.data-dir` in the file. Path values
+  may carry `$HOME` (the ONLY placeholder; `$HOMELESS` and a non-leading `$HOME` stay
+  literal, and an unset `HOME` is a boot error rather than a directory named
+  `$HOME`), which also took the shipped `embedding.model-dir` off this machine's
+  absolute path. `mem_server::open_from_config` is the deployment's entry and the one
+  assembly path (`build`): it resolves the data dir, ATTACHES the embedding engine
+  (no artifact = no boot, never rows with empty vectors), and hands the compression
+  numbers and `logs.max-rows` to the stores. Boot line prints the bound address plus
+  the config and data paths. Gates: 134/0 (mem-core config 8 + boot 3 — the config
+  beside the binary is the one read, `--config` wins and `$HOME` expands against the
+  CHILD's environment, a missing config fails the boot naming the file), clippy 0.
+  Noted, not built: a REMOTE embedding mode (an external compute node) is a reserved
+  direction — it would be the `embedding` node's mode and one seam behind
+  `Embedder`, not a second path through mem-core.

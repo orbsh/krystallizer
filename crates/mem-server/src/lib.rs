@@ -55,15 +55,20 @@ pub struct MemState {
 
 /// Open the database at `path` and build the router WITHOUT an embedding
 /// engine — nodes then carry no vector. This is the shape the
-/// storage-level tests use; a serving deployment wants `open_with`.
+/// storage-level tests use; a serving deployment wants `open_from_config`.
 pub fn open(path: PathBuf) -> Result<Router, fjall::Error> {
-    open_with(path, None)
+    build(
+        path,
+        None,
+        mem_core::CompressionParams::default(),
+        mem_core::DEFAULT_MAX_ROWS,
+    )
 }
 
 /// Open the database at `path` and build the router, optionally with an
-/// embedding engine attached. The compression numbers are the config's
-/// defaults (`CompressionParams::default()`); a deployment that loaded
-/// `config/krystallizer.kdl` passes them through `open_with_compression`.
+/// embedding engine attached. The compression numbers are the built-in
+/// defaults (`CompressionParams::default()`); a serving deployment takes
+/// every number from its config file through `open_from_config`.
 ///
 /// One database per process (one directory, one lock file): mem-core's
 /// service assembly attaches every table group to it, so mem-server holds
@@ -72,7 +77,12 @@ pub fn open_with(
     path: PathBuf,
     embedder: Option<Arc<mem_core::Embedder>>,
 ) -> Result<Router, fjall::Error> {
-    open_with_compression(path, embedder, mem_core::CompressionParams::default())
+    build(
+        path,
+        embedder,
+        mem_core::CompressionParams::default(),
+        mem_core::DEFAULT_MAX_ROWS,
+    )
 }
 
 /// `open_with`, with the compression policy's numbers stated (ADR-0008
@@ -82,6 +92,85 @@ pub fn open_with_compression(
     path: PathBuf,
     embedder: Option<Arc<mem_core::Embedder>>,
     compression: mem_core::CompressionParams,
+) -> Result<Router, fjall::Error> {
+    build(path, embedder, compression, mem_core::DEFAULT_MAX_ROWS)
+}
+
+/// Everything opening the service can fail on before a door exists: the
+/// config's own resolution (`$HOME`, the artifact directory), the embedding
+/// artifact itself, and the store's lock.
+#[derive(Debug)]
+pub enum OpenError {
+    Config(mem_core::ConfigError),
+    Embedding(mem_core::EmbedError),
+    Storage(fjall::Error),
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The message travels verbatim: a boot failure has one reader, and it
+        // needs the file or directory that failed, not a re-worded summary.
+        match self {
+            Self::Config(e) => write!(f, "{e}"),
+            Self::Embedding(e) => write!(f, "{e}"),
+            Self::Storage(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for OpenError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Config(e) => Some(e),
+            Self::Embedding(e) => Some(e),
+            Self::Storage(e) => Some(e),
+        }
+    }
+}
+
+impl From<mem_core::ConfigError> for OpenError {
+    fn from(e: mem_core::ConfigError) -> Self {
+        Self::Config(e)
+    }
+}
+
+impl From<mem_core::EmbedError> for OpenError {
+    fn from(e: mem_core::EmbedError) -> Self {
+        Self::Embedding(e)
+    }
+}
+
+impl From<fjall::Error> for OpenError {
+    fn from(e: fjall::Error) -> Self {
+        Self::Storage(e)
+    }
+}
+
+/// Open the service the way a DEPLOYMENT does: everything from the one config
+/// file. The database's directory is `storage.data-dir` (`$HOME` expanded), the
+/// embedding engine comes from the `embedding` node and is ATTACHED — a
+/// deployment that cannot embed cannot serve retrieval, so a missing artifact
+/// is a boot failure, never rows landing with empty vectors — and the
+/// compression numbers and the log's ceiling come from their own nodes.
+pub fn open_from_config(cfg: &mem_core::KrystallizerConfig) -> Result<Router, OpenError> {
+    let dir = cfg.storage.data_dir()?;
+    let engine = Arc::new(mem_core::Embedder::from_config(&cfg.embedding)?);
+    Ok(build(
+        dir,
+        Some(engine),
+        cfg.compression.params(),
+        cfg.logs.max_rows,
+    )?)
+}
+
+/// The one assembly path: every public constructor above is this function with
+/// different numbers, so a deployment and a test differ in their PARAMETERS and
+/// never in the shape of what they open.
+fn build(
+    path: PathBuf,
+    embedder: Option<Arc<mem_core::Embedder>>,
+    compression: mem_core::CompressionParams,
+    log_max_rows: usize,
 ) -> Result<Router, fjall::Error> {
     let stores = mem_core::open_service(&path)?;
     let graph = match &embedder {
@@ -95,11 +184,14 @@ pub fn open_with_compression(
         store: tokio::sync::Mutex::new(stores.channels),
         code: tokio::sync::Mutex::new(stores.code),
         graph: tokio::sync::Mutex::new(graph),
-        log: tokio::sync::Mutex::new(stores.log),
+        log: tokio::sync::Mutex::new(stores.log.with_max_rows(log_max_rows)),
         compression,
     });
     Ok(Router::new()
-        .route("/channels/{channel_id}/messages", post(append_message).get(read_channel))
+        .route(
+            "/channels/{channel_id}/messages",
+            post(append_message).get(read_channel),
+        )
         .route(
             "/channels/{channel_id}/members/{member_id}/session",
             get(fetch_session),
@@ -568,7 +660,6 @@ impl From<CodeRow> for CodeRowDto {
     }
 }
 
-
 /// `POST /code` — store one piece of code; the store assigns the id.
 async fn put_code(
     State(state): State<Arc<MemState>>,
@@ -695,7 +786,6 @@ async fn fetch_code(
         .map(|r| Json(r.into()))
         .ok_or(StatusCode::NOT_FOUND)
 }
-
 
 // ---- the fact graph (ns 36 entities / 37 facts) ----------------------
 //

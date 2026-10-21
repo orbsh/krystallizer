@@ -446,16 +446,13 @@ fn local_embedder() -> Option<std::sync::Arc<mem_core::Embedder>> {
     let cfg_path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/krystallizer.kdl");
     let cfg = mem_core::KrystallizerConfig::load(&cfg_path).ok()?;
-    let dir = std::path::Path::new(&cfg.embedding.model_dir);
+    let dir = cfg.embedding.resolved_model_dir().ok()?;
     if !dir.join("model.safetensors").exists() {
-        eprintln!(
-            "skipping: no embedding model in {}",
-            cfg.embedding.model_dir
-        );
+        eprintln!("skipping: no embedding model in {}", dir.display());
         return None;
     }
     Some(std::sync::Arc::new(
-        mem_core::Embedder::load(&cfg.embedding.model_dir).expect("model loads"),
+        mem_core::Embedder::load(&dir).expect("model loads"),
     ))
 }
 

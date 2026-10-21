@@ -31,6 +31,10 @@ use crate::EmbeddingConfig;
 /// which one).
 #[derive(Debug, thiserror::Error)]
 pub enum EmbedError {
+    /// The configured directory itself could not be resolved (`$HOME` with no
+    /// environment to expand against).
+    #[error(transparent)]
+    Config(#[from] crate::config::ConfigError),
     #[error("embedding artifact {path}: {source}")]
     Io {
         path: PathBuf,
@@ -68,8 +72,7 @@ pub struct Embedder {
 impl Embedder {
     /// Load a model DIRECTORY: the three artifact files are found by
     /// name inside it, so a model swap is a directory swap.
-    pub fn load(dir: &str) -> Result<Self, EmbedError> {
-        let dir = Path::new(dir);
+    pub fn load(dir: &Path) -> Result<Self, EmbedError> {
         let arch = dir.join(ARCH_FILE);
         let cfg: BertConfig = serde_json::from_slice(&read_artifact(&arch)?)
             .map_err(|source| EmbedError::Json { path: arch, source })?;
@@ -98,9 +101,9 @@ impl Embedder {
     }
 
     /// Load from the `embedding` node — the one place that knows the
-    /// config's field names and the environment override.
+    /// config's field names, the environment override, and `$HOME`.
     pub fn from_config(cfg: &EmbeddingConfig) -> Result<Self, EmbedError> {
-        Self::load(&cfg.resolved_model_dir())
+        Self::load(&cfg.resolved_model_dir()?)
     }
 
     /// The width of every vector this model produces. The store writes
@@ -146,28 +149,23 @@ mod tests {
     /// tests that need it read the repo config's own directory and skip
     /// when the machine has no model there — the default gate stays
     /// runnable anywhere, and a machine that HAS the model exercises the
-    /// real inference path. The configured value is used directly (not
-    /// the env-resolved one) so an environment override in another test
-    /// cannot turn this into a silent skip.
+    /// real inference path. The configured value is expanded (`$HOME` in
+    /// the shipped file) but NOT env-resolved, so an environment override
+    /// in another test cannot turn this into a silent skip.
     fn local_embedder() -> Option<Embedder> {
         let cfg_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/krystallizer.kdl");
         let cfg = crate::KrystallizerConfig::load(&cfg_path).ok()?;
-        if !Path::new(&cfg.embedding.model_dir)
-            .join(MODEL_FILE)
-            .exists()
-        {
-            eprintln!(
-                "skipping: no embedding model in {}",
-                cfg.embedding.model_dir
-            );
+        let dir = crate::config::expand_home(&cfg.embedding.model_dir).ok()?;
+        if !dir.join(MODEL_FILE).exists() {
+            eprintln!("skipping: no embedding model in {}", dir.display());
             return None;
         }
-        Some(Embedder::load(&cfg.embedding.model_dir).expect("model loads"))
+        Some(Embedder::load(&dir).expect("model loads"))
     }
 
     #[test]
     fn a_missing_artifact_names_the_file_it_could_not_read() {
-        let err = Embedder::load("/nonexistent/model-dir")
+        let err = Embedder::load(Path::new("/nonexistent/model-dir"))
             .err()
             .expect("load fails");
         let msg = err.to_string();

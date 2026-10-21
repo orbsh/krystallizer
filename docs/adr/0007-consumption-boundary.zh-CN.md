@@ -77,8 +77,10 @@ Rust，无 Python 层。它不是 aura 公民：不注册摊位、不被 aura sp
 路径在进程内计算 embedding。
 
 **密钥绝不进配置文件。** 配置是一份 KDL 文档
-（`config/krystallizer.kdl`，每个子系统一个顶层 node）；每个密钥通
-过持有它的环境变量名来引用。
+（`krystallizer.kdl`，每个子系统一个顶层 node），默认读二进制旁边那一份、
+`--config` 可另指；每个密钥通过持有它的环境变量名来引用。路径值允许写
+`$HOME`——机器的家目录是部署事实、不是软件属性——而 `HOME` 未设是启动
+失败，而不是留下一个就叫 `$HOME` 的目录。
 
 ## Consequences
 
