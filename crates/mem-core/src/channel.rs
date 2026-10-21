@@ -231,6 +231,29 @@ impl ChannelStore {
         }
     }
 
+    /// Export one of this group's tables as Parquet (ADR-0007's backup
+    /// boundary). ns-keyed because that is how the tables are addressed
+    /// everywhere else: 33 messages, 34 checkpoints, 39 cursors, 42 members.
+    /// An ns this group does not hold is `None` — the caller's 404, not this
+    /// store's judgement.
+    pub fn export_parquet(&self, ns: u16, path: &std::path::Path) -> Option<Result<(), String>> {
+        Some(match ns {
+            n if n == crate::export::ns(MessageRow::NS_PREFIX) => {
+                crate::export::table(&self.messages, path)
+            }
+            n if n == crate::export::ns(CheckpointRow::NS_PREFIX) => {
+                crate::export::table(&self.checkpoints, path)
+            }
+            n if n == crate::export::ns(CursorRow::NS_PREFIX) => {
+                crate::export::table(&self.cursors, path)
+            }
+            n if n == crate::export::ns(MemberRow::NS_PREFIX) => {
+                crate::export::table(&self.members, path)
+            }
+            _ => return None,
+        })
+    }
+
     /// Append one entry; returns the full key (the caller's delta record
     /// carries it for idempotent replay). The caller assigns `ts_ms` AND
     /// `sub` — gravity's clock and gravity's tiebreaker (ADR-0008 §3:

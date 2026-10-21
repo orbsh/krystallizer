@@ -7,6 +7,7 @@
 //! zero transport dependency. Design: docs/adr/.
 
 pub mod channel;
+pub mod export;
 pub mod code;
 pub mod compress;
 pub mod config;

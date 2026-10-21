@@ -335,6 +335,18 @@ impl LogStore {
             .collect()
     }
 
+    /// The whole table as Parquet (ADR-0007's backup boundary). The log is the
+    /// table where "bounded and trimmed" is normal, so exporting it is also the
+    /// only way to keep what the trim drops. `None` = this store holds no table
+    /// at that ns.
+    pub fn export_parquet(
+        &self,
+        ns: u16,
+        path: &std::path::Path,
+    ) -> Option<Result<(), String>> {
+        (ns == crate::export::ns(LogRow::NS_PREFIX)).then(|| crate::export::table(&self.table, path))
+    }
+
     /// Drop the oldest rows until the ceiling holds. Not logged, by design.
     fn trim(&mut self) {
         while self.recent.len() > self.max_rows {

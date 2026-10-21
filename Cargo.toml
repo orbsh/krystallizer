@@ -12,7 +12,7 @@ edition = "2021"
 license = "MIT"
 
 [workspace.dependencies]
-okm-core = { git = "https://github.com/orbsh/okm", branch = "main", features = ["fjall", "schema-serde"] }
+okm-core = { git = "https://github.com/orbsh/okm", branch = "main", features = ["fjall", "schema-serde", "parquet"] }
 okm-derive = { git = "https://github.com/orbsh/okm", branch = "main" }
 okm-vector = { git = "https://github.com/orbsh/okm", branch = "main" }
 fjall = "3"

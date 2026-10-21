@@ -125,4 +125,14 @@ impl CodeStore {
         self.table.get(&CodeKey { code_id })
     }
 
+    /// The whole table as Parquet (ADR-0007's backup boundary) — okm's export,
+    /// no format of k10r's own. `None` = this store holds no table at that ns.
+    pub fn export_parquet(
+        &self,
+        ns: u16,
+        path: &std::path::Path,
+    ) -> Option<Result<(), String>> {
+        (ns == crate::export::ns(CodeRow::NS_PREFIX)).then(|| crate::export::table(&self.table, path))
+    }
+
 }

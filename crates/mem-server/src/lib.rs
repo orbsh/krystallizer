@@ -109,6 +109,7 @@ pub fn open_with_compression(
             post(append_checkpoint),
         )
         .route("/code", post(put_code))
+        .route("/export/{ns}", get(export_table))
         .route("/code/{code_id}", get(fetch_code))
         .route("/memories/{scope}", post(ingest_fact))
         .route("/graph/{scope}/search", get(search_facts))
@@ -581,6 +582,74 @@ async fn put_code(
             &body.source,
         ),
     })
+}
+
+/// `GET /export/{ns}` — one table as a Parquet file (ADR-0007's backup
+/// boundary: a bulk read over the same HTTP door, no admin CLI and no second
+/// storage format). The columns are okm's eager bridge reading the row
+/// DECLARATION, so the schema cannot drift from the rows.
+///
+/// An ns this service does not hold is a 404. The FACT table is a 501: an edge
+/// is a `GraphEncode` entry (`EdgeKey` + `EdgeBody` frames), which the bridge
+/// cannot turn into columns — that export needs a surface on okm's `Graph`, and
+/// inventing a k10r-side format beside the backup would be the wrong answer.
+async fn export_table(
+    State(state): State<Arc<MemState>>,
+    Path(ns): Path<u16>,
+) -> axum::response::Response {
+    if ns == mem_core::graph::FACT_NS {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            "facts are graph-encoded entries: exporting them needs an export surface on okm's Graph (the node table at ns 36 exports)",
+        )
+            .into_response();
+    }
+    let dir = match tempfile::tempdir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("no temp dir for the export: {e}"),
+            )
+                .into_response()
+        }
+    };
+    let path = dir.path().join(format!("ns{ns}.parquet"));
+    let outcome = if let Some(out) = state.store.lock().await.export_parquet(ns, &path) {
+        out
+    } else if let Some(out) = state.log.lock().await.export_parquet(ns, &path) {
+        out
+    } else if let Some(out) = state.code.lock().await.export_parquet(ns, &path) {
+        out
+    } else if let Some(out) = state.graph.lock().await.export_parquet(ns, &path) {
+        out
+    } else {
+        return (StatusCode::NOT_FOUND, format!("no table at ns {ns}")).into_response();
+    };
+    if let Err(e) = outcome {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+    }
+    match std::fs::read(&path) {
+        Ok(bytes) => (
+            [
+                (
+                    axum::http::header::CONTENT_TYPE,
+                    "application/vnd.apache.parquet".to_string(),
+                ),
+                (
+                    axum::http::header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"ns{ns}.parquet\""),
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("the export was written but not read back: {e}"),
+        )
+            .into_response(),
+    }
 }
 
 /// `GET /code/{code_id}` — the script gravity reads at call time.

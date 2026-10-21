@@ -863,6 +863,21 @@ impl GraphStore {
         })
     }
 
+/// Export one of the graph's tables as Parquet (ADR-0007's backup boundary).
+    ///
+    /// Nodes are a `Document` collection, so okm's eager bridge reads them like
+    /// any other table. FACTS are not: an edge lives in the graph's own entry
+    /// shape (`EdgeKey` + `EdgeBody` frames, `GraphEncode`), which the bridge
+    /// cannot turn into columns — exported facts need an export surface on
+    /// okm's `Graph`, and until that exists this answers `None` rather than
+    /// inventing a second format beside the one a backup should be readable in.
+    pub fn export_parquet(&self, ns: u16, path: &std::path::Path) -> Option<Result<(), String>> {
+        if ns == ENTITY_NS {
+            return Some(crate::export::table(&self.entities, path));
+        }
+        None
+    }
+
     /// One fact by ITS ID — the deterministic read (ADR-0004's identity), the
     /// mirror of `ingest`'s `edge_id` answer: no search, no embedding, no
     /// ranking. The scope is checked against the edge's own source endpoint, so
