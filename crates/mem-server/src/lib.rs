@@ -900,7 +900,12 @@ async fn ingest_fact(
 /// One node as the read face returns it.
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct EntityDto {
-    pub node_id: u64,
+    /// The corpus entity's id — present when the endpoint is an entity node
+    /// (ns 36), absent for a user node (identity is not scoped to the corpus).
+    pub node_id: Option<u64>,
+    /// The user endpoint, `[channel, member]` (ADR-0014), when this endpoint is
+    /// a person instead of a corpus entity.
+    pub user: Option<(u64, u64)>,
     pub kind: String,
     pub literal_num: i64,
     pub name: String,
@@ -1246,7 +1251,8 @@ pub struct FactViewDto {
 impl From<mem_core::graph::FactView> for FactViewDto {
     fn from(v: mem_core::graph::FactView) -> Self {
         let node = |n: mem_core::graph::ResolvedNode| EntityDto {
-            node_id: n.node_id,
+            node_id: n.id.entity_id(),
+            user: n.id.user(),
             kind: n.kind,
             literal_num: n.literal_num,
             name: n.name,
@@ -1283,8 +1289,9 @@ async fn fetch_entity(
         .entity_by_name(scope, &name)
         .ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(EntityDto {
-        node_id,
-        kind: graph.entity_kind(row.kind_id).unwrap_or_default(),
+        node_id: Some(node_id),
+        user: None,
+        kind: row.kind.as_str().unwrap_or_default().to_string(),
         literal_num: row.literal_num,
         name: row.name,
     }))
@@ -1324,8 +1331,10 @@ pub struct GraphNodeDto {
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct GraphLinkDto {
     pub edge_id: u64,
-    pub source: u64,
-    pub target: u64,
+    /// The entity endpoint's id; absent when that endpoint is a user node
+    /// (ADR-0014) — the link still exists, its end just is not a corpus node.
+    pub source: Option<u64>,
+    pub target: Option<u64>,
     pub kind: String,
     pub since: u64,
     pub confidence: u8,
@@ -1348,7 +1357,7 @@ async fn fetch_graph(State(state): State<Arc<MemState>>, Path(scope): Path<u64>)
         .into_iter()
         .map(|(node_id, row)| GraphNodeDto {
             id: node_id,
-            kind: graph.entity_kind(row.kind_id).unwrap_or_default(),
+            kind: row.kind.as_str().unwrap_or_default().to_string(),
             literal_num: row.literal_num,
             name: row.name,
             community_id: row.community_id,
@@ -1359,8 +1368,8 @@ async fn fetch_graph(State(state): State<Arc<MemState>>, Path(scope): Path<u64>)
         .into_iter()
         .map(|fact| GraphLinkDto {
             edge_id: fact.edge_id,
-            source: fact.src.node_id,
-            target: fact.dst.node_id,
+            source: fact.src.id.entity_id(),
+            target: fact.dst.id.entity_id(),
             kind: fact.kind,
             since: fact.edge.since,
             confidence: fact.edge.confidence,

@@ -48,8 +48,11 @@ pub fn open_service(path: &std::path::Path) -> Result<ServiceStores, fjall::Erro
     let memory_store = FjallStore::from_db(db, KEYSPACE_MEMORY)?;
     Ok(ServiceStores {
         channels: ChannelStore::wrap(channel_store.clone()),
+        // The graph holds the identity collection's handle too (ADR-0014): a
+        // `user` endpoint is validated and rendered by a point read across
+        // keyspaces, never by a batch that would span them.
+        graph: GraphStore::wrap(memory_store.clone()).with_channel(channel_store.clone()),
         log: LogStore::wrap(channel_store),
-        code: CodeStore::wrap(memory_store.clone()),
-        graph: GraphStore::wrap(memory_store),
+        code: CodeStore::wrap(memory_store),
     })
 }

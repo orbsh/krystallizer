@@ -6,18 +6,21 @@
 //! prefix layouts were never reimplemented here):
 //!
 //! - **Entities** = a node collection (ns 36), ordinary document layout:
-//!   `[scope][node_id]` primary, `kind_id` + `literal_num` as declared
-//!   fields, `name` as the cold segment, and two declared 0x1 faces —
-//!   `by_name` (the exact name/alias entrance) and `by_kind` (the
-//!   node-kind face). The kind TOKEN allocates through the collection's own
-//!   KIND vocabulary (okm's fixed faces 0x04/0x05), never through the
-//!   field-name dictionary (0x02/0x03) its props use — two id spaces, so a
-//!   token can never read back as a prop name. A literal's numeric form is a
+//!   `[scope][node_id]` primary, `kind` + `literal_num` as declared
+//!   fields, `name` as the cold segment, and three declared 0x1 faces —
+//!   `by_name` (the exact name/alias entrance), `by_kind` (the node-kind
+//!   face) and `by_community` (the bucket read). The kind is a CATEGORICAL
+//!   FIELD — `kind: Vocab<u16>` (okm ADR-0032): the label set is that
+//!   field's own data vocabulary, so the write path interns it and the read
+//!   path resolves it back with no allocation code and no reserved faces,
+//!   and the field is named `kind` rather than `kind_id` because the value
+//!   IS the label. A literal's numeric form is a
 //!   declared FIELD, so a numeric read stays an ordered key scan rather than
 //!   vector distance; the face over it lands with the read that scans it.
 //! - **Facts** = an okm edge collection (ns 37, one ns per graph): the
-//!   declaration is `FactEdge` (`GraphEncode`, ns 37, member set =
-//!   `FactNodes::Entities`), the edge's payload is an ordinary obj payload
+//!   declaration is `FactEdge` (`GraphEncode`, ns 37, member set generated from
+//!   `#[ok_nodes(EntityRow, MemberRow)]` — people are nodes too, ADR-0014), the
+//!   edge's payload is an ordinary obj payload
 //!   carrying `since` / `confidence` / `weight` as declared fields
 //!   (ADR-0010 §1's three algorithm-queried fields, one 0x1 face each), and
 //!   the endpoints stay self-describing `NodeRef`s — a ref carries its own
@@ -55,13 +58,13 @@
 //! it bumps are the caller's clock riding the call (`ts_ms`), because a
 //! read without a clock is served but not counted.
 
+use crate::channel::{MemberKey, MemberRow};
 use crate::embedding::Embedder;
 use crate::render::RenderFormat;
-use okm_core::obj_vocab::{VocabCache, PREDICATE_VOCAB};
 use okm_core::obj_dynamic::DynamicValue;
 use okm_core::{
-    Collection, Document, DocumentEncode, EdgeHead, FjallStore, Graph, GraphEncode, KeyEncode,
-    MemBatch, NodeRef, NodeSet, Vector, VectorElem, VirtualStorage, PRIMARY_SLOT, write_slot,
+    write_slot, Collection, Document, DocumentEncode, EdgeHead, FjallStore, Graph, GraphEncode,
+    KeyEncode, MemBatch, NodeRef, Vector, VectorElem, VirtualStorage, Vocab, PRIMARY_SLOT,
 };
 use okm_vector::ExactIndex;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -72,6 +75,15 @@ use std::sync::Arc;
 pub const ENTITY_NS: u16 = 36;
 /// The facts' edge collection (ns 37, one ns per graph).
 pub const FACT_NS: u16 = 37;
+/// The identity collection's ns — channel members, which are ALSO the graph's
+/// user nodes (ADR-0014). It lives in the channel keyspace, not this one.
+pub const MEMBER_NS: u16 = 42;
+/// The reserved type token that names a user endpoint (ADR-0004's open type
+/// vocabulary: `literal` first, `user` second). A value under it is the wire
+/// reference `member-{channel}-{member}`, parsed into a node at ns 42 —
+/// nothing is created on a miss, because a person is registered, never
+/// discovered.
+pub const USER_KIND: &str = "user";
 /// The reserved node kind of a literal object — a value with no node
 /// identity of its own. The caller marks it in the tuple's type slot;
 /// k10r recognizes exactly this one token (an open type vocabulary
@@ -127,10 +139,11 @@ pub struct EntityKey {
     pub node_id: u64,
 }
 
-/// One entity node. `kind_id` allocates through this collection's own KIND
-/// vocabulary (okm's fixed faces 0x04/0x05); the entity's prop names
-/// allocate through the field-name dictionary (0x02/0x03). The two never
-/// share an id space, so a token cannot read back under a prop's name.
+/// One entity node. `kind` is a categorical field — `Vocab<u16>`, whose label
+/// set is that field's own data vocabulary (okm ADR-0032): `put` interns the
+/// label on write and `get` resolves it back, so neither side carries
+/// allocation code and the field needs no reserved faces. Named `kind`, not
+/// `kind_id`: the value is the label, the id is only its encoding.
 ///
 /// `community_id` is the write-side binning result (ADR-0010 §2): a node
 /// is seeded with a fresh id the moment it lands and re-binned by the
@@ -146,20 +159,20 @@ pub struct EntityKey {
 #[ok_ref(EntityKey)]
 #[ok_ns(36)]
 #[ok_name("entities")]
-#[ok_layout(version = 2)]
+#[ok_layout(version = 3)]
 #[ok_index(
     // Payload fields only: the key tail appends the primary key, so the
-    // entries land as `[kind_id][scope][node_id]`,
+    // entries land as `[kind][scope][node_id]`,
     // `[name][scope][node_id]` and `[community_id][scope][node_id]`.
     // Text-first regime: an exact match re-verifies the row's name and the
     // decoded key's scope — a prefix scan for `alpha` also reaches
     // `alphabet`, which is what dictionary order means.
-    by_kind { fields(kind_id) },
+    by_kind { fields(kind) },
     by_name { fields(name) },
     by_community { fields(community_id) },
 )]
 pub struct EntityRow {
-    pub kind_id: u16,
+    pub kind: Vocab<u16>,
     /// A literal node's integer projection (0 for an ordinary entity): a
     /// declared, fixed-width, ordered field, so a numeric read later stays
     /// a range scan rather than a vector-distance guess. No face is
@@ -183,11 +196,11 @@ pub struct EntityRow {
 
 use __OkmIndex_EntityRow_by_community as ByCommunity;
 use __OkmIndex_EntityRow_by_name as ByName;
-/// The temporal face: ascending in `since`, walked in reverse for newest-first.
-use __OkmIndex_FactEdge_by_since as BySince;
 /// The scope-prefixed weight face: one probe yields a scope's keys in weight
 /// order, so the progressive read decodes k rows for k answers.
 use __OkmIndex_FactEdge_by_scope_weight as ByScopeWeight;
+/// The temporal face: ascending in `since`, walked in reverse for newest-first.
+use __OkmIndex_FactEdge_by_since as BySince;
 
 /// A fact: an edge of the graph. The declared fields are `since` (the
 /// caller's clock, the adjudication input), `confidence` (the write-side's,
@@ -205,7 +218,7 @@ use __OkmIndex_FactEdge_by_scope_weight as ByScopeWeight;
 #[derive(Clone, Debug, Default, PartialEq, GraphEncode)]
 #[ok_ns(37)]
 #[ok_name("facts")]
-#[ok_nodes(FactNodes)]
+#[ok_nodes(EntityRow, MemberRow)]
 // The fields appended after `weight` raise the payload's hot width, hence
 // the layout version (okm's schema-evolution rule: new fields at the tail
 // of their segment, version recorded in the header).
@@ -317,14 +330,80 @@ impl FactEdge {
     }
 }
 
-/// The member set: the graph admits entity nodes (ns 36) and nothing else.
-/// A compile-time fact in code — checked by okm at write AND at decode.
-pub enum FactNodes {
-    Entities,
+// The member set is GENERATED by `#[ok_nodes(EntityRow, MemberRow)]`: the
+// derive writes `FactNodes { EntityRow, MemberRow }` and takes each ns from the
+// table's own `#[ok_ns]` (36, 42) — the corpus's entities and its PEOPLE
+// (ADR-0014). A compile-time fact in code, checked by okm at write AND at
+// decode; refs stay wire data.
+
+/// One fact's endpoint on the WRITE side: where the term resolved to. The
+/// graph's reads see refs; the ingest path needs to tell a corpus node (which
+/// gets binned into a community) from a person (who never does).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Endpoint {
+    /// A corpus entity: ns 36, scoped by the ingest call.
+    Entity(u64),
+    /// A registered member: ns 42, whose key carries its own channel.
+    User { channel: u64, member: u64 },
 }
 
-impl NodeSet for FactNodes {
-    const NS_VALUES: &'static [u16] = &[ENTITY_NS];
+impl Endpoint {
+    /// The entity node id, when this endpoint is one — the only endpoints that
+    /// participate in community binning.
+    fn entity_id(self) -> Option<u64> {
+        match self {
+            Endpoint::Entity(node_id) => Some(node_id),
+            Endpoint::User { .. } => None,
+        }
+    }
+
+    /// The endpoint as a graph node reference: `[ns 2B][len][pkey]`, each
+    /// collection contributing its own key bytes.
+    fn to_ref(self, scope: u64) -> NodeRef {
+        match self {
+            Endpoint::Entity(node_id) => NodeRef::new(
+                <EntityRow as Document>::NS_PREFIX,
+                &EntityKey { scope, node_id }.encode(),
+            ),
+            Endpoint::User { channel, member } => NodeRef::new(
+                <MemberRow as Document>::NS_PREFIX,
+                &MemberKey {
+                    channel_id: channel,
+                    member_id: member,
+                }
+                .encode(),
+            ),
+        }
+    }
+}
+
+/// Parse the `user` type token's wire reference `member-{channel}-{member}`.
+/// Numbers only: the syntax is a reference, never a name (a display name is a
+/// row field and renaming must not move a fact).
+fn parse_member_ref(value: &str) -> Option<(u64, u64)> {
+    let rest = value.strip_prefix("member-")?;
+    let (channel, member) = rest.split_once('-')?;
+    Some((channel.parse().ok()?, member.parse().ok()?))
+}
+
+/// A member endpoint's key bytes back to `(channel, member)` — the decode side
+/// of [`MemberKey`]'s `[channel 8B][member 8B]`.
+fn member_from_pkey(pkey: &[u8]) -> Option<(u64, u64)> {
+    if pkey.len() != 16 {
+        return None;
+    }
+    let channel = u64::from_be_bytes(pkey[..8].try_into().ok()?);
+    let member = u64::from_be_bytes(pkey[8..].try_into().ok()?);
+    Some((channel, member))
+}
+
+/// An entity node id out of a ref, or `None` for any other collection — the
+/// guard every reader needs before decoding a pkey as an `EntityKey`.
+fn entity_node_of(node: &NodeRef) -> Option<u64> {
+    if node.ns_id() != ENTITY_NS {
+        return None;
+    }
+    Some(EntityKey::decode(&node.pkey).node_id)
 }
 
 // ---- ADR-0010 steps 3–4: binning, and the community id's issuer ------
@@ -484,6 +563,11 @@ pub enum IngestError {
     Storage(String),
     #[error("embedding: {0}")]
     Embedding(String),
+    /// The fact was refused on its own terms (an unregistered `user`
+    /// reference, or a `user` endpoint with no channel keyspace attached) —
+    /// a caller error, never a storage failure.
+    #[error("refused: {0}")]
+    Refused(String),
 }
 
 /// A decoded fact, read back from storage.
@@ -496,13 +580,59 @@ pub struct FactBody {
     pub edge: FactEdge,
 }
 
+/// Which collection a resolved endpoint came from (ADR-0014): a corpus entity,
+/// or the identity collection's user node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeId {
+    /// ns 36 — extracted knowledge, scoped to the corpus.
+    Entity { scope: u64, node_id: u64 },
+    /// ns 42 — a registered person; the channel is in the key because a member
+    /// id is only unique inside its channel.
+    User { channel: u64, member: u64 },
+}
+
+impl NodeId {
+    /// The entity node id, `None` for a user node.
+    pub fn entity_id(self) -> Option<u64> {
+        match self {
+            NodeId::Entity { node_id, .. } => Some(node_id),
+            NodeId::User { .. } => None,
+        }
+    }
+
+    /// The corpus scope, `None` for a user node (identity is store-global: a
+    /// channel already belongs to one scope).
+    pub fn scope(self) -> Option<u64> {
+        match self {
+            NodeId::Entity { scope, .. } => Some(scope),
+            NodeId::User { .. } => None,
+        }
+    }
+
+    /// The user identity, `None` for an entity.
+    pub fn user(self) -> Option<(u64, u64)> {
+        match self {
+            NodeId::User { channel, member } => Some((channel, member)),
+            NodeId::Entity { .. } => None,
+        }
+    }
+
+    /// `n12` / `u3_7` — what a rendered line prints and what a diagram uses as
+    /// a node id (no punctuation a mermaid id would reject).
+    pub fn label(self) -> String {
+        match self {
+            NodeId::Entity { node_id, .. } => format!("n{node_id}"),
+            NodeId::User { channel, member } => format!("u{channel}_{member}"),
+        }
+    }
+}
+
 /// One node as a fact read returns it: its identity, its name, its kind
 /// token and (for a literal) its numeric projection — the refs carry the
 /// scope, so a caller never passes one in.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedNode {
-    pub scope: u64,
-    pub node_id: u64,
+    pub id: NodeId,
     pub kind: String,
     pub literal_num: i64,
     pub name: String,
@@ -639,9 +769,11 @@ const TABLE_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 /// much derived state may sit in memory.
 struct ScopeTable {
     index: ExactIndex,
-    /// `node_id` as the index key (BE bytes) → the name and kind id the answer
-    /// reports beside it.
-    rows: HashMap<Vec<u8>, (String, u16)>,
+    /// `node_id` as the index key (BE bytes) → the name and kind LABEL the
+    /// answer reports beside it (the label the row's `Vocab` resolves to; a
+    /// derived table stores what it reports, never an id it would have to
+    /// resolve again).
+    rows: HashMap<Vec<u8>, (String, String)>,
     bytes: usize,
 }
 
@@ -699,6 +831,12 @@ impl ScopeTables {
 /// same rule flat memory and the code store follow).
 pub struct GraphStore {
     entities: Collection<FjallStore, EntityKey, EntityRow>,
+    /// The identity collection (ns 42), on the CHANNEL keyspace — `None` when
+    /// the caller attached only the memory side. Reads are point reads across
+    /// handles; a fact's batch never spans the two keyspaces (okm's
+    /// `commit_batch` writes into the handle it was called on), which is why
+    /// this is a separate handle and not part of the graph's own tree.
+    members: Option<Collection<FjallStore, MemberKey, MemberRow>>,
     /// One handle for the writes the collections cannot express in their
     /// own batch (the dictionary, and the edge's dynamic segment). The
     /// edge collection's own handle is built PER CALL — see `facts()`.
@@ -759,9 +897,28 @@ impl GraphStore {
             next_node,
             next_edge,
             embedder: None,
+            members: None,
             tables: ScopeTables::default(),
             next_community: HashMap::new(),
         }
+    }
+
+    /// Attach the CHANNEL keyspace, which is where the identity collection
+    /// lives: without it the graph cannot validate or render a `user`
+    /// endpoint (ADR-0014), and an ingest that names one is refused.
+    pub fn with_channel(mut self, channel_store: FjallStore) -> Self {
+        self.members = Some(<MemberRow as Document>::collection(channel_store));
+        self
+    }
+
+    /// Open both keyspaces of one database directory — the standalone form a
+    /// test needs when it exercises user endpoints (a process opens the
+    /// database once and attaches keyspaces; see `crate::service`).
+    pub fn open_with_channel(path: &std::path::Path) -> Result<Self, fjall::Error> {
+        let db = fjall::Database::create_or_recover(fjall::Config::new(path))?;
+        let memory = FjallStore::from_db(db.clone(), crate::KEYSPACE_MEMORY)?;
+        let channel = FjallStore::from_db(db, crate::KEYSPACE_CHANNEL)?;
+        Ok(Self::wrap(memory).with_channel(channel))
     }
 
     /// Attach the embedding engine (ADR-0003). `open_service` cannot
@@ -772,28 +929,15 @@ impl GraphStore {
         self
     }
 
-    /// The edge collection handle. Predicates allocate through the graph's
-    /// own KIND vocabulary (0x04/0x05) and the edge's open prop names
-    /// through the payload's FIELD dictionary (0x02/0x03) — two vocabularies,
-    /// two id spaces, so the collision that used to force a fresh handle per
-    /// call cannot happen. A per-call handle stays cheap (the vocabularies
-    /// load on first probe, ids only grow).
+    /// The edge collection handle. Predicates allocate through the graph's own
+    /// PREDICATE vocabulary (the 0x04/0x05 pair, a key-side vocabulary owned by
+    /// the carrier) and the edge's open prop names through the payload's FIELD
+    /// dictionary (0x02/0x03) — two vocabularies, two id spaces, so the
+    /// collision that used to force a fresh handle per call cannot happen. A
+    /// per-call handle stays cheap (the vocabularies load on first probe, ids
+    /// only grow).
     fn facts(&self) -> Graph<FjallStore, FactEdge> {
         Graph::new(self.store.clone())
-    }
-
-    /// Allocate (or look up) an ENTITY KIND token in the collection's own
-    /// predicate vocabulary (0x04/0x05). The entity's props are field names and
-    /// live in 0x02/0x03, so the two never share an id.
-    fn dict_id(&mut self, ns_prefix: &[u8], name: &str) -> u16 {
-        let mut dict = VocabCache::new(PREDICATE_VOCAB);
-        dict.id_for(&mut self.store, ns_prefix, name)
-    }
-
-    /// The reverse direction of the predicate vocabulary.
-    fn dict_name(&self, ns_prefix: &[u8], id: u16) -> Option<String> {
-        let mut dict = VocabCache::new(PREDICATE_VOCAB);
-        dict.name_for(&self.store, ns_prefix, id)
     }
 
     /// One node by id.
@@ -813,11 +957,6 @@ impl GraphStore {
             .filter_map(|(key, row)| row.map(|row| (key.decoded, row)))
             .find(|(key, row)| key.scope == scope && row.name == name)
             .map(|(key, row)| (key.node_id, row))
-    }
-
-    /// The entity's kind token (its dictionary name).
-    pub fn entity_kind(&mut self, kind_id: u16) -> Option<String> {
-        self.dict_name(<EntityRow as Document>::NS_PREFIX, kind_id)
     }
 
     /// The entity's open attributes (the dynamic segment) — the collection's own
@@ -1036,10 +1175,16 @@ impl GraphStore {
                     let Some(view) = self.fact_view(edge_id) else {
                         continue;
                     };
-                    let target = view.dst.node_id;
-                    out.push(ChainHop { depth, fact: view });
-                    if visited.insert(target) {
-                        next.push(target);
+                    out.push(ChainHop {
+                        depth,
+                        fact: view.clone(),
+                    });
+                    // Only an entity target continues the walk: a user node is
+                    // where identity lives, not another hop of the chain.
+                    if let Some(target) = view.dst.id.entity_id() {
+                        if visited.insert(target) {
+                            next.push(target);
+                        }
                     }
                 }
             }
@@ -1202,14 +1347,12 @@ impl GraphStore {
             .filter(|(_, dist2)| *dist2 <= LANDING_DIST2)
             .take(k)
             .filter_map(|(key, dist2)| {
-                let (name, kind_id) = table.rows.get(&key)?;
+                let (name, kind) = table.rows.get(&key)?;
                 Some(Seed {
                     node_id: u64::from_be_bytes(key.as_slice().try_into().ok()?),
                     score: 1.0 - dist2 / 2.0,
                     name: name.clone(),
-                    kind: self
-                        .dict_name(<EntityRow as Document>::NS_PREFIX, *kind_id)
-                        .unwrap_or_default(),
+                    kind: kind.clone(),
                 })
             })
             .collect())
@@ -1458,7 +1601,10 @@ impl GraphStore {
                 let name_len = row.name.len();
                 let key = node_id.to_be_bytes().to_vec();
                 index.add(key.clone(), &row.embedding.elems);
-                named.insert(key, (row.name, row.kind_id));
+                named.insert(
+                    key,
+                    (row.name, row.kind.as_str().unwrap_or_default().to_string()),
+                );
                 bytes += dim * std::mem::size_of::<f32>() + name_len;
             }
         }
@@ -1476,19 +1622,42 @@ impl GraphStore {
     /// [entity key]`, so the entity key decodes straight out of it and
     /// the scope rides along (nothing external is consulted).
     pub fn resolve_ref(&mut self, node: &NodeRef) -> ResolvedNode {
+        if node.ns_id() == MEMBER_NS {
+            let (channel, member) = member_from_pkey(&node.pkey).unwrap_or((0, 0));
+            let name = self
+                .members
+                .as_ref()
+                .and_then(|members| {
+                    members
+                        .get(&MemberKey {
+                            channel_id: channel,
+                            member_id: member,
+                        })
+                        .map(|row| row.display_name)
+                })
+                .unwrap_or_default();
+            return ResolvedNode {
+                id: NodeId::User { channel, member },
+                kind: USER_KIND.to_string(),
+                literal_num: 0,
+                name,
+            };
+        }
         let key = EntityKey::decode(&node.pkey);
         let row = self.entity(key.scope, key.node_id);
         let (kind, literal_num, name) = match row {
             Some(row) => (
-                self.entity_kind(row.kind_id).unwrap_or_default(),
+                row.kind.as_str().unwrap_or_default().to_string(),
                 row.literal_num,
                 row.name,
             ),
             None => (String::new(), 0, String::new()),
         };
         ResolvedNode {
-            scope: key.scope,
-            node_id: key.node_id,
+            id: NodeId::Entity {
+                scope: key.scope,
+                node_id: key.node_id,
+            },
             kind,
             literal_num,
             name,
@@ -1498,6 +1667,36 @@ impl GraphStore {
     /// Outgoing edge ids of one node (the traversal currency).
     pub fn out_edges(&mut self, scope: u64, node_id: u64) -> Vec<u64> {
         self.facts().out_edges(&self.node_ref(scope, node_id))
+    }
+
+    /// Outgoing edge ids of ANY node reference — the form a user node needs:
+    /// identity is not scoped to the corpus (ADR-0014).
+    pub fn out_edges_of(&mut self, node: &NodeRef) -> Vec<u64> {
+        self.facts().out_edges(node)
+    }
+
+    /// Incoming edge ids of any node reference; see
+    /// [`out_edges_of`](Self::out_edges_of).
+    pub fn in_edges_of(&mut self, node: &NodeRef) -> Vec<u64> {
+        self.facts().in_edges(node)
+    }
+
+    /// Edge ids of one predicate out of any node reference (the 0x09 face).
+    pub fn typed_out_of(&mut self, node: &NodeRef, kind: &str) -> Vec<u64> {
+        self.facts().typed_out(kind, node)
+    }
+
+    /// One member's node reference (`[42][channel][member]`) — the entry a
+    /// context head starts its traversal from.
+    pub fn user_ref(&self, channel: u64, member: u64) -> NodeRef {
+        NodeRef::new(
+            <MemberRow as Document>::NS_PREFIX,
+            &MemberKey {
+                channel_id: channel,
+                member_id: member,
+            }
+            .encode(),
+        )
     }
 
     /// Incoming edge ids of one node — the in-direction mirror of
@@ -1560,7 +1759,10 @@ impl GraphStore {
             .collect();
 
         if functional {
-            if let Some(&incumbent) = self.typed_out(scope, src, &fact.rel.name).first() {
+            if let Some(&incumbent) = self
+                .typed_out_of(&src.to_ref(scope), &fact.rel.name)
+                .first()
+            {
                 let body = self
                     .facts()
                     .get_edge(incumbent)
@@ -1625,12 +1827,44 @@ impl GraphStore {
     /// every fact about it, so they MERGE into the node's dynamic
     /// segment (a same-named attribute takes the newer value; the rest
     /// survive, unlike a wholesale replace).
-    fn resolve(&mut self, scope: u64, term: &Term) -> Result<u64, IngestError> {
+    fn resolve(&mut self, scope: u64, term: &Term) -> Result<Endpoint, IngestError> {
+        // The `user` type token names a REGISTERED member (ADR-0014): the value
+        // is the wire reference `member-{channel}-{member}`, resolved through
+        // the identity collection. Nothing is created on a miss — a person is
+        // registered, never discovered — and no props land on a member row:
+        // admin-time identity is not extracted knowledge.
+        if term.type_label == USER_KIND {
+            let (channel, member) = parse_member_ref(&term.value).ok_or_else(|| {
+                IngestError::Refused(format!(
+                    "user reference `{}` is not member-{{channel}}-{{member}}",
+                    term.value
+                ))
+            })?;
+            let known = self
+                .members
+                .as_ref()
+                .ok_or_else(|| {
+                    IngestError::Refused(
+                        "a `user` endpoint needs the channel keyspace attached".to_string(),
+                    )
+                })?
+                .get(&MemberKey {
+                    channel_id: channel,
+                    member_id: member,
+                })
+                .is_some();
+            if !known {
+                return Err(IngestError::Refused(format!(
+                    "`{}` is not a registered member",
+                    term.value
+                )));
+            }
+            return Ok(Endpoint::User { channel, member });
+        }
         if let Some((node_id, _)) = self.entity_by_name(scope, &term.value) {
             self.merge_props(scope, node_id, &term.props);
-            return Ok(node_id);
+            return Ok(Endpoint::Entity(node_id));
         }
-        let kind_id = self.dict_id(<EntityRow as Document>::NS_PREFIX, &term.type_label);
         let node_id = self.next_node;
         self.next_node += 1;
         // ADR-0003: the vector is computed INSIDE k10r, over the node's NAME
@@ -1647,7 +1881,7 @@ impl GraphStore {
         };
         let community_id = self.next_community_id(scope);
         let row = EntityRow {
-            kind_id,
+            kind: Vocab::of(term.type_label.clone()),
             literal_num: literal_num(term),
             community_id,
             name: term.value.clone(),
@@ -1664,7 +1898,7 @@ impl GraphStore {
         if !term.props.is_empty() {
             self.entities.put_fields(&key, &term.props);
         }
-        Ok(node_id)
+        Ok(Endpoint::Entity(node_id))
     }
 
     /// Merge props into an existing node's dynamic segment.
@@ -1690,8 +1924,8 @@ impl GraphStore {
         edge_id: u64,
         edge: &FactEdge,
         scope: u64,
-        src: u64,
-        dst: u64,
+        src: Endpoint,
+        dst: Endpoint,
         kind: &str,
         props: &BTreeMap<String, DynamicValue>,
     ) -> Result<(), IngestError> {
@@ -1711,14 +1945,14 @@ impl GraphStore {
         edge_id: u64,
         edge: &FactEdge,
         scope: u64,
-        src: u64,
-        dst: u64,
+        src: Endpoint,
+        dst: Endpoint,
         kind: &str,
         props: &BTreeMap<String, DynamicValue>,
     ) -> Result<(), IngestError> {
         let head = EdgeHead {
-            src: self.node_ref(scope, src),
-            dst: self.node_ref(scope, dst),
+            src: src.to_ref(scope),
+            dst: dst.to_ref(scope),
             predicate: kind.to_string(),
         };
         let mut facts = self.facts();
@@ -1747,7 +1981,6 @@ impl GraphStore {
             &EntityKey { scope, node_id }.encode(),
         )
     }
-
 }
 
 /// A literal's integer projection: the value's own text parsed as an
@@ -1759,7 +1992,6 @@ fn literal_num(term: &Term) -> i64 {
     }
     term.value.parse::<i64>().unwrap_or(0)
 }
-
 
 // ---- ADR-0010 steps 3–4: the write-side binning pass and the read side
 
@@ -1883,8 +2115,11 @@ impl GraphStore {
     /// No LLM, no transport, no global graph: the vote is local and the
     /// weights are ADR-0005's — a fresh assertion weighs `ln(2)×0.5`, so a
     /// vote never degenerates to an all-zero tie.
-    fn bin(&mut self, scope: u64, touched: &[u64]) -> Result<(), IngestError> {
-        let local = self.local_subgraph(scope, touched)?;
+    fn bin(&mut self, scope: u64, touched: &[Endpoint]) -> Result<(), IngestError> {
+        // A user node never enters a community (it is not corpus knowledge):
+        // the bin pass takes the entity endpoints of the fact and nothing else.
+        let touched: Vec<u64> = touched.iter().filter_map(|e| e.entity_id()).collect();
+        let local = self.local_subgraph(scope, &touched)?;
         if local.is_empty() {
             return Ok(());
         }
@@ -1901,8 +2136,13 @@ impl GraphStore {
                 let Some(body) = self.facts().get_edge(edge_id) else {
                     continue;
                 };
-                let src = EntityKey::decode(&body.src.pkey).node_id;
-                let dst = EntityKey::decode(&body.dst.pkey).node_id;
+                // A fact may name a user endpoint; only entity endpoints take
+                // part in the vote, so a ref from another collection decodes
+                // to `None` rather than to a bogus node id.
+                let (Some(src), Some(dst)) = (entity_node_of(&body.src), entity_node_of(&body.dst))
+                else {
+                    continue;
+                };
                 let other = if src == node { dst } else { src };
                 if other == node || !members.contains(&other) {
                     continue;
@@ -2059,7 +2299,13 @@ impl GraphStore {
         let mut facts = Vec::new();
         for &node in &in_community {
             for view in self.out_facts(scope, node) {
-                if in_community.contains(&view.dst.node_id) && seen.insert(view.edge_id) {
+                if view
+                    .dst
+                    .id
+                    .entity_id()
+                    .is_some_and(|id| in_community.contains(&id))
+                    && seen.insert(view.edge_id)
+                {
                     facts.push(view);
                 }
             }

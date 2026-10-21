@@ -239,7 +239,8 @@ async fn the_graph_and_the_code_store_share_a_keyspace_without_leaking() {
         .json()
         .await
         .unwrap();
-    assert_eq!(entity.node_id, 1);
+    assert_eq!(entity.node_id, Some(1));
+    assert_eq!(entity.user, None);
 
     let stored: serde_json::Value = client
         .get(format!("{base}/code/1"))
@@ -253,11 +254,7 @@ async fn the_graph_and_the_code_store_share_a_keyspace_without_leaking() {
 
     // The entity wrote nothing into the code table: the only id there is the
     // one the door stored, and the next id is empty.
-    let ghost = client
-        .get(format!("{base}/code/2"))
-        .send()
-        .await
-        .unwrap();
+    let ghost = client.get(format!("{base}/code/2")).send().await.unwrap();
     assert_eq!(
         ghost.status(),
         reqwest::StatusCode::NOT_FOUND,
@@ -291,7 +288,8 @@ async fn the_exact_entrance_finds_a_node_and_404s_when_absent() {
     assert_eq!(
         found,
         EntityDto {
-            node_id: 1,
+            node_id: Some(1),
+            user: None,
             kind: "repository".into(),
             literal_num: 0,
             name: "galaxy_repo".into(),
@@ -353,7 +351,7 @@ async fn one_hop_traversal_resolves_both_ends() {
     assert_eq!(edges[1].dst.literal_num, 1990, "the literal's projection");
     assert_eq!(
         (edges[0].src.node_id, edges[0].src.name.as_str()),
-        (1, "user"),
+        (Some(1), "user"),
         "the endpoints arrive resolved — nothing was passed in"
     );
 
@@ -416,10 +414,10 @@ async fn the_visualization_door_serves_one_scope_as_nodes_and_links() {
         !names.contains(&"other"),
         "another scope's nodes never ride this read"
     );
-    assert_eq!(graph.links[0].source, 1, "links point by node id");
+    assert_eq!(graph.links[0].source, Some(1), "links point by node id");
     assert_eq!(
         (graph.links[0].kind.as_str(), graph.links[0].target),
-        ("PREFERS", 2)
+        ("PREFERS", Some(2))
     );
 
     let empty: GraphDto = client
@@ -452,7 +450,11 @@ async fn retrieval_door_answers_an_empty_landing_without_an_engine() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 200, "empty landing is not an error status");
+    assert_eq!(
+        response.status(),
+        200,
+        "empty landing is not an error status"
+    );
     let seeds: Vec<serde_json::Value> = response.json().await.unwrap();
     assert!(seeds.is_empty(), "no engine = nothing lands");
 }
@@ -512,7 +514,10 @@ async fn the_touch_door_counts_a_tool_consult_and_404s_for_a_foreign_edge() {
         .await
         .unwrap();
     assert_eq!(touched.tool_count, 1);
-    assert_eq!(touched.write_count, 1, "the assertion is still the one write");
+    assert_eq!(
+        touched.write_count, 1,
+        "the assertion is still the one write"
+    );
     assert_eq!(touched.last_read, 2000, "the caller's clock, verbatim");
     assert_eq!(
         touched.weight, 1386,

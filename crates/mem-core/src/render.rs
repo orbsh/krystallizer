@@ -123,11 +123,11 @@ pub fn render_head(facts: &[FactView], format: RenderFormat) -> String {
             let mut out = String::from("graph LR\n");
             for fact in facts {
                 out.push_str(&format!(
-                    "  n{}[\"{}\"] -->|{}| n{}[\"{}\"]\n",
-                    fact.src.node_id,
+                    "  {}[\"{}\"] -->|{}| {}[\"{}\"]\n",
+                    fact.src.id.label(),
                     mermaid_text(&fact.src.name),
                     mermaid_text(&fact.kind),
-                    fact.dst.node_id,
+                    fact.dst.id.label(),
                     mermaid_text(&fact.dst.name),
                 ));
             }
@@ -143,7 +143,7 @@ fn render_memory_plaintext(slices: &[CommunitySlice]) -> String {
         out.push_str(&header(slice));
         out.push('\n');
         for (node_id, (name, kind)) in nodes_of(slice) {
-            out.push_str(&format!("n{node_id} {name} [{kind}]\n"));
+            out.push_str(&format!("{node_id} {name} [{kind}]\n"));
         }
         for fact in &slice.facts {
             out.push_str(&fact_line_plaintext(fact));
@@ -158,18 +158,18 @@ fn render_memory_markdown(slices: &[CommunitySlice]) -> String {
     for slice in slices {
         out.push_str(&format!("## {}\n\n", header(slice)));
         for (node_id, (name, kind)) in nodes_of(slice) {
-            out.push_str(&format!("- `n{node_id}` {name} [{kind}]\n"));
+            out.push_str(&format!("- `{node_id}` {name} [{kind}]\n"));
         }
         if !slice.facts.is_empty() {
             out.push('\n');
         }
         for fact in &slice.facts {
             out.push_str(&format!(
-                "- `e{}` `n{}` -[{}]-> `n{}` · {}\n",
+                "- `e{}` `{}` -[{}]-> `{}` · {}\n",
                 fact.edge_id,
-                fact.src.node_id,
+                fact.src.id.label(),
                 fact.kind,
-                fact.dst.node_id,
+                fact.dst.id.label(),
                 counters(fact),
             ));
         }
@@ -188,11 +188,11 @@ fn render_memory_mermaid(slices: &[CommunitySlice]) -> String {
         ));
         for fact in &slice.facts {
             out.push_str(&format!(
-                "    n{}[\"{}\"] -->|{}| n{}[\"{}\"]\n",
-                fact.src.node_id,
+                "    {}[\"{}\"] -->|{}| {}[\"{}\"]\n",
+                fact.src.id.label(),
                 mermaid_text(&fact.src.name),
                 mermaid_text(&fact.kind),
-                fact.dst.node_id,
+                fact.dst.id.label(),
                 mermaid_text(&fact.dst.name),
             ));
         }
@@ -220,11 +220,11 @@ fn header(slice: &CommunitySlice) -> String {
 /// an address — `GET /graph/{scope}/facts/{id}` — not an inlined subtree.
 fn fact_line_plaintext(fact: &FactView) -> String {
     let base = format!(
-        "e{} n{} -[{}]-> n{} · {} · since={}",
+        "e{} {} -[{}]-> {} · {} · since={}",
         fact.edge_id,
-        fact.src.node_id,
+        fact.src.id.label(),
         fact.kind,
-        fact.dst.node_id,
+        fact.dst.id.label(),
         counters(fact),
         fact.edge.since,
     );
@@ -265,14 +265,14 @@ fn head_end(name: &str, kind: &str) -> String {
 
 /// Only the nodes the shown facts mention, id-ordered: a node line with no
 /// edge is a bare name the caller cannot use.
-fn nodes_of(slice: &CommunitySlice) -> std::collections::BTreeMap<u64, (String, String)> {
+fn nodes_of(slice: &CommunitySlice) -> std::collections::BTreeMap<String, (String, String)> {
     let mut nodes = std::collections::BTreeMap::new();
     for fact in &slice.facts {
         nodes
-            .entry(fact.src.node_id)
+            .entry(fact.src.id.label())
             .or_insert_with(|| (fact.src.name.clone(), fact.src.kind.clone()));
         nodes
-            .entry(fact.dst.node_id)
+            .entry(fact.dst.id.label())
             .or_insert_with(|| (fact.dst.name.clone(), fact.dst.kind.clone()));
     }
     nodes

@@ -49,10 +49,10 @@ pub use config::{
 pub use embedding::{l2_normalize, EmbedError, Embedder, LocalEmbedder};
 pub use graph::{
     Anchored, ChainHop, CommunitySeqKey, CommunitySeqRow, CommunitySlice, EntityKey, EntityRow,
-    FactBody, FactEdge, FactTuple, GraphStore, IngestError, IngestOutcome, Recall, REF_FIELD,
-    Relation, Seed, Term, Touch,
+    FactBody, FactEdge, FactTuple, GraphStore, IngestError, IngestOutcome, NodeId, Recall,
+    REF_FIELD, Relation, Seed, Term, Touch,
     COMMUNITY_NS, ENTITY_NS, FACT_NS, FUNCTIONAL_PROP, LANDING_FLOOR, LITERAL_KIND, LPA_RADIUS,
-    LPA_ROUNDS, WEIGHT_SCALE,
+    LPA_ROUNDS, MEMBER_NS, USER_KIND, WEIGHT_SCALE,
 };
 pub use log::{
     event as log_event, field as log_field, level as log_level, LogEntry, LogKey, LogRow, LogStore,

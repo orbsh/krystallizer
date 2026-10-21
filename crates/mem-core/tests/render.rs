@@ -11,8 +11,7 @@ use mem_core::{render_head, render_memory, RenderFormat};
 
 fn node(node_id: u64, name: &str, kind: &str) -> ResolvedNode {
     ResolvedNode {
-        scope: 1,
-        node_id,
+        id: mem_core::graph::NodeId::Entity { scope: 1, node_id },
         kind: kind.to_string(),
         literal_num: 0,
         name: name.to_string(),

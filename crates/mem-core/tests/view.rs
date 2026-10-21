@@ -25,13 +25,7 @@ fn open() -> (tempfile::TempDir, ServiceStores) {
 }
 
 fn projection(stores: &mut ServiceStores) -> Projection {
-    assemble(
-        &mut stores.channels,
-        &mut stores.graph,
-        7,
-        1,
-        DEFAULT_SCOPE,
-    )
+    assemble(&mut stores.channels, &mut stores.graph, 7, 1, DEFAULT_SCOPE)
 }
 
 /// An empty corpus is a legal answer, not an error: no head, no summary,
@@ -82,11 +76,14 @@ fn head_is_both_directions_deduplicated() {
     assert_eq!(p.head.len(), 3, "three edges, one direction each");
     let user = 1u64;
     assert!(
-        p.head.iter().any(|f| f.dst.node_id == user),
+        p.head.iter().any(|f| f.dst.id.entity_id() == Some(user)),
         "the incoming fact must be in the head"
     );
     assert_eq!(
-        p.head.iter().filter(|f| f.src.node_id == user).count(),
+        p.head
+            .iter()
+            .filter(|f| f.src.id.entity_id() == Some(user))
+            .count(),
         2,
         "both outgoing facts are in the head"
     );

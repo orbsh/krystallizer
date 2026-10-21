@@ -116,8 +116,8 @@ fn entities_resolve_by_name_within_a_scope() {
     assert_eq!(head_id, 1, "the first node of a fresh table");
     let (tail_id, _) = graph.entity_by_name(1, "k10r_core").unwrap();
 
-    // The kind token came back out of the collection's own dictionary.
-    assert_eq!(graph.entity_kind(head.kind_id).unwrap(), "repository");
+    // The kind label came back through the field's own vocabulary.
+    assert_eq!(head.kind.as_str(), Some("repository"));
 
     // Re-ingesting the same fact resolves the SAME nodes (no duplicate
     // entity for a name already in the scope).
@@ -318,7 +318,7 @@ fn literal_object_becomes_a_node() {
         .entity_by_name(1, "1990")
         .expect("the literal is reachable by its text");
     assert_eq!(row.literal_num, 1990);
-    assert_eq!(graph.entity_kind(row.kind_id).unwrap(), LITERAL_KIND);
+    assert_eq!(row.kind.as_str(), Some(LITERAL_KIND));
 
     // A non-numeric literal keeps its text and projects to 0 (a date
     // format's canonical projection is an owed ruling, not a guess).
@@ -451,9 +451,8 @@ fn local_embedder() -> Option<std::sync::Arc<dyn mem_core::Embedder>> {
         eprintln!("skipping: no embedding model in {}", dir.display());
         return None;
     }
-    let engine: std::sync::Arc<dyn mem_core::Embedder> = std::sync::Arc::new(
-        mem_core::LocalEmbedder::load(&dir).expect("model loads"),
-    );
+    let engine: std::sync::Arc<dyn mem_core::Embedder> =
+        std::sync::Arc::new(mem_core::LocalEmbedder::load(&dir).expect("model loads"));
     Some(engine)
 }
 
@@ -584,7 +583,7 @@ fn recall_returns_the_landed_community_as_text() {
                 "the edge line carries its id: {text}"
             );
             assert!(
-                text.contains(&format!("n{} {}", fact.src.node_id, fact.src.name)),
+                text.contains(&format!("{} {}", fact.src.id.label(), fact.src.name)),
                 "the node line carries its id: {text}"
             );
         }
@@ -1129,7 +1128,7 @@ fn the_three_entrances_need_no_query() {
     let touch_a: Vec<u64> = anchored
         .facts
         .iter()
-        .filter(|f| f.src.node_id == a || f.dst.node_id == a)
+        .filter(|f| f.src.id.entity_id() == Some(a) || f.dst.id.entity_id() == Some(a))
         .map(|f| f.edge_id)
         .collect();
     for id in [a_leads_b, c_leads_a] {
@@ -1140,7 +1139,7 @@ fn the_three_entrances_need_no_query() {
             .facts
             .iter()
             .take(touch_a.len())
-            .all(|f| f.src.node_id == a || f.dst.node_id == a),
+            .all(|f| f.src.id.entity_id() == Some(a) || f.dst.id.entity_id() == Some(a)),
         "the anchor's facts lead the answer"
     );
     assert!(
@@ -1254,14 +1253,95 @@ fn a_rewrite_does_not_leave_the_fact_in_the_ranking_twice() {
         panic!("links");
     };
     for _ in 0..3 {
-        graph.ingest(
-            1,
-            &tuple(r#"["x","thing",{},"KNOWS",{"functional":true,"since":20},"y","thing",{}]"#),
-        )
-        .unwrap();
+        graph
+            .ingest(
+                1,
+                &tuple(r#"["x","thing",{},"KNOWS",{"functional":true,"since":20},"y","thing",{}]"#),
+            )
+            .unwrap();
     }
 
     let top = graph.top_by_weight(1, 10);
     let ids: Vec<u64> = top.iter().map(|fact| fact.edge_id).collect();
     assert_eq!(ids, vec![edge_id], "one fact, one entry: {ids:?}");
+}
+
+// ---- ADR-0014: the user node -------------------------------------------
+//
+// A person reaches the graph as a NODE of the identity collection (ns 42), not
+// as an entity row: the `user` type token's value is the wire reference
+// `member-{channel}-{member}`, parsed into a ref, validated against the
+// registered members, and never created on a miss.
+
+#[test]
+fn a_user_endpoint_is_a_node_of_the_identity_collection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut stores = mem_core::open_service(dir.path()).unwrap();
+    stores
+        .channels
+        .put_member(1, 1, "orbit", mem_core::channel::member_role::AGENT);
+    let graph = &mut stores.graph;
+
+    let fact = tuple(r#"["member-1-1","user",{},"PREFERS",{},"coffee","drink",{}]"#);
+    let edge_id = match graph.ingest(1, &fact).unwrap() {
+        IngestOutcome::Linked { edge_id } => edge_id,
+        other => panic!("expected a link, got {other:?}"),
+    };
+
+    // The person is a NODE: the traversal from the member ref finds the fact,
+    // and the fact resolves that endpoint through the identity row.
+    let user = graph.user_ref(1, 1);
+    assert_eq!(graph.out_edges_of(&user), vec![edge_id]);
+    let view = graph.fact_view(edge_id).unwrap();
+    assert_eq!(
+        view.src.name, "orbit",
+        "the display name comes from the row"
+    );
+    assert_eq!(view.src.kind, "user");
+    assert_eq!(view.src.id.user(), Some((1, 1)));
+    assert_eq!(
+        view.src.id.entity_id(),
+        None,
+        "a person is not a corpus node"
+    );
+
+    // No entity row was created for the person: the identity layer is not
+    // extracted knowledge, so the landing index never contains it.
+    assert!(graph.entity_by_name(1, "member-1-1").is_none());
+    assert!(graph
+        .scope_entities(1)
+        .iter()
+        .all(|(_, row)| row.name != "member-1-1"));
+
+    // A rename touches the ROW and nothing else: same edge id, new name.
+    stores
+        .channels
+        .put_member(1, 1, "orbit2", mem_core::channel::member_role::AGENT);
+    let renamed = graph.fact_view(edge_id).unwrap();
+    assert_eq!(renamed.src.name, "orbit2");
+    assert_eq!(renamed.edge_id, edge_id);
+}
+
+#[test]
+fn an_unregistered_user_reference_is_refused_and_creates_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut stores = mem_core::open_service(dir.path()).unwrap();
+    let graph = &mut stores.graph;
+
+    let ghost = tuple(r#"["member-1-9","user",{},"LIKES",{},"tea","drink",{}]"#);
+    assert!(matches!(
+        graph.ingest(1, &ghost),
+        Err(IngestError::Refused(_))
+    ));
+
+    // Nor is a malformed reference a name to fall back on.
+    let malformed = tuple(r#"["orbit","user",{},"LIKES",{},"tea","drink",{}]"#);
+    assert!(matches!(
+        graph.ingest(1, &malformed),
+        Err(IngestError::Refused(_))
+    ));
+    assert!(
+        graph.scope_facts(1).is_empty(),
+        "a refused fact lands nothing"
+    );
 }
