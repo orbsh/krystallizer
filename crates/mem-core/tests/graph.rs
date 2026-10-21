@@ -1012,3 +1012,77 @@ fn top_by_weight_ranks_the_scope_and_stops_at_k() {
     );
     assert!(graph.top_by_weight(1, 0).is_empty());
 }
+
+/// PLAN 4c: a fact may name ANOTHER fact by id in its props, and the reader
+/// decides whether to follow it. One id or an array of ids; nothing validates the
+/// target on write, because a dangling pointer is the reader's 404, not a write
+/// error — and a value that is not an id is not a reference at all.
+#[test]
+fn a_fact_can_point_at_another_fact_and_nothing_validates_the_pointer() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap();
+
+    let IngestOutcome::Linked { edge_id: detail } = graph
+        .ingest(
+            1,
+            &tuple(r#"["the_detail","note",{},"MENTIONS",{},"thing","thing",{}]"#),
+        )
+        .unwrap()
+    else {
+        panic!("the detail links");
+    };
+    let IngestOutcome::Linked { edge_id: single } = graph
+        .ingest(
+            1,
+            &tuple(&format!(
+                r#"["anchor","thing",{{}},"PREFERS",{{"ref":{detail}}},"x","thing",{{}}]"#
+            )),
+        )
+        .unwrap()
+    else {
+        panic!("the pointing fact links");
+    };
+    let IngestOutcome::Linked { edge_id: many } = graph
+        .ingest(
+            1,
+            &tuple(&format!(
+                r#"["anchor2","thing",{{}},"PREFERS",{{"ref":[{detail},{single},999999]}},"y","thing",{{}}]"#
+            )),
+        )
+        .unwrap()
+    else {
+        panic!("the multi-pointing fact links");
+    };
+    let IngestOutcome::Linked { edge_id: not_an_id } = graph
+        .ingest(
+            1,
+            &tuple(r#"["anchor3","thing",{},"PREFERS",{"ref":"the detail"},"z","thing",{}]"#),
+        )
+        .unwrap()
+    else {
+        panic!("the malformed pointer still links: the writer's value is stored verbatim");
+    };
+
+    assert_eq!(
+        graph.fact_view(single).unwrap().refs,
+        vec![detail],
+        "one id is one reference"
+    );
+    assert_eq!(
+        graph.fact_view(many).unwrap().refs,
+        vec![detail, single, 999_999],
+        "an array is kept in order, dangling id and all"
+    );
+    assert!(
+        graph.fact_view(detail).unwrap().refs.is_empty(),
+        "a fact with no `ref` points at nothing"
+    );
+    assert!(
+        graph.fact_view(not_an_id).unwrap().refs.is_empty(),
+        "a string is not a reference — a writer's mistake must not become a target"
+    );
+
+    // Following the pointer is the deterministic read, and a dangling one is a miss.
+    assert!(graph.fact_in_scope(1, detail).is_some());
+    assert!(graph.fact_in_scope(1, 999_999).is_none());
+}

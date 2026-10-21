@@ -501,6 +501,11 @@ pub struct FactView {
     pub src: ResolvedNode,
     pub dst: ResolvedNode,
     pub edge: FactEdge,
+    /// The fact ids this fact POINTS AT (PLAN 4c): the reference links a writer
+    /// left when the referenced fact is not central enough to sit in the head.
+    /// One extra point read per shown fact — the price of the pointer being
+    /// visible in the answer instead of discoverable by a second query.
+    pub refs: Vec<u64>,
 }
 
 /// One landing seed (ADR-0003): the node the query landed on, its similarity
@@ -552,6 +557,30 @@ pub struct CommunitySlice {
     pub members: usize,
     pub total: usize,
     pub facts: Vec<FactView>,
+}
+
+/// The prop name a fact uses to point at ANOTHER fact (PLAN 4c): one fact id, or
+/// an array of them, in the same scope. It is a NAME the writer uses, not a
+/// schema — a dangling id is not an error, it is a 404 the reader meets when it
+/// chooses to follow (`fact_in_scope`). Nothing validates it on write: the reader
+/// owns the decision to descend.
+pub const REF_FIELD: &str = "ref";
+
+/// The ids in a `ref` value: one id or an array of ids. Anything else (a string,
+/// a nested object) is not a reference and yields nothing — a writer's mistake
+/// must not turn into a phantom target.
+fn refs_of(value: &DynamicValue) -> Vec<u64> {
+    match value {
+        DynamicValue::UInt(id) => vec![*id],
+        DynamicValue::Array(items) => items
+            .iter()
+            .filter_map(|item| match item {
+                DynamicValue::UInt(id) => Some(*id),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// The landing confidence floor (ADR-0003): below it nothing landed, and an
@@ -788,12 +817,17 @@ impl GraphStore {
     pub fn fact_view(&mut self, edge_id: u64) -> Option<FactView> {
         let body = self.facts().get_edge(edge_id)?;
         let kind = self.facts().predicate_vocab_name(body.predicate_vocab_id)?;
+        let refs = self
+            .fact_props(edge_id)
+            .and_then(|props| props.get(REF_FIELD).map(refs_of))
+            .unwrap_or_default();
         Some(FactView {
             edge_id,
             kind,
             src: self.resolve_ref(&body.src),
             dst: self.resolve_ref(&body.dst),
             edge: FactEdge::decode_payload(&body.payload),
+            refs,
         })
     }
 
@@ -1160,12 +1194,19 @@ impl GraphStore {
         self.store
             .commit_batch(batch)
             .map_err(|e| IngestError::Storage(e.to_string()))?;
+        // The dynamic segment is untouched by a rewrite, so the reference links a
+        // writer left are still the ones this row carries.
+        let refs = self
+            .fact_props(edge_id)
+            .and_then(|props| props.get(REF_FIELD).map(refs_of))
+            .unwrap_or_default();
         Ok(Some(FactView {
             edge_id,
             kind: predicate,
             src: self.resolve_ref(&body.src),
             dst: self.resolve_ref(&body.dst),
             edge,
+            refs,
         }))
     }
 

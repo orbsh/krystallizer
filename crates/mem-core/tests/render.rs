@@ -31,7 +31,35 @@ fn fact(edge_id: u64, kind: &str, src: ResolvedNode, dst: ResolvedNode) -> FactV
             weight: 1_400,
             ..FactEdge::default()
         },
+        refs: Vec::new(),
     }
+}
+
+/// The same fact, but carrying a reference link (PLAN 4c): the plaintext line
+/// prints the target as an ADDRESS — `#41` — so a reader can see that there is
+/// more without the answer inlining it. A fact with no refs prints no tail at
+/// all: absence must not look like an empty pointer.
+#[test]
+fn a_reference_link_prints_as_an_address_and_nothing_else() {
+    let plain = fact(
+        34,
+        "PREFERS",
+        node(12, "Alice", "person"),
+        node(15, "terse", "style"),
+    );
+    assert!(
+        !mem_core::render::render_head(std::slice::from_ref(&plain), RenderFormat::Plaintext)
+            .contains("refs="),
+        "no refs, no tail"
+    );
+
+    let mut linked = plain.clone();
+    linked.refs = vec![41, 57];
+    let text = mem_core::render::render_head(&[linked], RenderFormat::Plaintext);
+    assert!(
+        text.contains("refs=#41,#57"),
+        "the pointer is printed as addresses: {text}"
+    );
 }
 
 /// One community of three members holding three facts, of which the answer

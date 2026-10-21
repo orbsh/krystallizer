@@ -561,3 +561,66 @@ async fn a_fact_is_read_and_withdrawn_by_its_id() {
         .unwrap();
     assert!(top.is_empty(), "the ranking no longer sees it");
 }
+
+/// PLAN 4c over the wire: a fact's reference links ride the answer as ids, and
+/// each one is an address the caller can fetch on its own. Nothing validates the
+/// target — following it is where the 404 lives.
+#[tokio::test]
+async fn a_reference_link_rides_the_answer_as_an_address() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    let detail: serde_json::Value = client
+        .post(format!("{base}/memories/1"))
+        .json(&json!(["the_detail", "note", {}, "MENTIONS", {}, "thing", "thing", {}]))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let detail_id = detail["edge_id"].as_u64().unwrap();
+
+    let anchor: serde_json::Value = client
+        .post(format!("{base}/memories/1"))
+        .json(&json!([
+            "anchor",
+            "thing",
+            {},
+            "PREFERS",
+            {"ref": detail_id},
+            "x",
+            "thing",
+            {}
+        ]))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let anchor_id = anchor["edge_id"].as_u64().unwrap();
+
+    let fetched: serde_json::Value = client
+        .get(format!("{base}/graph/1/facts/{anchor_id}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        fetched["refs"],
+        json!([detail_id]),
+        "the pointer travels as an id, not as an inlined fact"
+    );
+    assert_eq!(
+        client
+            .get(format!("{base}/graph/1/facts/{detail_id}"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::OK,
+        "and the address resolves"
+    );
+}

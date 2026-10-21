@@ -95,11 +95,12 @@ pub fn render_head(facts: &[FactView], format: RenderFormat) -> String {
             .iter()
             .map(|f| {
                 format!(
-                    "{} -[{}]-> {} · {}",
+                    "{} -[{}]-> {} · {}{}",
                     head_end(&f.src.name, &f.src.kind),
                     f.kind,
                     f.dst.name,
-                    counters(f)
+                    counters(f),
+                    refs_tail(f)
                 )
             })
             .collect::<Vec<_>>()
@@ -108,11 +109,12 @@ pub fn render_head(facts: &[FactView], format: RenderFormat) -> String {
             .iter()
             .map(|f| {
                 format!(
-                    "- {} -[{}]-> {} · {}",
+                    "- {} -[{}]-> {} · {}{}",
                     head_end(&f.src.name, &f.src.kind),
                     f.kind,
                     f.dst.name,
-                    counters(f)
+                    counters(f),
+                    refs_tail(f)
                 )
             })
             .collect::<Vec<_>>()
@@ -211,9 +213,13 @@ fn header(slice: &CommunitySlice) -> String {
     out
 }
 
-/// `e34 n12 -[PREFERS]-> n15 · w=1.400 · c=0.90 · since=…`
+/// `e34 n12 -[PREFERS]-> n15 · w=1.400 · c=0.90 · since=… · refs=#41,#57`
+///
+/// The `refs` tail is the reference link (PLAN 4c): the ids this fact points at,
+/// printed so the reader can SEE there is more and decide for itself. Each id is
+/// an address — `GET /graph/{scope}/facts/{id}` — not an inlined subtree.
 fn fact_line_plaintext(fact: &FactView) -> String {
-    format!(
+    let base = format!(
         "e{} n{} -[{}]-> n{} · {} · since={}",
         fact.edge_id,
         fact.src.node_id,
@@ -221,7 +227,8 @@ fn fact_line_plaintext(fact: &FactView) -> String {
         fact.dst.node_id,
         counters(fact),
         fact.edge.since,
-    )
+    );
+    format!("{base}{}", refs_tail(fact))
 }
 
 /// The counters every fact line carries: the folded weight (ADR-0005,
@@ -232,6 +239,23 @@ fn counters(fact: &FactView) -> String {
         fact.edge.weight as f64 / WEIGHT_SCALE,
         fact.edge.confidence as f64 / 255.0,
     )
+}
+
+/// The reference-link tail (PLAN 4c): ` · refs=#41,#57`, or empty when the fact
+/// points at nothing. An id here is an ADDRESS the reader may fetch —
+/// `GET /graph/{scope}/facts/{id}` — so the head keeps its "names, not ids" rule
+/// for identity while still telling the reader where a pointer leads.
+fn refs_tail(fact: &FactView) -> String {
+    if fact.refs.is_empty() {
+        return String::new();
+    }
+    let refs = fact
+        .refs
+        .iter()
+        .map(|id| format!("#{id}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(" · refs={refs}")
 }
 
 /// `Alice (person)` — the entity with its kind, for a head line.

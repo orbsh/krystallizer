@@ -937,6 +937,10 @@ pub struct FactViewDto {
     pub tool_count: u32,
     pub last_read: u64,
     pub last_write: u64,
+    /// The fact ids this fact points at (PLAN 4c). Each one is an address a
+    /// caller may follow on its own — `GET /graph/{scope}/facts/{id}` — never a
+    /// subtree this answer inlined.
+    pub refs: Vec<u64>,
 }
 
 impl From<mem_core::graph::FactView> for FactViewDto {
@@ -960,6 +964,7 @@ impl From<mem_core::graph::FactView> for FactViewDto {
             tool_count: v.edge.tool_count,
             last_read: v.edge.last_read,
             last_write: v.edge.last_write,
+            refs: v.refs,
         }
     }
 }
