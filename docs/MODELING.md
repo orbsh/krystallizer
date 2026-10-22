@@ -448,7 +448,7 @@ One fact = two nodes + one edge; this is the EDGE table (ADR-0010 §1). Declared
     by_since { fields(since) },              // two faces, each naming its reader
     by_scope_weight { fields(scope, weight) },  // the scope-prefixed ranking (PLAN 4a)
 )]
-pub struct Facts { /* scope / since / confidence / weight / five counters */ }
+pub struct Facts { /* scope / since / confidence / weight / 3 counters / 2 clocks / 8-slot recent ring */ }
 ```
 
 - **The edge collection builds its own keys, so the KEY carries no scope
@@ -469,8 +469,17 @@ pub struct Facts { /* scope / since / confidence / weight / five counters */ }
 - The declared fields are PROJECTIONS of the relation's props (one datum, one
   home): `since` (the caller's clock, the adjudication input), `confidence`
   (write-side; 255 = absent, i.e. no penalty) and `weight` (the weight system's
-  milli-units), plus the five counters the weight system folds in (listed with
-  the payload fields above).
+  milli-units), plus the three counters and two access clocks the weight system
+  folds in.
+- **The last 8 accesses live in a fixed-size ring at the row's tail**
+  (`recent: Vector<u32>`, layout v3): each slot is a SECOND offset from
+  `1_767_225_600` (2026-01-01T00:00:00Z), ascending, `0` = unused, shifted right
+  by one on write; the ring is always 8 slots (`#[ok_len(8)]` is a write-boundary
+  contract, `Default` is hand-written to pad it), and a row written by an older
+  version simply lacks the frame and decodes padded, so adding it needs no store
+  rebuild. It gives decay a distribution to read instead of a single "last access"
+  point; why the carrier is `Vector<u32>` rather than `Offset`, `Bytes`, a cursor
+  or a wrapper is the case in okm MODELING's "Homogeneous lists".
 - **A relation's open props ride the edge's dynamic segment**, committed in the
   same batch as the link (ADR-0002: one WriteBatch = one transaction). The
   per-assertion `functional` flag stays there — the assertion's own record of how

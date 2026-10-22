@@ -120,6 +120,25 @@ pub const DECAY_PER_DAY: f64 = 0.01;
 /// One day in the caller's clock unit (milliseconds).
 pub const DAY_MS: u64 = 86_400_000;
 
+// ---- the recency ring (the payload's tail) ---------------------------
+//
+// The counters answer "how many" and the two clocks answer "how recently".
+// Neither answers "were those accesses bunched into one week or spread over
+// two years", and the decay bill is made of exactly that distribution. The
+// ring keeps the last K accesses in seconds since a fixed epoch.
+//
+// It is a WINDOW, not a history: older accesses stay summarized by the
+// counters. That is the fixed price of keeping the row bounded, and it is
+// deliberate — an unbounded per-access log would put 8 bytes of every touch
+// into a row that every recall re-encodes (okm MODELING, the k10r case).
+/// The ring's epoch: 2026-01-01T00:00:00Z in unix SECONDS. A u32 offset from
+/// here spans ~136 years (to 2162). `Offset` would only buy this width as a
+/// scalar FIELD spelling, while a `Vector` element is a plain `u32` — so the
+/// base lives here as a consumer constant and okm stores the offsets alone.
+pub const RECENT_BASE: u64 = 1_767_225_600;
+/// Slots in the ring — the last K accesses, oldest first.
+pub const RECENT_SLOTS: usize = 8;
+
 /// Which counter one access bumps. `Write` is the fact's own assertion
 /// (ingest); `Read` is a served recall; `Tool` is a caller-reported tool
 /// consult (its own door — k10r cannot see a tool call from inside).
@@ -215,14 +234,15 @@ use __OkmIndex_Facts_by_since as BySince;
 /// counter bump rewrites one row and its face entries follow it.
 /// The delta-append table the ADR sketches is the multi-writer escape; it
 /// folds into these same fields, so switching to it changes no schema.
-#[derive(Clone, Debug, Default, PartialEq, GraphEncode)]
+#[derive(Clone, Debug, PartialEq, GraphEncode)]
 #[ok_ns(37)]
 #[ok_name("facts")]
 #[ok_nodes(EntityRow, MemberRow)]
-// The fields appended after `weight` raise the payload's hot width, hence
-// the layout version (okm's schema-evolution rule: new fields at the tail
-// of their segment, version recorded in the header).
-#[ok_layout(version = 2)]
+// Layout v2 appended the counters and clocks after `weight` (the hot width
+// grew). v3 appends the recency ring at the TAIL, which is okm's one legal way
+// to add a field: a payload written by an older version simply lacks the frame
+// and decodes to the declared default, so no store rebuild is involved.
+#[ok_layout(version = 3)]
 // Each algorithm-queried field gets its own counting-family 0x1 index,
 // declared here (a face is a declaration, never implied by the field's
 // existence). Two faces only, because two reads exist; `by_confidence` and a
@@ -262,6 +282,36 @@ pub struct Facts {
     pub last_read: u64,
     #[ok_default(0)]
     pub last_write: u64,
+    /// The last `RECENT_SLOTS` accesses, oldest first, in SECONDS since
+    /// `RECENT_BASE`; `0` is an unused slot (that instant is never a real
+    /// access, so it doubles as the sentinel). Always `RECENT_SLOTS` long:
+    /// `#[ok_len(8)]` is an encode-time contract, so `touch` pads rather than
+    /// leaving a short ring behind, and a payload that predates the ring
+    /// decodes padded through `#[ok_default]`.
+    #[ok_default(::okm_core::Vector::new(vec![0u32; RECENT_SLOTS]))]
+    #[ok_len(8)]
+    pub recent: Vector<u32>,
+}
+
+/// A fresh fact row: counters and clocks at zero, the ring fully unused.
+/// Hand-written (not derived) because `#[ok_len(8)]` needs the ring padded from
+/// the FIRST encode — a derived `Default` would hand back an empty `Vector` and
+/// panic at the write boundary.
+impl Default for Facts {
+    fn default() -> Self {
+        Facts {
+            scope: 0,
+            since: 0,
+            confidence: 255,
+            weight: 0,
+            read_count: 0,
+            write_count: 0,
+            tool_count: 0,
+            last_read: 0,
+            last_write: 0,
+            recent: Vector::new(vec![0; RECENT_SLOTS]),
+        }
+    }
 }
 
 impl Facts {
@@ -282,12 +332,48 @@ impl Facts {
         read + write + tool + rarity
     }
 
+    /// This fact's last access, in the caller's clock unit (ms). The RING is
+    /// the authority (its newest used slot); the two clocks are the fallback
+    /// for payloads written before the ring existed, and the `max` keeps
+    /// either source from moving time backwards.
+    pub fn last_access(&self) -> u64 {
+        let from_ring = self
+            .recent
+            .elems
+            .iter()
+            .rev()
+            .find(|&&slot| slot != 0)
+            .map(|&slot| (RECENT_BASE + u64::from(slot)) * 1000);
+        let clocks = self.last_read.max(self.last_write);
+        from_ring.map_or(clocks, |ms| ms.max(clocks))
+    }
+
+    /// Shift one access into the ring: oldest slot out, the new offset in.
+    /// `now` is the caller's ms and the ring stores SECONDS since the epoch —
+    /// second granularity is the declared price (a u32 second offset buys 136
+    /// years in 4 bytes; milliseconds would buy 49 days).
+    fn push_recent(&mut self, now: u64) {
+        let offset = (now / 1000).saturating_sub(RECENT_BASE).min(u64::from(u32::MAX)) as u32;
+        let mut slots = std::mem::take(&mut self.recent).elems;
+        // A short ring is a payload written before the field existed: pad the
+        // PAST with zeros so "oldest first" survives the normalisation.
+        while slots.len() < RECENT_SLOTS {
+            slots.insert(0, 0);
+        }
+        // A long ring can only come from a hand-built row; keep the NEWEST
+        // slots rather than letting the frame outgrow the contract.
+        slots.drain(..slots.len() - RECENT_SLOTS);
+        slots.remove(0);
+        slots.push(offset);
+        self.recent = Vector::new(slots);
+    }
+
     /// The elapsed decay from the last recorded access to `now`, in weight
     /// units. No recorded access (a caller that stamps no clock) or a
     /// clock that did not move costs nothing — decay is never invented
     /// from an absent timestamp.
     pub fn decay_at(&self, now: u64) -> f64 {
-        let last = self.last_read.max(self.last_write);
+        let last = self.last_access();
         if last == 0 || now <= last {
             return 0.0;
         }
@@ -305,10 +391,11 @@ impl Facts {
     }
 
     /// This edge after one access of `kind` at the caller's `now` (ms):
-    /// the counter bumps, the clock advances (never backwards), and the
-    /// weight is folded with the decay the gap had accrued. The decay is
-    /// measured against the PREVIOUS access and charged once here; the
-    /// same fold re-bases the clock, so it is not charged twice.
+    /// the counter bumps, the clock advances (never backwards), the access
+    /// enters the recency ring, and the weight is folded with the decay the
+    /// gap had accrued. The decay is measured against the PREVIOUS access and
+    /// charged once here; the same fold re-bases the clock, so it is not
+    /// charged twice.
     pub fn touched(&self, kind: Touch, now: u64) -> Facts {
         let elapsed_decay = self.decay_at(now);
         let mut next = self.clone();
@@ -325,6 +412,7 @@ impl Facts {
             Touch::Write => next.write_count = next.write_count.saturating_add(1),
             Touch::Tool => next.tool_count = next.tool_count.saturating_add(1),
         }
+        next.push_recent(now);
         next.fold_weight(elapsed_decay);
         next
     }

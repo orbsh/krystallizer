@@ -380,7 +380,7 @@ pub struct MemberRow { pub display_name: String, pub role: u8 }
     by_since { fields(since) },          // 两个面，各有一个读者
     by_scope_weight { fields(scope, weight) },  // scope 前缀的排序面（PLAN 4a）
 )]
-pub struct Facts { /* scope / since / confidence / weight / 五个计数器 */ }
+pub struct Facts { /* scope / since / confidence / weight / 三个计数 / 两个时钟 / 8 槽 recent 环 */ }
 ```
 
 - **边集合自己造键，所以**键里**没有 scope 段。** 但**行上**有一个 `scope`——源端点 scope 的
@@ -393,7 +393,13 @@ pub struct Facts { /* scope / since / confidence / weight / 五个计数器 */ }
   要在边键上带 per-scope 前缀，就得绕开库的边图手写这个集合——不值得。
 - 声明字段是关系 props 的**投影**（一个数据只有一个家）：`since`（调用方的钟，裁决
   输入）、`confidence`（写侧的，255 = 缺省即不惩罚）、`weight`（权重系统的毫单位
-  ），加权重系统折进去的五个计数器（见「事实」载荷字段清单）。
+  ），加上权重系统折进去的三个计数与两个访问时钟。
+- **最近 8 次访问住在行尾的一个定长环里**（`recent: Vector<u32>`，布局 v3）：每槽是从
+  `1_767_225_600`（2026-01-01T00:00:00Z）起的**秒**偏移，升序，`0` = 未用，写入时右移
+  一格；环永远 8 槽（`#[ok_len(8)]` 是写边界契约，`Default` 手工补齐），旧版本行缺这一
+  帧时按声明的默认补 8 个 0，所以加这个字段不需要清库重建。它让衰减有一个分布可看，不再
+  只是「上次访问」一个点；载体为什么是 `Vector<u32>` 而不是 `Offset`/`Bytes`/游标/wrapper，
+  见 okm MODELING「同质列表」一节的案例。
 - **关系的开放 props 走边的动态段**，与 link 同一批提交（ADR-0002：一个 WriteBatch
   = 一个事务）。按断言给的 `functional` 标志留在那里——这是该断言自己关于「它如何
   声明那个种类的基数」的记录。

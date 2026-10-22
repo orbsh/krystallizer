@@ -1,6 +1,6 @@
 # ADR-0005: Weight System — Counters on the Edge Row, Read-Write Quadrants, Tool Index
 
-**Status**: Landed 2026-10-19 (the counters ride the edge row; the delta-append table survives only as the multi-writer escape)
+**Status**: Landed 2026-10-19 (the counters ride the edge row; the delta-append table survives only as the multi-writer escape); 2026-10-22 appended the recency ring (payload layout v3)
 **Date**: 2026-09-08
 **Chinese**: [0005-weight-system.zh-CN.md](0005-weight-system.zh-CN.md)
 
@@ -22,6 +22,19 @@ contention, and how to serve a weight-ordered Top-K without full scans.
 `Facts` (ns 37, payload layout v2), with the folded `weight` beside them.
 One identity, one write — and because okm's declared faces are derived from
 the row, a bump rewrites one row and everything derived from it follows.
+
+**Recent accesses: a fixed-size ring at the row's tail (layout v3).** The
+counters answer "how many" and the two clocks answer "how recently"; neither
+answers "what did the distribution look like" — 50 reads bunched into one week
+and 50 spread over two years bill very differently under decay.
+`recent: Vector<u32>` is appended at the payload's tail: 8 slots, a SECOND
+offset from `1_767_225_600` (2026-01-01T00:00:00Z), ascending, `0` = unused,
+shifted right by one on write. `#[ok_len(8)]` pins "always 8 slots" at the write
+boundary (`Default` is hand-written to pad it, and a row written before the ring
+existed decodes with 8 zeros by default, so no store rebuild is involved). The
+decay base is the ring's newest used slot; the two clocks remain the fallback for
+pre-ring rows. The judgement behind the shape — not `Offset`, not `Bytes`, no
+cursor, no okm wrapper — is recorded in okm MODELING's k10r case.
 
 - **Who bumps what.** `write_count` is the fact's own assertion: `ingest`
   bumps it when the fact links or wins the adjudication (a dropped fact is
