@@ -17,7 +17,7 @@ last_write。读写比划分四象限（核心区 / 深水区 / 噪声 / 冷区�
 ## 决策
 
 **计数：边这一行就是计数键。** `read_count` / `write_count` / `tool_count` /
-`last_read` / `last_write` 是 `FactEdge` 的声明热字段（ns 37，payload 布局 v2），
+`last_read` / `last_write` 是 `Facts` 的声明热字段（ns 37，payload 布局 v2），
 fold 出来的 `weight` 就住在它们旁边。一个身份、一次写——而 okm 的声明面是从行派生
 的，所以加一次计数只重写一行，派生的一切随之跟上。
 

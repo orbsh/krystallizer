@@ -448,7 +448,7 @@ One fact = two nodes + one edge; this is the EDGE table (ADR-0010 §1). Declared
     by_since { fields(since) },              // two faces, each naming its reader
     by_scope_weight { fields(scope, weight) },  // the scope-prefixed ranking (PLAN 4a)
 )]
-pub struct FactEdge { /* scope / since / confidence / weight / five counters */ }
+pub struct Facts { /* scope / since / confidence / weight / five counters */ }
 ```
 
 - **The edge collection builds its own keys, so the KEY carries no scope

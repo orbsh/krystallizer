@@ -474,11 +474,11 @@ node; the demo page still colours by node kind.
 - **The edge's payload codec is the declaration's — PAID (2026-10-19).** The
   edge's payload is an obj (okm ADR-0017 §3) and the declaration is
   `GraphEncode`, so one declaration generates both codec directions and the
-  face entries: `FactEdge::encode_payload` / `decode_payload`, with `since` /
+  face entries: `Facts::encode_payload` / `decode_payload`, with `since` /
   `confidence` / `weight` each declared as an explicit `#[ok_index]` face.
   k10r's hand-written `from_attrs` (13 bytes of carried widths) and its
   locking test are deleted; the adjudication input is
-  `FactEdge::decode_payload(&body.payload)`.
+  `Facts::decode_payload(&body.payload)`.
 - **k10r's prefix scans assumed the retired 4-byte head — FIXED (2026-10-19).**
   After okm ADR-0030 a fixed face is ONE byte, so a primary-key head is
   `[ns 2B][0x00]` (3 bytes, not 4). Four readers still built the old prefix or

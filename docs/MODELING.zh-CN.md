@@ -380,7 +380,7 @@ pub struct MemberRow { pub display_name: String, pub role: u8 }
     by_since { fields(since) },          // 两个面，各有一个读者
     by_scope_weight { fields(scope, weight) },  // scope 前缀的排序面（PLAN 4a）
 )]
-pub struct FactEdge { /* scope / since / confidence / weight / 五个计数器 */ }
+pub struct Facts { /* scope / since / confidence / weight / 五个计数器 */ }
 ```
 
 - **边集合自己造键，所以**键里**没有 scope 段。** 但**行上**有一个 `scope`——源端点 scope 的

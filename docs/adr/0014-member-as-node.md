@@ -31,7 +31,7 @@ wrong in the same direction:
 
 ns 42 joins the fact graph's member set by being NAMED in its `#[ok_nodes]`
 (`#[ok_nodes(EntityRow, MemberRow)]`, from which the derive generates
-`FactNodes { EntityRow, MemberRow }` and its ns list — the ns comes off each
+`FactsNode { EntityRow, MemberRow }` and its ns list — the ns comes off each
 table's own `#[ok_ns]`). Nothing else is needed — an edge endpoint is a
 self-describing `[ns][len][pkey]`, so the member row's `[channel_id][member_id]`
 key becomes a node reference without a registry, a second table, or a name.
@@ -111,7 +111,7 @@ carrier's open endpoints exist for.
   `member-…`) are a migration question, not a schema one — the same stance the
   legacy flat rows got (ADR-0002).
 - **Landed (2026-10-21).** `#[ok_nodes(EntityRow, MemberRow)]`, generating
-  `FactNodes { EntityRow, MemberRow }` with `NS_VALUES = &[36, 42]`;
+  `FactsNode { EntityRow, MemberRow }` with `NS_VALUES = &[36, 42]`;
   `ingest` resolves the reserved `user` token through
   `parse_member_ref` and REFUSES (`IngestError::Refused`) a malformed or
   unregistered reference, creating nothing; the endpoints became a write-side

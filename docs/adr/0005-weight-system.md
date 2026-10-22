@@ -19,7 +19,7 @@ contention, and how to serve a weight-ordered Top-K without full scans.
 
 **Counting: the edge ROW is the count key.** `read_count` / `write_count` /
 `tool_count` / `last_read` / `last_write` are declared hot fields of
-`FactEdge` (ns 37, payload layout v2), with the folded `weight` beside them.
+`Facts` (ns 37, payload layout v2), with the folded `weight` beside them.
 One identity, one write — and because okm's declared faces are derived from
 the row, a bump rewrites one row and everything derived from it follows.
 

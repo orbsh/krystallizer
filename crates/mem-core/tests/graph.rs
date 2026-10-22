@@ -7,7 +7,7 @@
 //! empty query is the silent-corruption shape this file exists to catch.
 
 use mem_core::graph::{FactTuple, GraphStore, IngestError, IngestOutcome};
-use mem_core::{EntityKey, EntityRow, FactEdge, RenderFormat, LITERAL_KIND};
+use mem_core::{EntityKey, EntityRow, Facts, RenderFormat, LITERAL_KIND};
 use okm_core::obj_dynamic::DynamicValue;
 use okm_core::{Document, KeyEncode, NodeRef};
 
@@ -71,7 +71,7 @@ fn entity_key_layout_is_hex_locked() {
 /// reader honest against the writer (both are the declaration's).
 #[test]
 fn edge_payload_layout_is_locked() {
-    let edge = FactEdge {
+    let edge = Facts {
         scope: 3,
         since: 7,
         confidence: 200,
@@ -99,7 +99,7 @@ fn edge_payload_layout_is_locked() {
     assert_eq!(&payload[32..36], &9u32.to_be_bytes(), "tool_count");
     assert_eq!(&payload[36..44], &1_000u64.to_be_bytes(), "last_read");
     assert_eq!(&payload[44..52], &900u64.to_be_bytes(), "last_write");
-    assert_eq!(FactEdge::decode_payload(&payload), edge);
+    assert_eq!(Facts::decode_payload(&payload), edge);
 }
 
 /// One name = one node inside one scope; the same name in another scope is
@@ -701,7 +701,7 @@ fn the_deep_water_quadrant_earns_the_rarity_bonus() {
         )
         .unwrap();
 
-    let mut edge = FactEdge::default();
+    let mut edge = Facts::default();
     for _ in 0..4 {
         edge = graph
             .touch(1, 1, mem_core::Touch::Read, 2000)

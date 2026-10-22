@@ -17,7 +17,7 @@ use std::path::Path;
 
 use crate::channel::{CheckpointRow, CursorRow, MemberRow, MessageRow};
 use crate::code::CodeRow;
-use crate::graph::{EntityRow, FactEdge};
+use crate::graph::{EntityRow, Facts};
 use crate::log::LogRow;
 
 /// The ns a table declares, read off its prefix — so a dispatcher keyed by name
@@ -39,7 +39,7 @@ pub const CATALOG: &[(&str, u16)] = &[
     (<MemberRow as Document>::TABLE_NAME, ns(MemberRow::NS_PREFIX)),
     (<CodeRow as Document>::TABLE_NAME, ns(CodeRow::NS_PREFIX)),
     (<EntityRow as Document>::TABLE_NAME, ns(EntityRow::NS_PREFIX)),
-    (<FactEdge as Document>::TABLE_NAME, ns(FactEdge::NS_PREFIX)),
+    (<Facts as Document>::TABLE_NAME, ns(Facts::NS_PREFIX)),
     (<LogRow as Document>::TABLE_NAME, ns(LogRow::NS_PREFIX)),
 ];
 

@@ -380,10 +380,10 @@ ADR-0005 说的那样改变顺序。
   的 props。这个窗口是关掉了，不是靠重放 ingest 缓过来的。
 - **边的载荷编解码归声明所有——已付清（2026-10-19）。** 边的载荷就是一份 obj
   （okm ADR-0017 §3），声明是 `GraphEncode`，于是一份声明同时生成双向编解码与
-  面条目：`FactEdge::encode_payload` / `decode_payload`，`since` /
+  面条目：`Facts::encode_payload` / `decode_payload`，`since` /
   `confidence` / `weight` 各一条显式 `#[ok_index]` 面。k10r 手写的 `from_attrs`
   （自带 13 字节宽度）与那把锁测试一并删除；裁决输入改成
-  `FactEdge::decode_payload(&body.payload)`。
+  `Facts::decode_payload(&body.payload)`。
 - **k10r 的前缀扫描还按作废的 4 字节头写的——已修（2026-10-19）。** okm
   ADR-0030 之后固定面是一字节，主表键头是 `[ns 2B][0x00]`（3 字节，不是 4）。
   四处读路径仍在按旧形状拼前缀或在 offset 4 处解码：channel 日志

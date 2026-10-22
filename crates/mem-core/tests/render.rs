@@ -6,7 +6,7 @@
 //! all, because there the answer IS the data. These tests lock that claim on
 //! constructed slices, so they need no embedding engine and no storage.
 
-use mem_core::graph::{CommunitySlice, FactEdge, FactView, ResolvedNode};
+use mem_core::graph::{CommunitySlice, Facts, FactView, ResolvedNode};
 use mem_core::{render_head, render_memory, RenderFormat};
 
 fn node(node_id: u64, name: &str, kind: &str) -> ResolvedNode {
@@ -24,11 +24,11 @@ fn fact(edge_id: u64, kind: &str, src: ResolvedNode, dst: ResolvedNode) -> FactV
         kind: kind.to_string(),
         src,
         dst,
-        edge: FactEdge {
+        edge: Facts {
             since: 1_700_000_000_000,
             confidence: 230,
             weight: 1_400,
-            ..FactEdge::default()
+            ..Facts::default()
         },
         refs: Vec::new(),
     }
