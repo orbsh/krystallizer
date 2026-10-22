@@ -273,7 +273,7 @@ async fn session_carries_the_head_block_and_named_roles() {
 
     let status = client
         .post(format!("{base}/memories/1"))
-        .json(&json!([
+        .json(&json!([[
             "member-7-1",
             "person",
             {},
@@ -282,7 +282,7 @@ async fn session_carries_the_head_block_and_named_roles() {
             "简洁",
             "style",
             {}
-        ]))
+        ]]))
         .send()
         .await
         .unwrap()
@@ -429,7 +429,16 @@ async fn the_top_face_ranks_a_scope_by_weight() {
     for (head, tail) in [("alpha", "shared"), ("beta", "shared")] {
         client
             .post(format!("{base}/memories/1"))
-            .json(&json!([head, "thing", {}, "POINTS_AT", {}, tail, "thing", {}]))
+            .json(&json!([[
+                head,
+                "thing",
+                {},
+                "POINTS_AT",
+                {},
+                tail,
+                "thing",
+                {}
+            ]]))
             .send()
             .await
             .unwrap();
@@ -478,7 +487,10 @@ async fn the_top_face_ranks_a_scope_by_weight() {
         .json()
         .await
         .unwrap();
-    assert!(empty.is_empty(), "an empty scope is an empty list, not an error");
+    assert!(
+        empty.is_empty(),
+        "an empty scope is an empty list, not an error"
+    );
 }
 
 /// The deterministic read and the third write verb: a fact fetched BY ID (the
@@ -490,13 +502,23 @@ async fn a_fact_is_read_and_withdrawn_by_its_id() {
     let client = reqwest::Client::new();
     let key: serde_json::Value = client
         .post(format!("{base}/memories/1"))
-        .json(&json!(["alpha", "thing", {}, "POINTS_AT", {}, "beta", "thing", {}]))
+        .json(&json!([[
+            "alpha",
+            "thing",
+            {},
+            "POINTS_AT",
+            {},
+            "beta",
+            "thing",
+            {}
+        ]]))
         .send()
         .await
         .unwrap()
-        .json()
+        .json::<Vec<serde_json::Value>>()
         .await
-        .unwrap();
+        .unwrap()
+        .remove(0);
     let edge_id = key["edge_id"].as_u64().unwrap();
 
     let fetched: serde_json::Value = client
@@ -571,18 +593,28 @@ async fn a_reference_link_rides_the_answer_as_an_address() {
     let client = reqwest::Client::new();
     let detail: serde_json::Value = client
         .post(format!("{base}/memories/1"))
-        .json(&json!(["the_detail", "note", {}, "MENTIONS", {}, "thing", "thing", {}]))
+        .json(&json!([[
+            "the_detail",
+            "note",
+            {},
+            "MENTIONS",
+            {},
+            "thing",
+            "thing",
+            {}
+        ]]))
         .send()
         .await
         .unwrap()
-        .json()
+        .json::<Vec<serde_json::Value>>()
         .await
-        .unwrap();
+        .unwrap()
+        .remove(0);
     let detail_id = detail["edge_id"].as_u64().unwrap();
 
     let anchor: serde_json::Value = client
         .post(format!("{base}/memories/1"))
-        .json(&json!([
+        .json(&json!([[
             "anchor",
             "thing",
             {},
@@ -591,13 +623,14 @@ async fn a_reference_link_rides_the_answer_as_an_address() {
             "x",
             "thing",
             {}
-        ]))
+        ]]))
         .send()
         .await
         .unwrap()
-        .json()
+        .json::<Vec<serde_json::Value>>()
         .await
-        .unwrap();
+        .unwrap()
+        .remove(0);
     let anchor_id = anchor["edge_id"].as_u64().unwrap();
 
     let fetched: serde_json::Value = client
@@ -635,7 +668,7 @@ async fn the_three_entrances_answer_without_a_query() {
     for (src, since, dst) in [("a", 10, "b"), ("b", 20, "c"), ("c", 30, "a")] {
         let response = client
             .post(format!("{base}/memories/1"))
-            .json(&json!([src, "thing", {}, "LEADS_TO", {"since": since}, dst, "thing", {}]))
+            .json(&json!([[src, "thing", {}, "LEADS_TO", {"since": since}, dst, "thing", {}]]))
             .send()
             .await
             .unwrap();
@@ -697,7 +730,9 @@ async fn the_three_entrances_answer_without_a_query() {
     assert_eq!(timeline[1]["since"].as_u64().unwrap(), 20);
 
     let chain: Vec<serde_json::Value> = client
-        .get(format!("{base}/graph/1/chain?from={a_id}&kind=LEADS_TO&hops=5"))
+        .get(format!(
+            "{base}/graph/1/chain?from={a_id}&kind=LEADS_TO&hops=5"
+        ))
         .send()
         .await
         .unwrap()
@@ -708,5 +743,9 @@ async fn the_three_entrances_answer_without_a_query() {
         .iter()
         .map(|hop| hop["depth"].as_u64().unwrap())
         .collect();
-    assert_eq!(depths, vec![0, 1, 2], "the walk order IS the answer's order");
+    assert_eq!(
+        depths,
+        vec![0, 1, 2],
+        "the walk order IS the answer's order"
+    );
 }

@@ -141,6 +141,43 @@ impl CodeStore {
             .then(|| crate::export::table(&mut self.table, path))
     }
 
+    /// Restore one table by NAME from a Parquet file — the mirror of `export`.
+    /// The code table lands through the normal write contract, the reduce table
+    /// pushes the id watermark, and the in-process issuer is then recomputed
+    /// from the store: a restore that skipped it would hand out an id a
+    /// restored row already holds.
+    pub fn import(&mut self, name: &str, path: &std::path::Path) -> Option<Result<usize, String>> {
+        if name == <CodeRow as Document>::TABLE_NAME {
+            let out = crate::export::import_table(&mut self.table, path);
+            Some(crate::export::finish_import(out, || self.reseed()))
+        } else if name == crate::export::CODE_REDUCES {
+            let out =
+                okm_core::bridge::tooling::parquet_io::import_reduces::<_, __OkmReduce_CodeRow_0>(
+                    self.table.store(),
+                    <CodeRow as Document>::NS_PREFIX,
+                    <CodeRow as Document>::TABLE_NAME,
+                    path,
+                )
+                .map_err(|e| format!("reduce import: {e}"));
+            Some(crate::export::finish_import(out, || self.reseed()))
+        } else {
+            None
+        }
+    }
+
+    /// Recompute the id issuer from the store — the open path, reused after a
+    /// restore wrote rows and a watermark underneath.
+    pub fn reseed(&mut self) {
+        let water = okm_core::reduce::scan_reduces::<_, __OkmReduce_CodeRow_0>(
+            self.table.store(),
+            <CodeRow as Document>::NS_PREFIX,
+        )
+        .into_iter()
+        .next()
+        .map(|(_, acc)| acc);
+        self.next_id = water.map_or(1, |w| w.saturating_add(1));
+    }
+
     /// The id allocator's watermark as the derived reduce table (ADR-0034 §5):
     /// without it a restored table would hand out an id it already used.
     pub fn export_reduces(&self, path: &std::path::Path) -> Result<(), String> {
@@ -151,5 +188,4 @@ impl CodeStore {
             path,
         )
     }
-
 }

@@ -353,7 +353,9 @@ impl Facts {
     /// second granularity is the declared price (a u32 second offset buys 136
     /// years in 4 bytes; milliseconds would buy 49 days).
     fn push_recent(&mut self, now: u64) {
-        let offset = (now / 1000).saturating_sub(RECENT_BASE).min(u64::from(u32::MAX)) as u32;
+        let offset = (now / 1000)
+            .saturating_sub(RECENT_BASE)
+            .min(u64::from(u32::MAX)) as u32;
         let mut slots = std::mem::take(&mut self.recent).elems;
         // A short ring is a payload written before the field existed: pad the
         // PAST with zeros so "oldest first" survives the normalisation.
@@ -522,6 +524,7 @@ pub struct CommunitySeqKey {
 #[derive(DocumentEncode, Clone, PartialEq, Debug, Default)]
 #[ok_ref(CommunitySeqKey)]
 #[ok_ns(38)]
+#[ok_name("community_seq")]
 pub struct CommunitySeqRow {
     #[ok_default(0)]
     pub high_water: u64,
@@ -884,6 +887,14 @@ impl ScopeTables {
         self.tables.get(&scope)
     }
 
+    /// Drop every cached table: a restore wrote rows underneath the cache, so
+    /// what it holds is no longer what a read would load.
+    fn clear(&mut self) {
+        self.tables.clear();
+        self.order.clear();
+        self.bytes = 0;
+    }
+
     fn forget(&mut self, scope: u64) {
         if let Some(table) = self.tables.remove(&scope) {
             self.bytes -= table.bytes;
@@ -1104,6 +1115,10 @@ impl GraphStore {
                 <Facts as Document>::TABLE_NAME,
                 crate::export::ns(Facts::NS_PREFIX),
             ),
+            (
+                <CommunitySeqRow as Document>::TABLE_NAME,
+                crate::export::ns(CommunitySeqRow::NS_PREFIX),
+            ),
         ]
     }
 
@@ -1121,9 +1136,67 @@ impl GraphStore {
             let mut facts = self.facts();
             let batch = facts.to_record_batch_table(crate::export::name_of);
             Some(crate::export::batch(&batch, path))
+        } else if name == <CommunitySeqRow as Document>::TABLE_NAME {
+            // An ISSUER row, not data: a restored graph without it re-issues
+            // community ids the restored nodes already carry.
+            let mut seq = <CommunitySeqRow as Document>::collection(self.store.clone());
+            Some(crate::export::table(&mut seq, path))
         } else {
             None
         }
+    }
+
+    /// Restore one table by NAME from a Parquet file (the mirror of `export`).
+    ///
+    /// Every table lands through the SAME write contract the live path uses
+    /// (`put` / `link_into`), so the derived faces and reduces follow; the
+    /// ids, node ids and edge ids included, are the file's own. `None` = not
+    /// this graph's table.
+    pub fn import(&mut self, name: &str, path: &std::path::Path) -> Option<Result<usize, String>> {
+        if name == <EntityRow as Document>::TABLE_NAME {
+            let out = crate::export::import_table(&mut self.entities, path);
+            Some(crate::export::finish_import(out, || self.reseed()))
+        } else if name == <Facts as Document>::TABLE_NAME {
+            let mut facts = self.facts();
+            let out = facts.import_file(path, crate::export::ns_of);
+            Some(crate::export::finish_import(out, || self.reseed()))
+        } else if name == <CommunitySeqRow as Document>::TABLE_NAME {
+            let mut seq = <CommunitySeqRow as Document>::collection(self.store.clone());
+            let out = crate::export::import_table(&mut seq, path);
+            // The cache is per scope and lazily read from the row; dropping it
+            // is what makes a restored watermark visible.
+            self.next_community.clear();
+            Some(crate::export::finish_import(out, || {}))
+        } else {
+            None
+        }
+    }
+
+    /// Recompute every in-process issuer from the store — the open path, reused
+    /// after a restore wrote rows underneath. A restore that skips this hands
+    /// out ids the restored rows already carry.
+    pub fn reseed(&mut self) {
+        let next_node = self
+            .entities
+            .scan_keys()
+            .last()
+            .map_or(1, |k| k.node_id.saturating_add(1));
+        let mut pk_prefix = Vec::with_capacity(3);
+        pk_prefix.extend_from_slice(<EntityRow as Document>::NS_PREFIX);
+        write_slot(&mut pk_prefix, PRIMARY_SLOT);
+        let mut edge_prefix = pk_prefix;
+        edge_prefix[0..2].copy_from_slice(Facts::NS_PREFIX);
+        let next_edge = self
+            .store
+            .scan_suffix(&edge_prefix)
+            .iter()
+            .last()
+            .and_then(|sfx| sfx.as_slice().try_into().ok().map(u64::from_be_bytes))
+            .map_or(1, |id| id.saturating_add(1));
+        self.next_node = next_node;
+        self.next_edge = next_edge;
+        self.next_community.clear();
+        self.tables.clear();
     }
 
     /// One fact by ITS ID — the deterministic read (ADR-0004's identity), the
@@ -1219,15 +1292,11 @@ impl GraphStore {
         }
         let ids: Vec<u64> = {
             let facts = self.facts();
-            okm_core::model::index::scan_index::<_, BySince>(
-                facts.store(),
-                Facts::NS_PREFIX,
-                &[],
-            )
-            .into_iter()
-            .rev()
-            .map(|key| key.decoded.0)
-            .collect()
+            okm_core::model::index::scan_index::<_, BySince>(facts.store(), Facts::NS_PREFIX, &[])
+                .into_iter()
+                .rev()
+                .map(|key| key.decoded.0)
+                .collect()
         };
         let mut out = Vec::new();
         for id in ids {

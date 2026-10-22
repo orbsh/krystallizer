@@ -234,11 +234,17 @@ fn build(
             post(append_checkpoint),
         )
         .route("/code", post(put_code))
-        .route("/export", get(export))
-        .route("/export/{table}", get(export))
+        .route("/export", get(export_bundle))
+        .route("/export/{table}", get(export_table))
+        // A bundle is the whole store: the body limit that protects the small
+        // JSON doors does not apply to it.
+        .route(
+            "/import",
+            post(import_bundle).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
         .route("/code/{code_id}", get(fetch_code))
-        .route("/memories/{scope}", post(ingest_fact))
-        .route("/graph/{scope}/search", get(search_facts))
+        .route("/memories/{scope}", post(ingest_facts))
+        .route("/graph/{scope}/search", post(search_facts))
         .route("/graph/{scope}/top", get(top_facts))
         .route(
             "/graph/{scope}/entities/{node_id}/anchored",
@@ -250,7 +256,7 @@ fn build(
             "/graph/{scope}/facts/{edge_id}",
             get(fetch_fact).delete(withdraw_fact),
         )
-        .route("/memories/{scope}/recall", get(recall_facts))
+        .route("/memories/{scope}/recall", post(recall_facts))
         .route("/memories/{scope}/edges/{edge_id}/touch", post(touch_fact))
         .route("/memories/{scope}/entities/{name}", get(fetch_entity))
         .route(
@@ -709,20 +715,131 @@ async fn put_code(
     })
 }
 
-/// `GET /export` — the catalog: one row per table, `(table, ns)`.
+/// `GET /export` — the WHOLE store as one `tar.zst` bundle (ADR-0013).
 ///
-/// `GET /export/{table}` — one table as a Parquet file (ADR-0007's backup
-/// boundary, ADR-0034's shape): a bulk read over the same HTTP door, no admin CLI
-/// and no second storage format.
+/// Inside the archive: `<root>/<table>/data/<table>.parquet` beside that
+/// table's Iceberg metadata, the catalog at the root, and nothing k10r-specific
+/// beyond the directory names — unpack it and any Parquet/Iceberg reader can
+/// open the tables without this service.
 ///
-/// The door is addressed by TABLE NAME, not by ns: a number means nothing outside
-/// the store. Names come from the row declarations, so the catalog and the door
-/// cannot drift from the tables they name. An unknown name is a 404; an empty
-/// table is a 200 with a valid, empty file ("this table is empty" is information
-/// a backup carries).
-async fn export(
+/// The tables are exported under the SAME lock each write takes, one at a time,
+/// and the archive is built in a temp directory: a failure mid-way answers 500
+/// and no half bundle is ever served.
+async fn export_bundle(State(state): State<Arc<MemState>>) -> axum::response::Response {
+    let dir = match tempfile::tempdir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("no temp dir for the export: {e}"),
+            )
+                .into_response()
+        }
+    };
+    let root = dir.path().join(mem_core::bundle::BUNDLE_DIR);
+    if let Err(e) = std::fs::create_dir_all(&root) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("creating the bundle root: {e}"),
+        )
+            .into_response();
+    }
+    if let Err(e) = mem_core::export::catalog(&root.join(mem_core::bundle::CATALOG_FILE)) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+    }
+    for &(name, _) in mem_core::export::CATALOG {
+        if let Err(e) = export_one(&state, name, &root).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+        }
+    }
+    for name in [
+        mem_core::export::LOG_REDUCES,
+        mem_core::export::CODE_REDUCES,
+    ] {
+        if let Err(e) = export_one(&state, name, &root).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+        }
+    }
+    let archive = dir.path().join("backup.tar.zst");
+    if let Err(e) = mem_core::bundle::seal(&root, &archive) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+    }
+    let bytes = match std::fs::read(&archive) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("the bundle was written but not read back: {e}"),
+            )
+                .into_response()
+        }
+    };
+    let filename = format!("krystallizer-backup-{}.tar.zst", mem_core::export::stamp());
+    (
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "application/zstd".to_string(),
+            ),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+/// One table into the bundle: the Parquet file, then its Iceberg metadata.
+///
+/// Each lock is taken as its OWN statement (and dropped before the next), so a
+/// table that falls through every store cannot re-take a lock it still holds —
+/// that is a self-deadlock, not a lookup miss.
+async fn export_one(
+    state: &Arc<MemState>,
+    name: &str,
+    root: &std::path::Path,
+) -> Result<(), String> {
+    let file = mem_core::bundle::table_file(root, name);
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    let mut found: Option<Result<(), String>> = None;
+    if found.is_none() {
+        found = state.store.lock().await.export(name, &file);
+    }
+    if found.is_none() {
+        found = state.code.lock().await.export(name, &file);
+    }
+    if found.is_none() {
+        found = state.log.lock().await.export(name, &file);
+    }
+    if found.is_none() {
+        found = state.graph.lock().await.export(name, &file);
+    }
+    if found.is_none() && name == mem_core::export::LOG_REDUCES {
+        found = Some(state.log.lock().await.export_reduces(&file));
+    }
+    if found.is_none() && name == mem_core::export::CODE_REDUCES {
+        found = Some(state.code.lock().await.export_reduces(&file));
+    }
+    match found {
+        Some(Ok(())) => {}
+        Some(Err(e)) => return Err(e),
+        // A catalogued table no store serves is a wiring bug, not a 404.
+        None => return Err(format!("no store serves the table `{name}`")),
+    }
+    mem_core::export::write_metadata(&mem_core::bundle::table_dir(root, name), &file)
+}
+
+/// `GET /export/{table}` — ONE table as a Parquet file (inspection, not the
+/// backup's form: the backup is `GET /export`'s bundle). Table names come from
+/// the row declarations, so the door and the tables cannot drift; an unknown
+/// name is a 404 pointing at the bundle.
+async fn export_table(
     State(state): State<Arc<MemState>>,
-    table: Option<Path<String>>,
+    Path(name): Path<String>,
 ) -> axum::response::Response {
     let dir = match tempfile::tempdir() {
         Ok(dir) => dir,
@@ -734,57 +851,44 @@ async fn export(
                 .into_response()
         }
     };
-    let (file, outcome) = match table.as_ref().map(|Path(name)| name.as_str()) {
-        // No table named: the catalog itself.
-        None => {
-            let file = dir.path().join("catalog.parquet");
-            let outcome = mem_core::export::catalog(&file);
-            (file, outcome)
-        }
-        Some(name) => {
-            let file = dir.path().join(format!("{name}.parquet"));
-            // Each attempt is its OWN statement: a guard taken in one is dropped
-            // before the next, so a table that falls through every store cannot
-            // re-take a lock it is still holding (that is a self-deadlock, not a
-            // lookup miss).
-            let mut found: Option<Result<(), String>> = None;
-            if found.is_none() {
-                found = state.store.lock().await.export(name, &file);
-            }
-            if found.is_none() {
-                found = state.code.lock().await.export(name, &file);
-            }
-            if found.is_none() {
-                found = state.log.lock().await.export(name, &file);
-            }
-            if found.is_none() {
-                found = state.graph.lock().await.export(name, &file);
-            }
-            if found.is_none() && name == mem_core::export::LOG_REDUCES {
-                found = Some(state.log.lock().await.export_reduces(&file));
-            }
-            if found.is_none() && name == mem_core::export::CODE_REDUCES {
-                found = Some(state.code.lock().await.export_reduces(&file));
-            }
-            let Some(outcome) = found else {
-                return (
-                    StatusCode::NOT_FOUND,
-                    format!("no table named {name} (see GET /export for the catalog)"),
-                )
-                    .into_response();
-            };
-            (file, outcome)
-        }
+    let file = dir.path().join(format!("{name}.parquet"));
+    let mut found: Option<Result<(), String>> = None;
+    if found.is_none() {
+        found = state.store.lock().await.export(&name, &file);
+    }
+    if found.is_none() {
+        found = state.code.lock().await.export(&name, &file);
+    }
+    if found.is_none() {
+        found = state.log.lock().await.export(&name, &file);
+    }
+    if found.is_none() {
+        found = state.graph.lock().await.export(&name, &file);
+    }
+    if found.is_none() && name == mem_core::export::LOG_REDUCES {
+        found = Some(state.log.lock().await.export_reduces(&file));
+    }
+    if found.is_none() && name == mem_core::export::CODE_REDUCES {
+        found = Some(state.code.lock().await.export_reduces(&file));
+    }
+    let Some(outcome) = found else {
+        return (
+            StatusCode::NOT_FOUND,
+            format!(
+                "no table named {name} (the backup is GET /export; the catalog travels inside it)"
+            ),
+        )
+            .into_response();
     };
     if let Err(e) = outcome {
         return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
     }
-    let filename = file
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("export.parquet")
-        .to_string();
-    match std::fs::read(&file) {
+    read_parquet_response(&file, &format!("{name}.parquet"))
+}
+
+/// Answer with a file's bytes as an attachment of the given content type.
+fn read_parquet_response(file: &std::path::Path, filename: &str) -> axum::response::Response {
+    match std::fs::read(file) {
         Ok(bytes) => (
             [
                 (
@@ -805,6 +909,98 @@ async fn export(
         )
             .into_response(),
     }
+}
+
+/// `POST /import` — restore a bundle (the mirror of `GET /export`).
+///
+/// ONE request restores every table, in the dependency order the catalog
+/// declares; the operator never sorts files. Rows land through the normal write
+/// contracts (merge by key: same key overwrites, new key inserts — the door
+/// never deletes), then each store recomputes its in-process issuers from what
+/// the store now holds, so a restored graph does not hand out an edge id a
+/// restored row already carries.
+///
+/// Refusals are the caller's bug and nothing lands: a body that is not a
+/// `.tar.zst`, an archive missing the bundle directory, a table member the
+/// catalog names but the archive lacks.
+async fn import_bundle(
+    State(state): State<Arc<MemState>>,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    if body.is_empty() {
+        return (StatusCode::BAD_REQUEST, "an empty body is not a bundle").into_response();
+    }
+    let dir = match tempfile::tempdir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("no temp dir for the restore: {e}"),
+            )
+                .into_response()
+        }
+    };
+    let archive = dir.path().join("backup.tar.zst");
+    if let Err(e) = std::fs::write(&archive, &body) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("writing the uploaded bundle: {e}"),
+        )
+            .into_response();
+    }
+    let root = match mem_core::bundle::unpack(&archive, dir.path()) {
+        Ok(root) => root,
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+    };
+
+    let mut report: std::collections::BTreeMap<&'static str, usize> =
+        std::collections::BTreeMap::new();
+    for name in mem_core::bundle::import_order() {
+        let file = mem_core::bundle::table_file(&root, name);
+        if !file.exists() {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "the bundle has no member for `{name}` (expected {})",
+                    file.display()
+                ),
+            )
+                .into_response();
+        }
+        let mut found: Option<Result<usize, String>> = None;
+        if found.is_none() {
+            found = state.store.lock().await.import(name, &file);
+        }
+        if found.is_none() {
+            found = state.code.lock().await.import(name, &file);
+        }
+        if found.is_none() {
+            found = state.log.lock().await.import(name, &file);
+        }
+        if found.is_none() {
+            found = state.graph.lock().await.import(name, &file);
+        }
+        match found {
+            Some(Ok(rows)) => {
+                report.insert(name, rows);
+            }
+            Some(Err(e)) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("restoring `{name}`: {e}"),
+                )
+                    .into_response()
+            }
+            None => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("no store serves the table `{name}`"),
+                )
+                    .into_response()
+            }
+        }
+    }
+    Json(report).into_response()
 }
 
 /// `GET /code/{code_id}` — the script gravity reads at call time.
@@ -883,18 +1079,41 @@ impl IntoResponse for FactError {
     }
 }
 
-/// `POST /memories/{scope}` — land one fact; the body IS the 8-slot tuple.
-async fn ingest_fact(
+/// `POST /memories/{scope}` — land facts; the body is an ARRAY of 8-slot
+/// tuples, and the answer is an array in the same order.
+///
+/// Plural because a caller (a model, above all) writes a PARAGRAPH of knowledge,
+/// not one fact at a time: one round trip instead of N, and one place where a
+/// partial failure is visible. A malformed element is a `refused` entry with
+/// the core's error text and does NOT stop the rest — the caller fixes that one
+/// and sends it again. Only a body that is not a JSON array is a 400, because
+/// that is not a fact list at all.
+async fn ingest_facts(
     State(state): State<Arc<MemState>>,
     Path(scope): Path<u64>,
     Json(body): Json<serde_json::Value>,
-) -> Result<Json<IngestOutcomeDto>, FactError> {
-    let fact = FactTuple::from_value(&body).map_err(FactError::from)?;
+) -> Result<Json<Vec<serde_json::Value>>, FactError> {
+    let Some(items) = body.as_array() else {
+        return Err(FactError {
+            error: "the body must be a JSON array of fact tuples".to_string(),
+            status: StatusCode::BAD_REQUEST,
+        });
+    };
     let mut graph = state.graph.lock().await;
-    graph
-        .ingest(scope, &fact)
-        .map(|outcome| Json(outcome.into()))
-        .map_err(FactError::from)
+    let mut answers = Vec::with_capacity(items.len());
+    for item in items {
+        let landed = FactTuple::from_value(item)
+            .map_err(IngestError::from)
+            .and_then(|fact| graph.ingest(scope, &fact));
+        answers.push(match landed {
+            Ok(outcome) => serde_json::json!(IngestOutcomeDto::from(outcome)),
+            Err(e) => serde_json::json!({
+                "outcome": "refused",
+                "error": e.to_string(),
+            }),
+        });
+    }
+    Ok(Json(answers))
 }
 
 /// One node as the read face returns it.
@@ -925,7 +1144,6 @@ pub struct SeedDto {
 /// The retrieval door's query: `?q=<text>&k=<n>` — `k` defaults to 10.
 #[derive(Deserialize)]
 pub struct FactSearchQuery {
-    pub q: String,
     #[serde(default = "default_seed_count")]
     pub k: usize,
 }
@@ -991,7 +1209,6 @@ pub struct TopQuery {
 /// stamps a time of its own).
 #[derive(Deserialize)]
 pub struct RecallQuery {
-    pub q: String,
     #[serde(default = "default_seed_count")]
     pub k: usize,
     pub ts_ms: Option<u64>,
@@ -1042,24 +1259,25 @@ async fn search_facts(
     State(state): State<Arc<MemState>>,
     Path(scope): Path<u64>,
     Query(query): Query<FactSearchQuery>,
-) -> Result<Json<Vec<SeedDto>>, FactError> {
+    Json(queries): Json<Vec<String>>,
+) -> Result<Json<Vec<Vec<SeedDto>>>, FactError> {
     let mut graph = state.graph.lock().await;
-    graph
-        .retrieve(scope, &query.q, query.k)
-        .map(|seeds| {
-            Json(
-                seeds
-                    .into_iter()
-                    .map(|s| SeedDto {
-                        node_id: s.node_id,
-                        score: s.score,
-                        name: s.name,
-                        kind: s.kind,
-                    })
-                    .collect(),
-            )
-        })
-        .map_err(FactError::from)
+    let mut answers = Vec::with_capacity(queries.len());
+    for q in &queries {
+        let seeds = graph.retrieve(scope, q, query.k).map_err(FactError::from)?;
+        answers.push(
+            seeds
+                .into_iter()
+                .map(|s| SeedDto {
+                    node_id: s.node_id,
+                    score: s.score,
+                    name: s.name,
+                    kind: s.kind,
+                })
+                .collect(),
+        );
+    }
+    Ok(Json(answers))
 }
 
 /// `GET /graph/{scope}/entities/{node_id}/anchored` — the entity-anchored
@@ -1168,36 +1386,38 @@ async fn recall_facts(
     State(state): State<Arc<MemState>>,
     Path(scope): Path<u64>,
     Query(query): Query<RecallQuery>,
-) -> Result<Json<RecallDto>, FactError> {
+    Json(queries): Json<Vec<String>>,
+) -> Result<Json<Vec<RecallDto>>, FactError> {
     let format = parse_format(query.format.as_deref())?;
     let structured = !format.renders_text();
     let mut graph = state.graph.lock().await;
-    graph
-        .recall(scope, &query.q, query.k, query.ts_ms, query.budget, format)
-        .map(|recall| {
-            Json(RecallDto {
-                format: format.name(),
-                communities: recall.communities,
-                seeds: structured.then(|| {
-                    recall
-                        .seeds
-                        .into_iter()
-                        .map(|s| SeedDto {
-                            node_id: s.node_id,
-                            score: s.score,
-                            name: s.name,
-                            kind: s.kind,
-                        })
-                        .collect()
-                }),
-                facts: structured
-                    .then(|| recall.facts.into_iter().map(FactViewDto::from).collect()),
-                text: recall.text,
-                shown: recall.shown,
-                total: recall.total,
-            })
-        })
-        .map_err(FactError::from)
+    let mut answers = Vec::with_capacity(queries.len());
+    for q in &queries {
+        let recall = graph
+            .recall(scope, q, query.k, query.ts_ms, query.budget, format)
+            .map_err(FactError::from)?;
+        answers.push(RecallDto {
+            format: format.name(),
+            communities: recall.communities,
+            seeds: structured.then(|| {
+                recall
+                    .seeds
+                    .into_iter()
+                    .map(|s| SeedDto {
+                        node_id: s.node_id,
+                        score: s.score,
+                        name: s.name,
+                        kind: s.kind,
+                    })
+                    .collect()
+            }),
+            facts: structured.then(|| recall.facts.into_iter().map(FactViewDto::from).collect()),
+            text: recall.text,
+            shown: recall.shown,
+            total: recall.total,
+        });
+    }
+    Ok(Json(answers))
 }
 
 /// Body of the tool-touch door: the CALLER's clock (ms). k10r cannot see a

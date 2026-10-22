@@ -94,13 +94,24 @@ async fn every_table_answers_and_an_unknown_name_is_a_404() {
         .await
         .unwrap();
 
-    let code = client.get(format!("{base}/export/code")).send().await.unwrap();
+    let code = client
+        .get(format!("{base}/export/code"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(code.status(), 200);
     let body = code.bytes().await.unwrap();
     assert_eq!(shape(&body).0, 1, "the one code row is in the file");
 
     // An empty table still exports: an empty table is a fact about the backup.
-    for table in ["checkpoints", "entities", "cursors", "log", "members", "facts"] {
+    for table in [
+        "checkpoints",
+        "entities",
+        "cursors",
+        "log",
+        "members",
+        "facts",
+    ] {
         let response = client
             .get(format!("{base}/export/{table}"))
             .send()
@@ -121,9 +132,17 @@ async fn every_table_answers_and_an_unknown_name_is_a_404() {
         .unwrap();
     assert_eq!(facts.status(), 200, "the fact table exports");
     let body = facts.bytes().await.unwrap();
-    assert_eq!(shape(&body).0, 0, "an empty graph exports an empty edge table");
+    assert_eq!(
+        shape(&body).0,
+        0,
+        "an empty graph exports an empty edge table"
+    );
 
-    let nothing = client.get(format!("{base}/export/nope")).send().await.unwrap();
+    let nothing = client
+        .get(format!("{base}/export/nope"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(nothing.status(), reqwest::StatusCode::NOT_FOUND);
 }
 
@@ -175,7 +194,11 @@ async fn the_export_is_a_snapshot_and_the_store_keeps_writing() {
         .bytes()
         .await
         .unwrap();
-    assert_eq!(shape(&second).0, 3, "the second export sees the third write");
+    assert_eq!(
+        shape(&second).0,
+        3,
+        "the second export sees the third write"
+    );
 }
 
 fn read_rows(body: &[u8]) -> arrow::record_batch::RecordBatch {
@@ -188,21 +211,37 @@ fn read_rows(body: &[u8]) -> arrow::record_batch::RecordBatch {
         .expect("decodes")
 }
 
-/// The catalog is the door's index: every table by NAME, with the ns the store
-/// uses. A backup carries it so an import can go the other way.
+/// `GET /export` is the BUNDLE: one `tar.zst` holding every table's Parquet file
+/// beside its Iceberg metadata, plus the catalog at the root.
 #[tokio::test]
-async fn the_catalog_names_every_table() {
+async fn the_bundle_carries_every_table_and_its_iceberg_metadata() {
     let (base, _dir) = spawn_server().await;
-    let body = reqwest::Client::new()
+    let response = reqwest::Client::new()
         .get(format!("{base}/export"))
         .send()
         .await
-        .unwrap()
-        .bytes()
-        .await
         .unwrap();
-    let batch = read_rows(&body);
-    assert_eq!(batch.num_rows(), 8, "eight tables, eight catalog rows");
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("application/zstd"),
+        "a .tar.zst, not a bare Parquet file"
+    );
+    let body = response.bytes().await.unwrap();
+    assert_eq!(&body[..4], &[0x28, 0xb5, 0x2f, 0xfd], "the zstd magic");
+
+    // Unpack it the way a restore does, then read what a reader outside k10r
+    // would read: the catalog, and each table's metadata directory.
+    let dir = tempfile::tempdir().unwrap();
+    let archive = dir.path().join("backup.tar.zst");
+    std::fs::write(&archive, &body).unwrap();
+    let root = mem_core::bundle::unpack(&archive, dir.path()).unwrap();
+
+    let catalog = std::fs::read(root.join(mem_core::bundle::CATALOG_FILE)).unwrap();
+    let batch = read_rows(&catalog);
     let names = batch
         .column(0)
         .as_any()
@@ -213,9 +252,35 @@ async fn the_catalog_names_every_table() {
     assert_eq!(
         got,
         vec![
-            "checkpoints", "code", "cursors", "entities", "facts", "log", "members", "messages"
-        ]
+            "checkpoints",
+            "code",
+            "community_seq",
+            "cursors",
+            "entities",
+            "facts",
+            "log",
+            "members",
+            "messages",
+        ],
+        "every table the service holds, the community sequence included"
     );
+
+    for table in mem_core::export::CATALOG.iter().map(|(n, _)| *n).chain([
+        mem_core::export::LOG_REDUCES,
+        mem_core::export::CODE_REDUCES,
+    ]) {
+        let file = mem_core::bundle::table_file(&root, table);
+        assert!(file.exists(), "{table} has a data file");
+        let meta = mem_core::bundle::table_dir(&root, table).join("metadata");
+        assert!(
+            meta.join("v1.metadata.json").exists(),
+            "{table} carries Iceberg metadata"
+        );
+        assert!(
+            meta.join("version-hint.text").exists(),
+            "{table} is readable as a directory"
+        );
+    }
 }
 
 /// A fact leaves as the edge table okm builds: (table, key) endpoints, the
@@ -226,11 +291,11 @@ async fn a_fact_exports_with_endpoints_and_props() {
     let client = reqwest::Client::new();
     client
         .post(format!("{base}/memories/1"))
-        .json(&serde_json::json!([
+        .json(&serde_json::json!([[
             "k10r", "system", {},
             "DEPENDS_ON", { "why": "the backup reads it" },
             "okm", "system", {}
-        ]))
+        ]]))
         .send()
         .await
         .unwrap();

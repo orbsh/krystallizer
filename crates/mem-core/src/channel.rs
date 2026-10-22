@@ -260,11 +260,7 @@ impl ChannelStore {
 
     /// Export one table by NAME as Parquet (ADR-0007's backup boundary).
     /// `None` = this group holds no such table (the caller's 404).
-    pub fn export(
-        &mut self,
-        name: &str,
-        path: &std::path::Path,
-    ) -> Option<Result<(), String>> {
+    pub fn export(&mut self, name: &str, path: &std::path::Path) -> Option<Result<(), String>> {
         if name == <MessageRow as Document>::TABLE_NAME {
             Some(crate::export::table(&mut self.messages, path))
         } else if name == <CheckpointRow as Document>::TABLE_NAME {
@@ -273,6 +269,23 @@ impl ChannelStore {
             Some(crate::export::table(&mut self.cursors, path))
         } else if name == <MemberRow as Document>::TABLE_NAME {
             Some(crate::export::table(&mut self.members, path))
+        } else {
+            None
+        }
+    }
+
+    /// Restore one table by NAME from a Parquet file — the mirror of `export`.
+    /// Every channel table is a plain document table, so the restore lands
+    /// through the normal write contract and nothing derived has to follow.
+    pub fn import(&mut self, name: &str, path: &std::path::Path) -> Option<Result<usize, String>> {
+        if name == <MessageRow as Document>::TABLE_NAME {
+            Some(crate::export::import_table(&mut self.messages, path))
+        } else if name == <CheckpointRow as Document>::TABLE_NAME {
+            Some(crate::export::import_table(&mut self.checkpoints, path))
+        } else if name == <CursorRow as Document>::TABLE_NAME {
+            Some(crate::export::import_table(&mut self.cursors, path))
+        } else if name == <MemberRow as Document>::TABLE_NAME {
+            Some(crate::export::import_table(&mut self.members, path))
         } else {
             None
         }

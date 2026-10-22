@@ -6,12 +6,13 @@
 //! initialization memory included), and tasks. Zero LLM dependency,
 //! zero transport dependency. Design: docs/adr/.
 
+pub mod bundle;
 pub mod channel;
-pub mod export;
 pub mod code;
 pub mod compress;
 pub mod config;
 pub mod embedding;
+pub mod export;
 pub mod graph;
 pub mod log;
 pub mod render;
@@ -33,8 +34,8 @@ pub const KEYSPACE_CHANNEL: &str = "channel";
 pub const KEYSPACE_MEMORY: &str = "memory";
 
 pub use channel::{
-    kind, role, ChannelStore, CheckpointKey, CheckpointRow, CursorKey, CursorRow,
-    MemberKey, MemberRow, MessageKey, MessageRow, SessionView, DEFAULT_MEMBER, member_node, member_role,
+    kind, member_node, member_role, role, ChannelStore, CheckpointKey, CheckpointRow, CursorKey,
+    CursorRow, MemberKey, MemberRow, MessageKey, MessageRow, SessionView, DEFAULT_MEMBER,
 };
 pub use code::{CodeKey, CodeRow, CodeStore};
 pub use compress::{
@@ -49,10 +50,9 @@ pub use config::{
 pub use embedding::{l2_normalize, EmbedError, Embedder, LocalEmbedder};
 pub use graph::{
     Anchored, ChainHop, CommunitySeqKey, CommunitySeqRow, CommunitySlice, EntityKey, EntityRow,
-    FactBody, Facts, FactTuple, GraphStore, IngestError, IngestOutcome, NodeId, Recall,
-    REF_FIELD, Relation, Seed, Term, Touch,
-    COMMUNITY_NS, ENTITY_NS, FACT_NS, FUNCTIONAL_PROP, LANDING_FLOOR, LITERAL_KIND, LPA_RADIUS,
-    LPA_ROUNDS, MEMBER_NS, USER_KIND, WEIGHT_SCALE,
+    FactBody, FactTuple, Facts, GraphStore, IngestError, IngestOutcome, NodeId, Recall, Relation,
+    Seed, Term, Touch, COMMUNITY_NS, ENTITY_NS, FACT_NS, FUNCTIONAL_PROP, LANDING_FLOOR,
+    LITERAL_KIND, LPA_RADIUS, LPA_ROUNDS, MEMBER_NS, REF_FIELD, USER_KIND, WEIGHT_SCALE,
 };
 pub use log::{
     event as log_event, field as log_field, level as log_level, LogEntry, LogKey, LogRow, LogStore,

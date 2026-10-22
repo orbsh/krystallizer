@@ -261,9 +261,10 @@ logs {{
 
     let tuple: serde_json::Value =
         serde_json::from_str(r#"["用户","person",{},"PREFERS",{},"冰美式","coffee",{}]"#).unwrap();
+    // The write door is plural: one fact is a one-element array.
     let answer = client
         .post(format!("{base_http}/memories/1"))
-        .json(&tuple)
+        .json(&serde_json::json!([tuple]))
         .send()
         .await
         .unwrap();
@@ -271,17 +272,19 @@ logs {{
     let body = answer.text().await.unwrap();
     assert_eq!(status, reqwest::StatusCode::OK, "the fact lands: {body}");
 
+    // And so is the landing door: one query is a one-element array, answered by
+    // a one-element array of seed lists.
     let search = client
-        .get(format!(
-            "{base_http}/graph/1/search?q=%E5%86%B0%E7%BE%8E%E5%BC%8F"
-        ))
+        .post(format!("{base_http}/graph/1/search"))
+        .json(&serde_json::json!(["冰美式"]))
         .send()
         .await
         .unwrap();
     let status = search.status();
     let body = search.text().await.unwrap();
     assert!(status.is_success(), "the landing answers: {status} {body}");
-    let seeds: Vec<SeedDto> = serde_json::from_str(&body).unwrap();
+    let answers: Vec<Vec<SeedDto>> = serde_json::from_str(&body).unwrap();
+    let seeds = answers.into_iter().next().unwrap_or_default();
     assert!(
         !seeds.is_empty(),
         "the node the remote engine embedded is reachable by landing"

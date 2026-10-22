@@ -25,19 +25,53 @@ async fn spawn_server() -> (String, TempDir) {
     (format!("http://{addr}"), dir)
 }
 
-/// One ingest over the door: the body is the canonical 8-slot tuple.
+/// One ingest over the door. The door is PLURAL — the body is an array of
+/// tuples — so one fact is a ONE-ELEMENT array, and the answer is an array in
+/// the same order. [`Answer`] unwraps that single element, so a test can go on
+/// talking about "the outcome" without pretending the door is singular.
 async fn ingest(
     client: &reqwest::Client,
     base: &str,
     scope: u64,
     tuple: serde_json::Value,
-) -> reqwest::Response {
-    client
+) -> Answer {
+    let response = client
         .post(format!("{base}/memories/{scope}"))
-        .json(&tuple)
+        .json(&serde_json::json!([tuple]))
         .send()
         .await
-        .unwrap()
+        .unwrap();
+    let status = response.status();
+    let body: serde_json::Value = response.json().await.unwrap();
+    Answer { status, body }
+}
+
+/// One request's answer, with the plural write door's wrapping taken off.
+struct Answer {
+    status: reqwest::StatusCode,
+    body: serde_json::Value,
+}
+
+impl Answer {
+    fn status(&self) -> reqwest::StatusCode {
+        self.status
+    }
+
+    /// The single element of a one-element write (a REQUEST-level refusal has
+    /// no array at all and is handed over as it came).
+    async fn json<T: serde::de::DeserializeOwned>(self) -> Result<T, serde_json::Error> {
+        let value = match self.body {
+            serde_json::Value::Array(mut answers) => {
+                if answers.len() == 1 {
+                    answers.remove(0)
+                } else {
+                    serde_json::Value::Array(answers)
+                }
+            }
+            other => other,
+        };
+        serde_json::from_value(value)
+    }
 }
 
 fn tuple(text: &str) -> serde_json::Value {
@@ -171,9 +205,12 @@ async fn a_malformed_tuple_is_refused_with_the_reason() {
     let (base, _dir) = spawn_server().await;
     let client = reqwest::Client::new();
 
+    // Element-level refusals: the write door answers 200 and names the bad
+    // element, because the OTHERS in the same request still land.
     let short = ingest(&client, &base, 1, tuple(r#"["a","b",{},"REL"]"#)).await;
-    assert_eq!(short.status(), 400);
+    assert_eq!(short.status(), reqwest::StatusCode::OK);
     let body: serde_json::Value = short.json().await.unwrap();
+    assert_eq!(body["outcome"], "refused");
     assert!(
         body["error"].as_str().unwrap().contains("8 slots"),
         "the arity is named: {body}"
@@ -186,15 +223,26 @@ async fn a_malformed_tuple_is_refused_with_the_reason() {
         tuple(r#"["a","b",1,"REL",{},"c","d",{}]"#),
     )
     .await;
-    assert_eq!(shaped.status(), 400);
     let body: serde_json::Value = shaped.json().await.unwrap();
+    assert_eq!(body["outcome"], "refused");
     assert!(
         body["error"].as_str().unwrap().contains("slot 2"),
         "the offending slot is named: {body}"
     );
 
-    let not_a_list = ingest(&client, &base, 1, tuple(r#"{"head":"a"}"#)).await;
-    assert_eq!(not_a_list.status(), 400);
+    // A body that is not an array is not a fact list at all: that IS a 400.
+    let not_a_list = client
+        .post(format!("{base}/memories/1"))
+        .json(&tuple(r#"{"head":"a"}"#))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(not_a_list.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = not_a_list.json().await.unwrap();
+    assert!(
+        body["error"].as_str().unwrap().contains("array"),
+        "the body shape is named: {body}"
+    );
 }
 
 /// The graph and the code store share ONE keyspace (the `memory` tree),
@@ -446,7 +494,8 @@ async fn retrieval_door_answers_an_empty_landing_without_an_engine() {
     let client = reqwest::Client::new();
 
     let response = client
-        .get(format!("{base}/graph/1/search?q=fjall_engine"))
+        .post(format!("{base}/graph/1/search"))
+        .json(&serde_json::json!(["fjall_engine"]))
         .send()
         .await
         .unwrap();
@@ -455,8 +504,9 @@ async fn retrieval_door_answers_an_empty_landing_without_an_engine() {
         200,
         "empty landing is not an error status"
     );
-    let seeds: Vec<serde_json::Value> = response.json().await.unwrap();
-    assert!(seeds.is_empty(), "no engine = nothing lands");
+    let answers: Vec<Vec<serde_json::Value>> = response.json().await.unwrap();
+    assert_eq!(answers.len(), 1, "one answer per query");
+    assert!(answers[0].is_empty(), "no engine = nothing lands");
 }
 
 /// `GET /memories/{scope}/recall` — landing + one hop in one answer. Without an
@@ -468,12 +518,14 @@ async fn recall_door_answers_an_empty_landing_without_an_engine() {
     let (base, _dir) = spawn_server().await;
     let client = reqwest::Client::new();
     let response = client
-        .get(format!("{base}/memories/1/recall?q=fjall_engine"))
+        .post(format!("{base}/memories/1/recall"))
+        .json(&serde_json::json!(["fjall_engine"]))
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let recall: serde_json::Value = response.json().await.unwrap();
+    let answers: Vec<serde_json::Value> = response.json().await.unwrap();
+    let recall = answers[0].clone();
     assert_eq!(recall["format"], "plaintext");
     assert_eq!(recall["text"], "", "nothing landed: an empty text answer");
     assert!(
@@ -558,14 +610,16 @@ async fn recall_answers_the_rendered_memory_and_the_consolidation_doors_are_gone
     )
     .await;
 
-    let answer: serde_json::Value = client
-        .get(format!("{base}/memories/1/recall?q=alpha&k=3&budget=5"))
+    let answers: Vec<serde_json::Value> = client
+        .post(format!("{base}/memories/1/recall?k=3&budget=5"))
+        .json(&serde_json::json!(["alpha"]))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
+    let answer = answers[0].clone();
     assert_eq!(answer["format"], "plaintext");
     assert_eq!(answer["text"], "", "nothing landed: no text at all");
     assert!(
@@ -576,16 +630,16 @@ async fn recall_answers_the_rendered_memory_and_the_consolidation_doors_are_gone
     assert_eq!(answer["total"], 0);
 
     // The same question in the data representation: the structure, no text.
-    let structured: serde_json::Value = client
-        .get(format!(
-            "{base}/memories/1/recall?q=alpha&k=3&format=struct"
-        ))
+    let answers: Vec<serde_json::Value> = client
+        .post(format!("{base}/memories/1/recall?k=3&format=struct"))
+        .json(&serde_json::json!(["alpha"]))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
+    let structured = answers[0].clone();
     assert_eq!(structured["format"], "struct");
     assert_eq!(structured["seeds"].as_array().unwrap().len(), 0);
     assert_eq!(structured["facts"].as_array().unwrap().len(), 0);

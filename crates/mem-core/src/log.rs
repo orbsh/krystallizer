@@ -352,6 +352,53 @@ impl LogStore {
             .then(|| crate::export::table(&mut self.table, path))
     }
 
+    /// Restore one table by NAME from a Parquet file — the mirror of `export`.
+    /// Rows land through the normal write contract, the reduce table pushes the
+    /// `seq` watermark, then the issuer and the trim index are recomputed from
+    /// the store.
+    pub fn import(&mut self, name: &str, path: &std::path::Path) -> Option<Result<usize, String>> {
+        if name == <LogRow as Document>::TABLE_NAME {
+            let out = crate::export::import_table(&mut self.table, path);
+            Some(crate::export::finish_import(out, || self.reseed()))
+        } else if name == crate::export::LOG_REDUCES {
+            let out =
+                okm_core::bridge::tooling::parquet_io::import_reduces::<_, __OkmReduce_LogRow_0>(
+                    self.table.store(),
+                    <LogRow as Document>::NS_PREFIX,
+                    <LogRow as Document>::TABLE_NAME,
+                    path,
+                )
+                .map_err(|e| format!("reduce import: {e}"));
+            Some(crate::export::finish_import(out, || self.reseed()))
+        } else {
+            None
+        }
+    }
+
+    /// Recompute the `seq` issuer and the trim index from the store — the open
+    /// path, reused after a restore. The watermark is a point read and never a
+    /// scan of the last key: the trim deletes the NEWEST row when the ceiling
+    /// holds, so a scan would hand out a number already used.
+    pub fn reseed(&mut self) {
+        let water = okm_core::reduce::scan_reduces::<_, __OkmReduce_LogRow_0>(
+            self.table.store(),
+            <LogRow as Document>::NS_PREFIX,
+        )
+        .into_iter()
+        .next()
+        .map(|(_, acc)| acc);
+        self.seq = water.map_or(0, |w| w.saturating_add(1));
+        let keys = self.table.scan_keys();
+        self.recent = keys
+            .into_iter()
+            .rev()
+            .take(self.max_rows)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+    }
+
     /// The `seq` watermark as the derived reduce table (ADR-0034 §5): the trim
     /// deletes from the front, so a restored log whose watermark is missing would
     /// reissue numbers the table already holds.
