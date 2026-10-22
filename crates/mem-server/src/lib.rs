@@ -264,6 +264,11 @@ fn build(
             get(list_entity_edges),
         )
         .route("/graph/{scope}", get(fetch_graph))
+        // The graph view, served by the memory service itself: one origin, so
+        // the page's fetch is same-origin and no CORS is opened on a service
+        // that holds user memory (ADR-0007's ruling, ADR-0013 §8).
+        .route("/viz", get(viz_page))
+        .route("/viz/vendor/3d-force-graph.js", get(viz_vendor))
         .with_state(state))
 }
 
@@ -1102,9 +1107,10 @@ async fn ingest_facts(
     let mut graph = state.graph.lock().await;
     let mut answers = Vec::with_capacity(items.len());
     for item in items {
-        let landed = FactTuple::from_value(item)
-            .map_err(IngestError::from)
-            .and_then(|fact| graph.ingest(scope, &fact));
+        // `from_value` already answers the core's error, so there is nothing
+        // to convert: the tuple's decode failure and the ingest refusal travel
+        // to the caller through the same type.
+        let landed = FactTuple::from_value(item).and_then(|fact| graph.ingest(scope, &fact));
         answers.push(match landed {
             Ok(outcome) => serde_json::json!(IngestOutcomeDto::from(outcome)),
             Err(e) => serde_json::json!({
@@ -1570,6 +1576,32 @@ pub struct GraphDto {
 
 /// `GET /graph/{scope}` — one scope's graph for a renderer. An empty
 /// scope is a legal empty graph, never an error.
+/// The live graph page, embedded in the binary: the deployment has one artifact,
+/// so a page that must be served same-origin travels inside it.
+const VIZ_PAGE: &str = include_str!("../static/viz.html");
+
+/// The 3D force-graph library, embedded for the same reason (no CDN: this
+/// machine may have no network, and a viewer for user memory must not phone
+/// out). Vendored under `docs/vendor/`, the copy the demo page uses.
+const VIZ_VENDOR: &[u8] = include_bytes!("../../../docs/vendor/3d-force-graph.js");
+
+async fn viz_page() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        VIZ_PAGE,
+    )
+}
+
+async fn viz_vendor() -> impl IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/javascript; charset=utf-8",
+        )],
+        VIZ_VENDOR,
+    )
+}
+
 async fn fetch_graph(State(state): State<Arc<MemState>>, Path(scope): Path<u64>) -> Json<GraphDto> {
     let mut graph = state.graph.lock().await;
     let nodes: Vec<GraphNodeDto> = graph

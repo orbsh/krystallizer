@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>k10r · 事实图</title>
+<!--
+  The live graph view, served BY mem-server (same origin, ADR-0007's ruling: the
+  memory service opens no CORS, so the page cannot live on file://).
+
+  Three things this page exists for, all of them maintenance rather than
+  analysis: colour by COMMUNITY (the box the write path put a node in, ADR-0010
+  §6), cap what one scope draws (a big scope is not a picture), and click a node
+  to see the edges it actually carries.
+
+  It draws what GET /graph/{scope} answers and nothing else: nodes are entities,
+  links are facts. No layout is invented here -- the physics is the library's.
+-->
+<style>
+  :root { --bg:#0b1020; --panel:#121a30; --line:#243055; --text:#dbe4ff; --dim:#8b9ac4; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:radial-gradient(circle at 50% 30%,#16224a 0%,var(--bg) 70%); color:var(--text);
+    font:13px/1.5 -apple-system,"Segoe UI",system-ui,sans-serif; overflow:hidden; }
+  #graph { position:fixed; inset:0; }
+  .panel { position:fixed; background:rgba(18,26,48,.92); border:1px solid var(--line); border-radius:10px;
+    backdrop-filter:blur(6px); padding:10px 12px; }
+  #controls { top:12px; left:12px; width:260px; }
+  #controls h1 { margin:0 0 8px; font-size:13px; font-weight:600; letter-spacing:.04em; color:#a9bbf0; }
+  .row { display:flex; align-items:center; gap:6px; margin:6px 0; }
+  .row label { color:var(--dim); min-width:52px; }
+  input[type=number] { width:72px; background:#0d1428; color:var(--text); border:1px solid var(--line);
+    border-radius:6px; padding:3px 6px; }
+  button { background:#1d2a4d; color:var(--text); border:1px solid var(--line); border-radius:6px;
+    padding:4px 10px; cursor:pointer; }
+  button:hover { background:#26365f; }
+  .seg { display:flex; gap:0; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  .seg button { border:0; border-radius:0; flex:1; background:transparent; }
+  .seg button.on { background:#2b3d6b; color:#fff; }
+  #stats { color:var(--dim); margin-top:8px; font-variant-numeric:tabular-nums; }
+  #detail { top:12px; right:12px; width:300px; max-height:calc(100% - 24px); overflow:auto; display:none; }
+  #detail h2 { margin:0 0 6px; font-size:13px; word-break:break-all; }
+  #detail .meta { color:var(--dim); margin-bottom:8px; }
+  #detail ul { list-style:none; margin:0; padding:0; }
+  #detail li { padding:5px 0; border-top:1px solid var(--line); cursor:pointer; }
+  #detail li:hover { color:#fff; }
+  #detail .rel { color:#9db2ea; }
+  #detail .end { color:var(--text); }
+  #detail .w { color:var(--dim); font-variant-numeric:tabular-nums; }
+  #msg { position:fixed; left:50%; bottom:16px; transform:translateX(-50%); color:#ff9aa2; }
+  #legend { bottom:12px; left:12px; max-width:320px; display:none; }
+  #legend .item { display:flex; align-items:center; gap:6px; }
+  #legend .sw { width:9px; height:9px; border-radius:50%; }
+</style>
+</head>
+<body>
+<div id="graph"></div>
+
+<div class="panel" id="controls">
+  <h1>k10r · 事实图</h1>
+  <div class="row">
+    <label>scope</label>
+    <input id="scope" type="number" value="1" min="0">
+    <button id="load">载入</button>
+  </div>
+  <div class="row">
+    <label>上限</label>
+    <input id="cap" type="number" value="300" min="1" step="50">
+    <span style="color:var(--dim)">按度数取前 N</span>
+  </div>
+  <div class="row">
+    <label>着色</label>
+    <div class="seg" style="flex:1">
+      <button id="byCommunity" class="on">社区</button>
+      <button id="byKind">类型</button>
+    </div>
+  </div>
+  <div id="stats">—</div>
+</div>
+
+<div class="panel" id="detail"></div>
+<div class="panel" id="legend"></div>
+<div id="msg"></div>
+
+<script src="/viz/vendor/3d-force-graph.js"></script>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const msg = (t) => { $('msg').textContent = t || ''; };
+
+  // Palette from an integer (community id, kind hash): golden-angle hue, fixed
+  // saturation/lightness so no two boxes look alike and none of them shouts.
+  const hue = (n) => {
+    const h = (n * 137.508) % 360;
+    return `hsl(${h.toFixed(1)} 62% 62%)`;
+  };
+  const hash = (s) => {
+    let h = 2166136261;
+    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+    return Math.abs(h);
+  };
+  // A literal entity is a NUMBER, not a typed node: the type label is numeric
+  // (LITERAL_KIND), so the picture says so instead of colouring it like a class.
+  const isLiteral = (n) => n.literal_num !== null && n.literal_num !== undefined && n.kind === '';
+
+  let graphData = { nodes: [], links: [] };
+  let nodeById = new Map();
+  let degree = new Map();
+  let colourBy = 'community';
+  let selected = null, neighbours = new Set();
+
+  const nodeColour = (n) => {
+    if (colourBy === 'kind') {
+      if (isLiteral(n)) return '#94a3b8';
+      return hue(hash(n.kind || 'other'));
+    }
+    return hue(n.community_id === null || n.community_id === undefined ? 0 : n.community_id);
+  };
+  const nodeLabel = (n) => {
+    const parts = [n.name || `#${n.id}`];
+    if (n.literal_num !== null && n.literal_num !== undefined) parts.push(`字面量 ${n.literal_num}`);
+    else parts.push(`类型 ${n.kind || '（无）'}`);
+    parts.push(`社区 ${n.community_id ?? '—'}`);
+    parts.push(`度数 ${degree.get(n.id) ?? 0}`);
+    return parts.join(' · ');
+  };
+  const radius = (n) => 1.2 + Math.min(6, Math.sqrt(degree.get(n.id) || 1) * 0.9);
+  // The wire carries the weight as the SCALED integer the core stores
+  // (WEIGHT_SCALE 1000): a weight of 347 is 0.347, and showing "347" in a
+  // tooltip is how a viewer teaches its reader the wrong number.
+  const WEIGHT_SCALE = 1000;
+  const weight = (w) => ((w ?? 0) / WEIGHT_SCALE).toFixed(3);
+
+  const Graph = ForceGraph3D()($('graph'))
+    .backgroundColor('rgba(0,0,0,0)')
+    .showNavInfo(false)
+    .nodeRelSize(1)
+    .nodeVal(n => Math.pow(radius(n), 3))
+    .nodeColor(n => (selected && n.id !== selected.id && !neighbours.has(n.id)) ? '#33415f' : nodeColour(n))
+    .nodeLabel(nodeLabel)
+    .linkColor(l => (selected && (l.source.id === selected.id || l.target.id === selected.id))
+      ? '#ffd479' : '#3a4a72')
+    .linkWidth(l => (selected && (l.source.id === selected.id || l.target.id === selected.id)) ? 1.6 : 0.4)
+    .linkDirectionalArrowLength(3)
+    .linkDirectionalArrowRelPos(1)
+    .linkLabel(l => `${l.kind} · w${weight(l.weight)}`)
+    .onNodeClick(selectNode)
+    .onBackgroundClick(() => selectNode(null));
+
+  function recount() {
+    degree = new Map();
+    graphData.nodes.forEach(n => degree.set(n.id, 0));
+    graphData.links.forEach(l => {
+      const s = l.source.id ?? l.source, t = l.target.id ?? l.target;
+      if (degree.has(s)) degree.set(s, degree.get(s) + 1);
+      if (degree.has(t)) degree.set(t, degree.get(t) + 1);
+    });
+  }
+
+  function selectNode(node) {
+    selected = node;
+    neighbours = new Set();
+    if (node) {
+      graphData.links.forEach(l => {
+        const s = l.source.id ?? l.source, t = l.target.id ?? l.target;
+        if (s === node.id) neighbours.add(t);
+        if (t === node.id) neighbours.add(s);
+      });
+    }
+    Graph.nodeColor(Graph.nodeColor());
+    showDetail(node);
+  }
+
+  function showDetail(node) {
+    const box = $('detail');
+    if (!node) { box.style.display = 'none'; return; }
+    const incident = graphData.links.filter(l =>
+      (l.source.id ?? l.source) === node.id || (l.target.id ?? l.target) === node.id);
+    const head = document.createElement('div');
+    head.innerHTML = '';
+    const h = document.createElement('h2');
+    h.textContent = node.name || `#${node.id}`;
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = `${isLiteral(node) ? '字面量 ' + node.literal_num : '类型 ' + (node.kind || '（无）')}`
+      + ` · 社区 ${node.community_id ?? '—'} · ${incident.length} 条边`;
+    const ul = document.createElement('ul');
+    incident
+      .map(l => {
+        const out = (l.source.id ?? l.source) === node.id;
+        return { l, out };
+      })
+      .sort((a, b) => (b.l.weight ?? 0) - (a.l.weight ?? 0))
+      .forEach(({ l, out }) => {
+        const otherId = out ? (l.target.id ?? l.target) : (l.source.id ?? l.source);
+        const other = nodeById.get(otherId);
+        const li = document.createElement('li');
+        const rel = document.createElement('span');
+        rel.className = 'rel';
+        rel.textContent = out ? `${l.kind} → ` : `← ${l.kind} `;
+        const end = document.createElement('span');
+        end.className = 'end';
+        end.textContent = other ? (other.name || `#${otherId}`) : `#${otherId}`;
+        const w = document.createElement('span');
+        w.className = 'w';
+        w.textContent = `  w${weight(l.weight)}`;
+        li.append(rel, end, w);
+        // Walking the graph from inside the panel: the edge list is the
+        // navigation, not an appendix to it.
+        li.onclick = () => { if (other) selectNode(other); };
+        ul.appendChild(li);
+      });
+    box.replaceChildren(h, meta, ul);
+    box.style.display = 'block';
+  }
+
+  function applyCap(allNodes, allLinks, cap) {
+    const live = new Map();
+    allLinks.forEach(l => {
+      const s = l.source, t = l.target;
+      live.set(s, (live.get(s) || 0) + 1);
+      live.set(t, (live.get(t) || 0) + 1);
+    });
+    const kept = [...allNodes]
+      .sort((a, b) => (live.get(b.id) || 0) - (live.get(a.id) || 0) || (a.id - b.id))
+      .slice(0, cap);
+    const keep = new Set(kept.map(n => n.id));
+    const nodes = kept.map(n => ({ ...n }));
+    nodeById = new Map(nodes.map(n => [n.id, n]));
+    // Resolve endpoints BEFORE handing the array to the engine: a link whose
+    // endpoints are still strings makes the physics tick read undefined
+    // coordinates and throws inside the animation loop, which freezes the
+    // canvas (the library only re-arms requestAnimationFrame at the end).
+    const links = [];
+    let dropped = 0;
+    allLinks.forEach(l => {
+      const s = keep.has(l.source) ? nodeById.get(l.source) : null;
+      const t = keep.has(l.target) ? nodeById.get(l.target) : null;
+      if (!s || !t) { dropped++; return; }
+      links.push({ ...l, source: s, target: t });
+    });
+    return { nodes, links, dropped, total: allNodes.length };
+  }
+
+  async function load() {
+    const scope = Number($('scope').value);
+    const cap = Math.max(1, Number($('cap').value) || 1);
+    msg('');
+    try {
+      const response = await fetch(`/graph/${scope}`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      const { nodes, links, dropped, total } = applyCap(data.nodes || [], data.links || [], cap);
+      graphData = { nodes, links };
+      selected = null; neighbours = new Set();
+      $('detail').style.display = 'none';
+      Graph.graphData(graphData);
+      recount();
+      Graph.nodeColor(Graph.nodeColor());
+      renderLegend();
+      $('stats').textContent = `节点 ${nodes.length}/${total} · 边 ${links.length}`
+        + (dropped ? ` · 上限外 ${dropped} 条边` : '');
+    } catch (e) {
+      msg(`读 /graph/${scope} 失败：${e.message}`);
+    }
+  }
+
+  function renderLegend() {
+    const box = $('legend');
+    if (colourBy === 'kind') {
+      const kinds = new Map();
+      graphData.nodes.forEach(n => {
+        const key = isLiteral(n) ? '（字面量）' : (n.kind || '（无）');
+        kinds.set(key, (kinds.get(key) || 0) + 1);
+      });
+      const items = [...kinds.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+      box.replaceChildren(...items.map(([k, n]) => {
+        const row = document.createElement('div');
+        row.className = 'item';
+        const sw = document.createElement('span');
+        sw.className = 'sw';
+        sw.style.background = k === '（字面量）' ? '#94a3b8' : hue(hash(k));
+        const tx = document.createElement('span');
+        tx.textContent = `${k} · ${n}`;
+        row.append(sw, tx);
+        return row;
+      }));
+      box.style.display = items.length ? 'block' : 'none';
+    } else {
+      const communities = new Map();
+      graphData.nodes.forEach(n => {
+        const key = n.community_id ?? -1;
+        communities.set(key, (communities.get(key) || 0) + 1);
+      });
+      const items = [...communities.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+      box.replaceChildren(...items.map(([k, n]) => {
+        const row = document.createElement('div');
+        row.className = 'item';
+        const sw = document.createElement('span');
+        sw.className = 'sw';
+        sw.style.background = hue(k < 0 ? 0 : k);
+        const tx = document.createElement('span');
+        tx.textContent = `${k < 0 ? '未分箱' : '社区 ' + k} · ${n}`;
+        row.append(sw, tx);
+        return row;
+      }));
+      box.style.display = items.length ? 'block' : 'none';
+    }
+  }
+
+  $('load').onclick = load;
+  $('cap').onchange = load;
+  $('byCommunity').onclick = () => {
+    colourBy = 'community';
+    $('byCommunity').classList.add('on'); $('byKind').classList.remove('on');
+    Graph.nodeColor(Graph.nodeColor()); renderLegend();
+  };
+  $('byKind').onclick = () => {
+    colourBy = 'kind';
+    $('byKind').classList.add('on'); $('byCommunity').classList.remove('on');
+    Graph.nodeColor(Graph.nodeColor()); renderLegend();
+  };
+  window.addEventListener('resize', () => Graph.width(window.innerWidth).height(window.innerHeight));
+  load();
+</script>
+</body>
+</html>

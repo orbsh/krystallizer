@@ -493,15 +493,28 @@ Deferred gates:
   mechanism. Nodes carry id / name / kind / literal_num / community_id; links carry
   source / target / kind / since / confidence / weight — the shape
   3d-force-graph consumes, and the scope prefix bounds the scan, so the
-  demo page reads the real graph instead of hand-written packets. Still
-  open: (a) whole-table vs paged — one scope is read whole, paging waits
-  for a corpus that needs it; (b) RULED 2026-10-17: the page is served
-  FROM mem-server, same origin — no CORS is opened on the memory service
-  (it holds user memory; letting `file://` sandboxes read it is the wrong
-  trade) and the page's fetch stays same-origin; (c) cluster coloring — the
-  node now carries `community_id` (ADR-0010 §6), so the colour is available;
-  `docs/viz-style.js` still colours by kind, which is the demo's own open
-  slice rather than a missing field.
+  demo page reads the real graph instead of hand-written packets.
+  **LANDED 2026-10-22 — the live view, served by the service itself.** `/viz`
+  (`crates/mem-server/static/viz.html`, embedded with the vendored
+  3d-force-graph, so no CDN and no second artifact) draws `GET /graph/{scope}`
+  same-origin as (b) ruled, and closes the three slices that were open:
+  (c) colouring by `community_id` (default; a golden-angle hue per box, with a
+  legend by box size) and by entity kind on a toggle, with the literal nodes
+  drawn apart from the typed ones because a literal is a NUMBER, not a class;
+  the cap (top-N by degree, default 300) so one scope is a picture rather than a
+  hairball — the nodes outside it and the edges they carried are REPORTED, not
+  silently dropped; and click-a-node, which fills a side panel with that node's
+  incident edges (predicate, far-end NAME, weight) and dims everything not
+  adjacent — the edge list is the navigation, so following one moves the
+  selection. Still open: (a) whole-table vs paged — the endpoint reads a scope
+  whole, so the cap is a VIEW limit, not a read limit; paging waits for a corpus
+  that needs it.
+  Verified by driving a real browser over CDP against a real store: counts, the
+  detail panel's edge list, following an edge, the cap, and the colour toggle
+  (`tests/viz_surface.rs` holds the served-shape half of it). `docs/kg-demo-3d.html`
+  stays as the hand-fed design artifact (the physics pitfalls it documents are
+  still the reason the live page resolves endpoints before handing the array to
+  the engine); `docs/viz-style.js` remains that demo's own palette.
 - Boot from the config file LANDED 2026-10-21: the service's parameters are ONE
   file, `krystallizer.kdl`, read from the directory of the BINARY (canonicalized, so
   a supervisor's symlink still finds it) unless `--config` names another; `--path` is
