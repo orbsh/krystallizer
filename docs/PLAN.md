@@ -434,6 +434,28 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   the next code id / edge id continue past the restored ones; a non-bundle body and
   an empty body are refused), clippy 0. Readers verified out of band: DuckDB
   `iceberg_scan` and pyiceberg both open a table built this way.
+- [x] Phase 4.8 — The knowledge pipeline's pilot: the repo's own docs into the graph.
+  `scripts/kg_convert.py` turns a markdown tree into fact tuples and writes them
+  through the plural door, no model in the loop: every document is a node, every
+  heading is a node, and the edges it emits are the ones the text PROVES —
+  `SECTION_OF`, `CITES` (one document naming another by ADR number or path, and
+  only ids the tree actually holds, so a dangling reference is a report line
+  rather than a ghost node), `MENTIONS_CRATE`, `TWIN_OF` (the two renditions of a
+  bilingual document). 32 files → 226 sections → 279 facts, 0 refused; 264 nodes.
+  Three measurements this pilot is for, each of which changed the script:
+  (1) **retrieval is per LANGUAGE** — a Chinese query reaches a Chinese node at
+  0.62 and an English one at 0.49, so both renditions are ingested and the pair
+  is joined by `TWIN_OF` instead of pretending one text serves both readers;
+  (2) **a heading is not an identity** — "Context" appears in ten ADRs, and the
+  shared node made every query land on the same word, so a section's value
+  carries its document (`… (0013-bulk-export)`) while staying readable;
+  (3) **the ladder works on a real corpus** — `search` puts ADR-0013 at 0.727 for
+  "how is a backup bundle read by another tool", and `recall` answers with that
+  document's community (its 8 sections and their `SECTION_OF` edges).
+  Not done here, by design: atomic claims from prose. That pass is a model's job
+  and it runs ON this skeleton — every claim it produces gets a section to live
+  in, which is what makes its output checkable instead of a pile of untethered
+  triples. Next: run that pass over one ADR, then over the skills/wiki corpus.
 - [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), SKILL topological four-part nodes, Aura Actor nodes. (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.) ADR-0010 takes the incremental LOCAL form of community detection onto the write side and leaves OPEN whether that promotes a slice of Phase 5 ahead of Phase 3/4 — an open ruling, not settled.
 
 Deferred gates:
