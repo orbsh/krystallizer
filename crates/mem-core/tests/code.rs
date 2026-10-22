@@ -59,7 +59,6 @@ fn put_assigns_ids_and_get_round_trips_the_row() {
     assert!(store.get(3).is_none(), "unknown id = absent, not an error");
 }
 
-
 /// Ids are recovered from storage: a fresh process must not reuse an id
 /// (that would silently overwrite stored code).
 #[test]

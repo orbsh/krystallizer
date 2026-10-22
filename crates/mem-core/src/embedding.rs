@@ -60,7 +60,11 @@ pub enum EmbedError {
     /// correctness failure the store cannot survive, so it is refused here —
     /// never truncated, never zero-padded.
     #[error("embedding service {url} answered width {got}, the config declares {want}")]
-    Width { url: String, got: usize, want: usize },
+    Width {
+        url: String,
+        got: usize,
+        want: usize,
+    },
     /// An empty vector, or one whose norm is zero: nothing can rank against it.
     #[error("embedding from {origin} is degenerate (zero length)")]
     Degenerate { origin: String },

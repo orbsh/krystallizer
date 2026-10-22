@@ -86,7 +86,6 @@ async fn an_unknown_id_is_a_404() {
     assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
 }
 
-
 /// Both table groups share ONE database (one Fjall handle, one lock file):
 /// a code write must not appear in the channel log, and a message must not
 /// appear in the pool. This is what the 2-byte ns buys.
@@ -130,17 +129,9 @@ async fn code_and_channel_share_one_database_without_seeing_each_other() {
 
     // The message must not leak into the code table: the one row written
     // there is still the one the door stored, and nothing sits beside it.
-    let row = client
-        .get(format!("{base}/code/1"))
-        .send()
-        .await
-        .unwrap();
+    let row = client.get(format!("{base}/code/1")).send().await.unwrap();
     assert_eq!(row.status(), reqwest::StatusCode::OK);
-    let ghost = client
-        .get(format!("{base}/code/2"))
-        .send()
-        .await
-        .unwrap();
+    let ghost = client.get(format!("{base}/code/2")).send().await.unwrap();
     assert_eq!(
         ghost.status(),
         reqwest::StatusCode::NOT_FOUND,

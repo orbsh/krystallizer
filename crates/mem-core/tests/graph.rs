@@ -89,7 +89,7 @@ fn edge_payload_layout_is_locked() {
     assert_eq!(
         payload.len(),
         3 + 8 + 8 + 1 + 4 + 4 + 4 + 4 + 8 + 8   // header + the hot fields
-            + 1 + 1 + 4 + 8 * 4,                // cold frame: tag + len + count + slots
+            + 1 + 1 + 4 + 8 * 4, // cold frame: tag + len + count + slots
         "header + the hot fields + the recency ring"
     );
     assert_eq!(payload[0], 3, "layout version");
@@ -108,7 +108,11 @@ fn edge_payload_layout_is_locked() {
     assert_eq!(payload[52], 9, "cold tag = `recent`'s declaration index");
     assert_eq!(payload[53], 36, "frame payload = count + 8 slots");
     assert_eq!(&payload[54..58], &8u32.to_be_bytes(), "slot count");
-    assert_eq!(&payload[58..62], &11u32.to_le_bytes(), "first (oldest) slot");
+    assert_eq!(
+        &payload[58..62],
+        &11u32.to_le_bytes(),
+        "first (oldest) slot"
+    );
     assert_eq!(&payload[86..90], &88u32.to_le_bytes(), "last (newest) slot");
     assert_eq!(Facts::decode_payload(&payload), edge);
 }
@@ -132,13 +136,19 @@ fn the_recent_ring_keeps_the_last_eight_accesses_in_order() {
         edge = edge.touched(Touch::Read, base_ms + d * day * 1000);
     }
     let expected: Vec<u32> = (3..=10).map(|d| (d * day) as u32).collect();
-    assert_eq!(edge.recent.elems, expected, "oldest first, the two oldest dropped");
+    assert_eq!(
+        edge.recent.elems, expected,
+        "oldest first, the two oldest dropped"
+    );
     assert_eq!(
         edge.last_access(),
         base_ms + 10 * day * 1000,
         "the newest slot IS the last access"
     );
-    assert_eq!(edge.read_count, 10, "the counters still summarize the whole history");
+    assert_eq!(
+        edge.read_count, 10,
+        "the counters still summarize the whole history"
+    );
 }
 
 /// A payload written before the ring existed (layout v2) decodes with the ring
@@ -146,13 +156,20 @@ fn the_recent_ring_keeps_the_last_eight_accesses_in_order() {
 /// keeps okm's append-only evolution free of a store rebuild.
 #[test]
 fn a_pre_ring_payload_decodes_with_a_padded_ring() {
-    let edge = Facts { since: 5, ..Default::default() };
+    let edge = Facts {
+        since: 5,
+        ..Default::default()
+    };
     let mut v2 = edge.encode_payload();
     v2.truncate(52); // header + hot fields: exactly the v2 shape
     v2[0] = 2;
     let back = Facts::decode_payload(&v2);
     assert_eq!(back.since, 5);
-    assert_eq!(back.recent.elems, vec![0; RECENT_SLOTS], "absent frame → padded default");
+    assert_eq!(
+        back.recent.elems,
+        vec![0; RECENT_SLOTS],
+        "absent frame → padded default"
+    );
     assert_eq!(
         Facts::decode_payload(&back.encode_payload()),
         back,

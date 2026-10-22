@@ -217,11 +217,7 @@ fn the_read_at_stamps_advances_and_never_rewinds() {
         None,
         "another member's cursor is its own"
     );
-    assert_eq!(
-        store.read_at(2, DEFAULT_MEMBER),
-        None,
-        "another channel's"
-    );
+    assert_eq!(store.read_at(2, DEFAULT_MEMBER), None, "another channel's");
 }
 
 /// A compression OPENS a node at the pointer k10r served and COMPLETES it with

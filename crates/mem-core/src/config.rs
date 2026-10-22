@@ -299,9 +299,7 @@ fn split_tag<'a, S: ErrorSpan>(
     let value = tag.arguments.first().ok_or_else(|| {
         DecodeError::missing(
             tag,
-            format!(
-                "`{MODE_NODE}` needs a value: \"{MODE_LOCAL}\" or \"{MODE_REMOTE}\""
-            ),
+            format!("`{MODE_NODE}` needs a value: \"{MODE_LOCAL}\" or \"{MODE_REMOTE}\""),
         )
     })?;
     let text = String::decode(value, ctx)?;
@@ -668,7 +666,10 @@ logs {
         );
 
         // A stated ceiling is used as written.
-        let timed = open.replace("    dimensions 512", "    timeout-ms 2500\n    dimensions 512");
+        let timed = open.replace(
+            "    dimensions 512",
+            "    timeout-ms 2500\n    dimensions 512",
+        );
         let cfg = parse(&with_embedding(&timed)).unwrap();
         assert!(matches!(
             cfg.embedding.engine().unwrap(),

@@ -15,7 +15,7 @@
 //! Skips (prints why) when the machine has no embedding artifact, so the
 //! default gate stays runnable anywhere.
 
-use mem_core::graph::{GraphStore, FactTuple};
+use mem_core::graph::{FactTuple, GraphStore};
 use mem_core::{KrystallizerConfig, LANDING_FLOOR};
 use std::path::Path;
 use std::sync::Arc;
@@ -61,8 +61,7 @@ const QUERIES: &[(&str, &str)] = &[
 const OFF_CORPUS: &str = "今天北京天气怎么样，要不要带伞";
 
 fn local_embedder() -> Option<Arc<dyn mem_core::Embedder>> {
-    let cfg_path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/krystallizer.kdl");
+    let cfg_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/krystallizer.kdl");
     let cfg = KrystallizerConfig::load(&cfg_path).ok()?;
     let dir = cfg.embedding.resolved_model_dir().ok()?;
     if !dir.join("model.safetensors").exists() {
@@ -138,8 +137,14 @@ fn recall_gate_on_a_fixed_query_set() {
         "a true hit scored {min_true_score:.3}, below the floor {LANDING_FLOOR} — \
          the floor is cutting real memories"
     );
-    assert!(p1 >= 0.85, "precision@1 fell to {p1:.3} (baseline 2026-10-19: 0.929)");
-    assert!(p3 >= 0.95, "precision@3 fell to {p3:.3} (baseline 2026-10-19: 1.000)");
+    assert!(
+        p1 >= 0.85,
+        "precision@1 fell to {p1:.3} (baseline 2026-10-19: 0.929)"
+    );
+    assert!(
+        p3 >= 0.95,
+        "precision@3 fell to {p3:.3} (baseline 2026-10-19: 1.000)"
+    );
 
     // The legal "nothing landed": an off-corpus query lands nothing.
     let nothing = graph.retrieve(1, OFF_CORPUS, 5).expect("retrieval runs");
