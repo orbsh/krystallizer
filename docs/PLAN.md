@@ -452,10 +452,21 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   (3) **the ladder works on a real corpus** — `search` puts ADR-0013 at 0.727 for
   "how is a backup bundle read by another tool", and `recall` answers with that
   document's community (its 8 sections and their `SECTION_OF` edges).
-  Not done here, by design: atomic claims from prose. That pass is a model's job
-  and it runs ON this skeleton — every claim it produces gets a section to live
-  in, which is what makes its output checkable instead of a pile of untethered
-  triples. Next: run that pass over one ADR, then over the skills/wiki corpus.
+  **Claims LANDED for ADR-0013 (2026-10-22):** `docs/kg/claims/0013-bulk-export.json`
+  holds 33 atomic assertions, one per fact, in controlled language — one object
+  keeps one name for the whole set, one claim states one thing, and each claim
+  names the SECTION it belongs to (a heading the file lacks is a hard error, so
+  drift is caught at conversion, never stored as a floating triple). `--claims`
+  emits `section -[STATES]-> claim`, `claim -[CONCERNS]-> term`, and
+  `claim -[REJECTS]-> term`; the last one is the part prose buries — "what did we
+  decide AGAINST" is now a query with an answer. Full corpus: 32 files, 226
+  sections, 357 facts, 338 nodes, 0 refused.
+  Retrieval on the claims: "does restore delete rows" lands "Restore merges by key
+  and never deletes." at 0.684, and the failure mode is visible too — a paraphrase
+  with little lexical overlap ("what did we decide against for Delta Lake") misses,
+  because the embedder's spread is 0.55–0.73 and wording dominates. Recorded, not
+  fixed: the lever would be a query-expansion pass, not longer claim text.
+  Next: the same pass over the remaining ADRs, then the skills/wiki corpus.
 - [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), SKILL topological four-part nodes, Aura Actor nodes. (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.) ADR-0010 takes the incremental LOCAL form of community detection onto the write side and leaves OPEN whether that promotes a slice of Phase 5 ahead of Phase 3/4 — an open ruling, not settled.
 
 Deferred gates:

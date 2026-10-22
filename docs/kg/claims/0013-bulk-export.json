@@ -1,0 +1,176 @@
+{
+  "doc": "0013-bulk-export",
+  "note": "Atomic claims of ADR-0013, one assertion each, in controlled language: one object keeps one name for the whole set (no synonyms), a claim states one thing, and every claim names the section it belongs to. `rejects` records what the claim rules OUT -- the graph needs to answer 'what did we decide against', which prose buries.",
+  "claims": [
+    {
+      "section": "1. Context",
+      "text": "A bulk read stays on the HTTP boundary.",
+      "concerns": ["bulk read"]
+    },
+    {
+      "section": "1. Context",
+      "text": "The open question is the backup format, not the transport.",
+      "concerns": ["backup format"]
+    },
+    {
+      "section": "1. Context",
+      "text": "An invented dump format drifts from the row declaration.",
+      "concerns": ["row declaration"],
+      "rejects": ["invented dump format"]
+    },
+    {
+      "section": "2. Decision: one bundle, many tables, warehouse metadata",
+      "text": "The backup is one tar.zst file.",
+      "concerns": ["backup bundle", "tar.zst"]
+    },
+    {
+      "section": "2. Decision: one bundle, many tables, warehouse metadata",
+      "text": "Every table is a directory of Parquet files.",
+      "concerns": ["table directory", "parquet"]
+    },
+    {
+      "section": "2. Decision: one bundle, many tables, warehouse metadata",
+      "text": "The catalog sits at the bundle root.",
+      "concerns": ["catalog"]
+    },
+    {
+      "section": "2. Decision: one bundle, many tables, warehouse metadata",
+      "text": "The export writes every table under one lock pass.",
+      "concerns": ["lock"]
+    },
+    {
+      "section": "2. Decision: one bundle, many tables, warehouse metadata",
+      "text": "The service never serves a half bundle.",
+      "concerns": ["bundle completeness"]
+    },
+    {
+      "section": "2. Decision: one bundle, many tables, warehouse metadata",
+      "text": "The bundle addresses a table by name, not by ns.",
+      "concerns": ["table name"],
+      "rejects": ["ns as address"]
+    },
+    {
+      "section": "2. Decision: one bundle, many tables, warehouse metadata",
+      "text": "A Vocab field exports as label text.",
+      "concerns": ["vocab label"]
+    },
+    {
+      "section": "2. Decision: one bundle, many tables, warehouse metadata",
+      "text": "The open half of a row travels as one variant column.",
+      "concerns": ["variant column"]
+    },
+    {
+      "section": "2. Decision: one bundle, many tables, warehouse metadata",
+      "text": "An empty table exports an empty Parquet file.",
+      "concerns": ["empty table"]
+    },
+    {
+      "section": "2. Decision: one bundle, many tables, warehouse metadata",
+      "text": "One wide Parquet file per backup is impossible.",
+      "concerns": ["parquet schema"],
+      "rejects": ["one wide parquet"]
+    },
+    {
+      "section": "2. Decision: one bundle, many tables, warehouse metadata",
+      "text": "The metadata records every path relative to the table directory.",
+      "concerns": ["relative path", "backup portability"]
+    },
+    {
+      "section": "2. Decision: one bundle, many tables, warehouse metadata",
+      "text": "DuckDB opens a moved table with allow_moved_paths.",
+      "concerns": ["duckdb", "backup portability"]
+    },
+    {
+      "section": "3. Why the format is not k10r's",
+      "text": "The file must open in a tool that did not write it.",
+      "concerns": ["external reader"]
+    },
+    {
+      "section": "4. The fact table is a table, and the first answer here was wrong",
+      "text": "Edges are exported as an edge table.",
+      "concerns": ["edge table"]
+    },
+    {
+      "section": "4. The fact table is a table, and the first answer here was wrong",
+      "text": "An edge endpoint is a table name and a primary key.",
+      "concerns": ["edge endpoint"]
+    },
+    {
+      "section": "4. The fact table is a table, and the first answer here was wrong",
+      "text": "The import keeps the edge ids the file carries.",
+      "concerns": ["edge id"]
+    },
+    {
+      "section": "5. Reduces are their own derived table",
+      "text": "A reduce table holds one row per reduce entry.",
+      "concerns": ["reduce table"]
+    },
+    {
+      "section": "5. Reduces are their own derived table",
+      "text": "A restore never lowers a watermark.",
+      "concerns": ["watermark"],
+      "rejects": ["lowering a watermark"]
+    },
+    {
+      "section": "6. Restore: merge by key, and the issuers follow the rows",
+      "text": "Restore merges by key and never deletes.",
+      "concerns": ["restore", "merge"],
+      "rejects": ["a wiping restore"]
+    },
+    {
+      "section": "6. Restore: merge by key, and the issuers follow the rows",
+      "text": "Restore recomputes every issuer from the store.",
+      "concerns": ["issuer"]
+    },
+    {
+      "section": "6. Restore: merge by key, and the issuers follow the rows",
+      "text": "A failed import keeps the rows it already wrote.",
+      "concerns": ["partial import"]
+    },
+    {
+      "section": "6. Restore: merge by key, and the issuers follow the rows",
+      "text": "The community sequence rides in the bundle.",
+      "concerns": ["community sequence"]
+    },
+    {
+      "section": "6. Restore: merge by key, and the issuers follow the rows",
+      "text": "The import interns a Vocab label the destination lacks.",
+      "concerns": ["vocab label"]
+    },
+    {
+      "section": "7. Why Iceberg's metadata and not Delta Lake's",
+      "text": "Iceberg needs a manifest and column field ids.",
+      "concerns": ["iceberg metadata", "field id"]
+    },
+    {
+      "section": "7. Why Iceberg's metadata and not Delta Lake's",
+      "text": "Delta Lake needs three JSON lines and no Avro.",
+      "concerns": ["delta lake"]
+    },
+    {
+      "section": "7. Why Iceberg's metadata and not Delta Lake's",
+      "text": "The Iceberg writer is written and reader-verified.",
+      "concerns": ["iceberg writer"]
+    },
+    {
+      "section": "7. Why Iceberg's metadata and not Delta Lake's",
+      "text": "A backup format is a long-lived promise.",
+      "concerns": ["format longevity"]
+    },
+    {
+      "section": "7. Why Iceberg's metadata and not Delta Lake's",
+      "text": "Neither format gives a warehouse without a catalog service.",
+      "concerns": ["catalog service"]
+    },
+    {
+      "section": "8. Consequences",
+      "text": "The archive code belongs to mem-core.",
+      "concerns": ["mem-core", "tar.zst"]
+    },
+    {
+      "section": "8. Consequences",
+      "text": "okm writes metadata beside files and knows no archives.",
+      "concerns": ["okm"]
+    }
+  ]
+}

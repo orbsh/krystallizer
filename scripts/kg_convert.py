@@ -17,6 +17,7 @@ text, so "what does the backup section say" is a search that can actually land.
 Usage:
   scripts/kg_convert.py --base http://127.0.0.1:7760 --scope 1 \
       docs/PLAN.md docs/MODELING.md docs/SEAM.md docs/PROMPTS.md docs/adr/[0-9]*.md
+  scripts/kg_convert.py ... --claims docs/kg/claims/0013-bulk-export.json
   scripts/kg_convert.py ... --twins zh     # ingest the Chinese twins instead
   scripts/kg_convert.py ... --dry-run      # print the tuples, send nothing
 
@@ -81,7 +82,7 @@ def read_doc(path: Path):
     return title, sections, cites, crates
 
 
-def build(paths, known_slugs):
+def build(paths, known_slugs, claims=()):
     """Every tuple this docs tree proves, in ingest order: nodes, then edges."""
     docs = {}
     for path in paths:
@@ -172,6 +173,52 @@ def build(paths, known_slugs):
                     {},
                 )
             )
+    # 4. Claims: one assertion per fact, attached to the section it belongs to.
+    #    A claim with no home section is an ERROR, not a warning: a floating
+    #    triple is exactly what this pipeline exists to prevent.
+    for path in claims:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        slug = payload.get("doc")
+        if slug not in docs:
+            raise SystemExit(f"{path}: unknown document `{slug}`")
+        headings = {text for text, _, _ in docs[slug]["sections"]}
+        claim_rows = payload.get("claims", [])
+        for index, claim in enumerate(claim_rows):
+            text = claim["text"]
+            heading = claim["section"]
+            if heading not in headings:
+                raise SystemExit(
+                    f"{path}: claim {index} names section `{heading}`, which "
+                    f"`{slug}` does not have (headings: {sorted(headings)})"
+                )
+            facts.append(
+                tuple_(
+                    f"{heading} ({slug})",
+                    "section",
+                    {"doc": slug},
+                    "STATES",
+                    {"index": index},
+                    text,
+                    "claim",
+                    {"doc": slug, "index": index},
+                )
+            )
+            for predicate in ("concerns", "rejects", "requires"):
+                for term in claim.get(predicate, []):
+                    facts.append(
+                        tuple_(
+                            text,
+                            "claim",
+                            {"doc": slug},
+                            predicate.upper(),
+                            {},
+                            term,
+                            "term",
+                            {},
+                        )
+                    )
+        print(f"  claims: {len(claim_rows)} from {path}")
+
     return facts, docs
 
 
@@ -194,6 +241,14 @@ def main() -> int:
     parser.add_argument("--scope", type=int, default=1)
     parser.add_argument("--batch", type=int, default=200)
     parser.add_argument(
+        "--claims",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help="claim file (one document each) to attach to the sections it names; "
+        "repeat the flag for more than one",
+    )
+    parser.add_argument(
         "--twins",
         choices=["both", "none", "zh"],
         default="both",
@@ -214,7 +269,7 @@ def main() -> int:
         return 2
 
     known = {slug_of(p) for p in paths}
-    facts, docs = build(paths, known)
+    facts, docs = build(paths, known, args.claims)
     nodes = {slug: doc["title"] for slug, doc in docs.items()}
     sections = sum(len(doc["sections"]) for doc in docs.values())
     print(
