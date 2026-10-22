@@ -50,6 +50,15 @@ krystallizer/
   (tar + zstd crates), never in okm: okm's metadata writer takes a DIRECTORY and
   data files and knows nothing about archives. Which means a container or codec
   change reaches one file, and a schema change reaches the other.
+- Every path the metadata records is RELATIVE to the table's own directory
+  (`data/<table>.parquet`, `metadata/<uuid>-m0.avro`), and the table's `location` is
+  `.`. That is the difference between a backup and a directory that only works where
+  it was written: the export runs in a temp directory and the file is opened after
+  being moved, often on another machine. So a reader that walks the metadata has to
+  be told the table moved — DuckDB wants
+  `iceberg_scan('<dir>', allow_moved_paths = true)` — and `tests/iceberg_readable.rs`
+  holds exactly that: a bundle exported by one service, unpacked elsewhere, and read
+  by a tool that never saw k10r (per-table counts, and the entity table's labels).
 - The ADDRESS inside the bundle is the table's NAME, not its ns. The ns is the
   store's own addressing (ADR-0010 §1's vocabulary): it identifies a table *inside*
   this store and means nothing to whoever opens the file. A name is declared where

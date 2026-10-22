@@ -41,6 +41,13 @@ krystallizer/
 - 容器是 `tar.zst` 不是 zip：这个文件是在 shell 里被处理的（`tar -xf`、`tar -tvf`）。压缩与
   容器住在 `mem-core::bundle`（tar + zstd 两个 crate），**不进 okm**：okm 的元数据写出只认
   一个目录和几个数据文件，不知道归档的存在。于是换容器/编码只动一处，改声明只动另一处。
+- 元数据里记的每个路径都是相对表目录的（`data/<table>.parquet`、
+  `metadata/<uuid>-m0.avro`），表的 `location` 是 `.`。这就是「备份」与「只在原地能用的
+  目录」的区别：导出跑在临时目录里，文件是搬走之后（常常在另一台机器上）才被打开的。所以
+  按元数据走路径的读取端必须被告知表搬过家——DuckDB 要
+  `iceberg_scan('<dir>', allow_moved_paths = true)`——而 `tests/iceberg_readable.rs` 锁的正是
+  这件事：一个服务导出的包裹、在别处解开、由一个从没见过 k10r 的工具读（逐表行数，以及实体表
+  里的标签）。
 - 包裹里的**地址是表名**，不是 ns。ns 是存储自己的寻址（ADR-0010 §1 的 ns 词汇）：它在**库内**
   标识一张表，对打开文件的人没有意义。名字声明在 ns 声明的地方——okm `#[ok_name]` →
   `Document::TABLE_NAME`，与 `#[ok_ns]` 同处——所以两者不会漂，改名不动任何已存字节。
