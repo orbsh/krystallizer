@@ -137,6 +137,11 @@ only complex ones (PageRank, community detection) earn a dependency.
   Weight-ordered ranking is ADR-0005's. `/search` is the ANALYSIS door (the
   landing alone, for inspection); `/recall` is the CORE door (the memory
   answer) — ADR-0007 owns the two-class split.
+  **Revision 2026-10-22:** both query doors are `POST` and take an ARRAY of
+  queries, answered as an array in the same order (`POST /graph/{scope}/search`,
+  `POST /memories/{scope}/recall`); the single-query GET forms are withdrawn.
+  A model asks several things about one turn, and the write door already took an
+  array — so the read side matches it (ADR-0001, "the doors are plural").
 - **The three costs, and whose call the shape is (2026-10-19).** A scan strategy
   pays in compute, memory or I/O, and the choice is a MEASURED one: an in-memory
   table pays memory (~2 KB/vector) and scans in O(N·d) — at 10⁴ rows that is

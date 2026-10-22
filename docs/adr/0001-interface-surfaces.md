@@ -103,6 +103,27 @@ Three kinds:
   graph facts about a member (a member node plus its edges: who a person in a
   channel is), a different content kind.
 
+### The doors are plural, in both directions (2026-10-22)
+
+The active surface is called by a MODEL, and a model asks several things at once:
+eight facts in one paste, five queries about one turn. So the two text doors take
+ARRAYS and answer in the same order — `POST /memories/{scope}` (one 8-slot tuple
+per element, one answer per element) and the query doors
+`POST /graph/{scope}/search` and `POST /memories/{scope}/recall` (one query per
+element, one landing per element). The symmetry is the point: what the write door
+accepts, the query door accepts, so a model never loops one HTTP call per
+sentence.
+
+- Element-level, not request-level: a malformed tuple is answered with `refused`
+  plus the core's own reason, while its siblings land. Only a body that is not an
+  array is a 400.
+- ADDRESSED reads stay single — `entities/{name}`, `edges/{id}`, `top`,
+  `timeline`, `chain` name one thing by construction, and an array of one NAME
+  costs more than it saves.
+- This is not a batch door. No bulk-write pressure rides here (a backup is
+  ADR-0013's `POST /import`), and the write path stays single-writer: one commit
+  per tuple.
+
 ### Surface 3: Tasks (the third surface)
 
 - **Its carrier is a graph, not a table.** Task vertices plus `task_links`
