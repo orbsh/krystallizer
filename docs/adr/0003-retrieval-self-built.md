@@ -42,6 +42,14 @@ the engine the serving process attached, so the HTTP client never sends one;
 a row written with no engine attached carries an EMPTY frame — a legal row the
 retrieval side skips, never a zero vector.
 
+**What the vector covers (amended 2026-10-23).** The vector is over the node's
+label AND the text it carries — `name`, plus the `title` / `content` props when
+the row has them. A vector over the label alone lets a reader search a node by
+NAME and never by what it SAYS, which sends the reader back into the source
+document: the one thing a fact graph exists to avoid. A row carrying neither
+prop is embedded on its name exactly as before, so nothing that predates the
+convention moves.
+
 **The engine is a MODE, not one implementation (ruled 2026-10-21).** What the
 store needs is a contract: one text in, one UNIT-length vector out at the
 declared `dimensions`. WHO computes it is a deployment property, so the

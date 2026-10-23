@@ -338,6 +338,18 @@ so there is no face to declare for it. Vector search runs on `okm-vector`'s
 `ExactIndex` — a DERIVED index rebuilt from the rows' `embedding` frames on
 first use and dropped on every write, not a declared face.
 
+**Three conventional props a node carries (2026-10-23).** `title`, `content`
+and `source` live in the row's DYNAMIC segment, not as declared fields: props
+merge into the node like every other attribute, so a node without them is still
+a legal node and no value is stored twice. `title` is the short label a view
+draws (about ten characters or two or three words), `content` is what the node
+SAYS in two or three sentences, and `source` points back at the file and line —
+or the URL — it came from. `name` stays the IDENTITY: unique, and the retrieval
+anchor, with the vector computed over `name` + `title` + `content` (ADR-0003 as
+amended), so a reader can find a node by what it says instead of opening the
+document. `GET /graph/{scope}` carries the props on every node; the rest of the
+graph is unchanged.
+
 - Key `[scope 8B BE][node_id 8B BE]` — `scope` leads because the corpus is
   per-user (ADR-0003). Ids are
   store-assigned surrogates, recovered on reopen from the last key.

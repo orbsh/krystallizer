@@ -39,6 +39,7 @@
   #detail { top:12px; right:12px; width:300px; max-height:calc(100% - 24px); overflow:auto; display:none; }
   #detail h2 { margin:0 0 6px; font-size:13px; word-break:break-all; }
   #detail .meta { color:var(--dim); margin-bottom:8px; }
+  #detail .body { color:var(--text); margin-bottom:8px; line-height:1.55; }
   #detail ul { list-style:none; margin:0; padding:0; }
   #detail li { padding:5px 0; border-top:1px solid var(--line); cursor:pointer; }
   #detail li:hover { color:#fff; }
@@ -54,6 +55,19 @@
      a few hundred fillText calls. Short on the canvas, full text on hover. */
   #labels { position:fixed; inset:0; pointer-events:none; z-index:1; }
   .row input[type=checkbox] { accent-color:#4a6bd8; }
+  /* The hover card. The library's tooltip is one inline div, so it must be told
+     to wrap: a node's content is two or three sentences and a source path, and
+     cramming those onto one line is what makes a tooltip unreadable. */
+  .scene-tooltip { max-width:340px; white-space:normal; line-height:1.5;
+    font:12px/1.5 -apple-system,"Segoe UI",system-ui,sans-serif; text-align:left; }
+  .cd-title { font-weight:600; font-size:13px; color:#fff; margin-bottom:2px; }
+  .cd-name { color:#8b9ac4; font-size:11px; margin-bottom:6px; word-break:break-all; }
+  .cd-body { color:#dbe4ff; margin-bottom:6px; }
+  .cd-meta { color:#8b9ac4; font-size:11px; }
+  .cd-src { color:#8b9ac4; font-size:11px; margin-top:4px; word-break:break-all; }
+  .cd-props { margin-top:6px; padding-top:5px; border-top:1px solid #243055;
+    color:#9db2ea; font-size:11px; word-break:break-all; }
+  .cd-props span { color:#8b9ac4; }
 </style>
 </head>
 <body>
@@ -124,13 +138,32 @@
     }
     return hue(n.community_id === null || n.community_id === undefined ? 0 : n.community_id);
   };
+  // The hover card: title, the text the node carries, where it came from, then
+  // whatever else the writer attached. Multi-line by construction — a card that
+  // puts a sentence and five attributes on one line is a tooltip nobody reads.
+  const escapeHtml = (s) => String(s ?? '').replace(/[&<>"]/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const HIDDEN_PROPS = new Set(['title', 'content', 'source', 'blurb', 'blurb_en',
+    'url', 'path', 'doc', 'key', 'slug']);
   const nodeLabel = (n) => {
-    const parts = [n.name || `#${n.id}`];
-    if (n.literal_num !== null && n.literal_num !== undefined) parts.push(`字面量 ${n.literal_num}`);
-    else parts.push(`类型 ${n.kind || '（无）'}`);
-    parts.push(`社区 ${n.community_id ?? '—'}`);
-    parts.push(`度数 ${degree.get(n.id) ?? 0}`);
-    return parts.join(' · ');
+    const p = n.props || {};
+    const title = p.title || n.name || `#${n.id}`;
+    const rows = [`<div class="cd-title">${escapeHtml(title)}</div>`];
+    if (n.name && n.name !== title) rows.push(`<div class="cd-name">${escapeHtml(n.name)}</div>`);
+    if (p.content) rows.push(`<div class="cd-body">${escapeHtml(p.content)}</div>`);
+    const meta = [isLiteral(n) ? `字面量 ${n.literal_num}` : `类型 ${n.kind || '（无）'}`,
+      `社区 ${n.community_id ?? '—'}`, `度数 ${degree.get(n.id) ?? 0}`];
+    if (p.lang) meta.push(`语言 ${p.lang}`);
+    rows.push(`<div class="cd-meta">${escapeHtml(meta.join(' · '))}</div>`);
+    if (p.source) rows.push(`<div class="cd-src">来源 ${escapeHtml(p.source)}</div>`);
+    const rest = Object.entries(p).filter(([k]) => !HIDDEN_PROPS.has(k));
+    if (rest.length) {
+      rows.push('<div class="cd-props">'
+        + rest.map(([k, v]) => `<span>${escapeHtml(k)}</span> ${escapeHtml(
+          typeof v === 'object' ? JSON.stringify(v) : v)}`).join('<br>')
+        + '</div>');
+    }
+    return rows.join('');
   };
   const radius = (n) => 1.2 + Math.min(6, Math.sqrt(degree.get(n.id) || 1) * 0.9);
   // The wire carries the weight as the SCALED integer the core stores
@@ -151,8 +184,11 @@
     .linkWidth(l => (selected && (l.source.id === selected.id || l.target.id === selected.id)) ? 1.6 : 0.4)
     .linkDirectionalArrowLength(3)
     .linkDirectionalArrowRelPos(1)
-    .linkLabel(l => `${l.source.name ?? '#' + l.source.id} —[${l.kind}]→ `
-      + `${l.target.name ?? '#' + l.target.id} · w${weight(l.weight)}`)
+    .linkLabel(l => `<div class="cd-title">${escapeHtml(l.kind)}</div>`
+      + `<div class="cd-body">${escapeHtml(l.source.name ?? '#' + l.source.id)}<br>→ `
+      + `${escapeHtml(l.target.name ?? '#' + l.target.id)}</div>`
+      + `<div class="cd-meta">w${weight(l.weight)}`
+      + (l.since ? ` · since ${l.since}` : '') + `</div>`)
     .onNodeClick(selectNode)
     .onBackgroundClick(() => selectNode(null));
 
@@ -214,8 +250,11 @@
       if (!at) continue;
       const isSelected = selected && node.id === selected.id;
       if (!free(at.x, at.y + 9) && !isSelected) continue;
+      // The TITLE, not the identity: a name like "ADR-0005: Weight System —
+      // Counters on the Edge Row" spends its first characters on a badge.
+      const shown = (node.props && node.props.title) || node.name || `#${node.id}`;
       labelCtx.fillStyle = isSelected ? '#ffd479' : 'rgba(219,228,255,.78)';
-      labelCtx.fillText(truncate(node.name || `#${node.id}`, SHORT_NODE), at.x, at.y + 9);
+      labelCtx.fillText(truncate(shown, SHORT_NODE), at.x, at.y + 9);
     }
     labelCtx.font = '9px ui-monospace, Menlo, Consolas, monospace';
     for (const link of graphData.links) {
@@ -263,11 +302,35 @@
     const head = document.createElement('div');
     head.innerHTML = '';
     const h = document.createElement('h2');
-    h.textContent = node.name || `#${node.id}`;
+    const props = node.props || {};
+    h.textContent = props.title || node.name || `#${node.id}`;
     const meta = document.createElement('div');
     meta.className = 'meta';
     meta.textContent = `${isLiteral(node) ? '字面量 ' + node.literal_num : '类型 ' + (node.kind || '（无）')}`
       + ` · 社区 ${node.community_id ?? '—'} · ${incident.length} 条边`;
+    // The same three things the hover card shows, kept on screen while the
+    // reader follows edges: what it is called, what it says, where it came from.
+    const extra = [];
+    if (node.name && node.name !== h.textContent) {
+      const id = document.createElement('div');
+      id.className = 'meta';
+      id.style.wordBreak = 'break-all';
+      id.textContent = node.name;
+      extra.push(id);
+    }
+    if (props.content) {
+      const body = document.createElement('div');
+      body.className = 'body';
+      body.textContent = props.content;
+      extra.push(body);
+    }
+    if (props.source) {
+      const src = document.createElement('div');
+      src.className = 'meta';
+      src.style.wordBreak = 'break-all';
+      src.textContent = `来源 ${props.source}`;
+      extra.push(src);
+    }
     const ul = document.createElement('ul');
     incident
       .map(l => {
@@ -294,7 +357,7 @@
         li.onclick = () => { if (other) selectNode(other); };
         ul.appendChild(li);
       });
-    box.replaceChildren(h, meta, ul);
+    box.replaceChildren(h, meta, ...extra, ul);
     box.style.display = 'block';
   }
 

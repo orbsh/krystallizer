@@ -1,10 +1,11 @@
 {
-  "_comment": "The editorial layer. Everything else in this corpus is derived from the file system, from Cargo.toml, or from the prose itself; these are the two things a machine cannot derive: which trees are Chinese by default, and one sentence per node a reader may land on. Keep blurbs to one sentence — a site shows them under a title, not as a paragraph.",
-
+  "_comment": "The editorial layer. Everything else in this corpus is derived from the file system, from Cargo.toml, or from the prose itself; these are the two things a machine cannot derive: which trees are Chinese by default, and one sentence per node a reader may land on. Keep blurbs to one sentence — a site shows them under a title, not as a paragraph. Each document also carries `title`/`title_en`: the short label a view draws (about ten characters, two or three words). The document H1 stays the node identity — it is unique and it is what gets embedded — while the title is what a reader reads.",
   "trees": [
-    { "root": "~/.hermes/wiki", "default_lang": "zh" }
+    {
+      "root": "~/.hermes/wiki",
+      "default_lang": "zh"
+    }
   ],
-
   "projects": [
     {
       "name": "Krystallizer",
@@ -79,113 +80,162 @@
       "blurb_en": "An AI-native UI rendering library: the Accrete DSL, Leptos rendering, the operation protocol and a CBOR codec."
     }
   ],
-
   "documents": {
     "README": {
       "blurb": "项目入口：它是什么、三个接口面、crate 怎么划分。",
-      "blurb_en": "The front door: what it is, the three surfaces, how the crates divide."
+      "blurb_en": "The front door: what it is, the three surfaces, how the crates divide.",
+      "title": "项目入口",
+      "title_en": "Overview"
     },
     "PLAN": {
       "blurb": "施工清单：分阶段的任务与验收条件，勾选表示已落地。",
-      "blurb_en": "The build checklist: phased tasks with their acceptance, ticked when landed."
+      "blurb_en": "The build checklist: phased tasks with their acceptance, ticked when landed.",
+      "title": "施工清单",
+      "title_en": "Build plan"
     },
     "MODELING": {
       "blurb": "数据建模：有哪些表、键与行的形状、声明了哪些访问面。",
-      "blurb_en": "Data modeling: which tables exist, their key and row shapes, which access faces are declared."
+      "blurb_en": "Data modeling: which tables exist, their key and row shapes, which access faces are declared.",
+      "title": "数据建模",
+      "title_en": "Data modeling"
     },
     "SEAM": {
       "blurb": "消费边界台账：每道门到核心原语到表，按消费方的操作组织。",
-      "blurb_en": "The consumer ledger: every door to a core primitive to a table, organised by consumer operation."
+      "blurb_en": "The consumer ledger: every door to a core primitive to a table, organised by consumer operation.",
+      "title": "消费台账",
+      "title_en": "Consumer seam"
     },
     "PROMPTS": {
       "blurb": "活的提示面：主动添加事实的工具定义，与写侧的胶囊生成器。",
-      "blurb_en": "The live prompt surface: the active-add tool definition and the write-side capsule generator."
+      "blurb_en": "The live prompt surface: the active-add tool definition and the write-side capsule generator.",
+      "title": "提示面",
+      "title_en": "Prompt surface"
     },
     "0001-interface-surfaces": {
       "blurb": "三个接口面：会话控制、记忆、任务；一个面是一族核心门。",
-      "blurb_en": "Three interface surfaces — session control, memory, tasks; a surface is a family of core doors."
+      "blurb_en": "Three interface surfaces — session control, memory, tasks; a surface is a family of core doors.",
+      "title": "接口面",
+      "title_en": "Interface surfaces"
     },
     "0002-storage-fjall-okm": {
       "blurb": "Fjall 做存储引擎，全部 schema 用 OKM 声明式派生，PG 那套退场。",
-      "blurb_en": "Fjall as the storage engine, every schema declared through OKM derive macros; the PG form retires."
+      "blurb_en": "Fjall as the storage engine, every schema declared through OKM derive macros; the PG form retires.",
+      "title": "存储选型",
+      "title_en": "Storage"
     },
     "0003-retrieval-self-built": {
       "blurb": "检索用内置的小 embedding 模型在进程内跑：查询着陆，答案取着陆到的那个社区。",
-      "blurb_en": "Retrieval runs a small embedding model in-process: the query lands, and the answer is the community it landed in."
+      "blurb_en": "Retrieval runs a small embedding model in-process: the query lands, and the answer is the community it landed in.",
+      "title": "检索",
+      "title_en": "Retrieval"
     },
     "0004-fact-contract": {
       "blurb": "事实契约：核心只收结构化的 8 槽元组，从不调用 LLM，判断归调用方。",
-      "blurb_en": "The fact contract: core takes structured 8-slot tuples and never calls an LLM; judgement is the caller's."
+      "blurb_en": "The fact contract: core takes structured 8-slot tuples and never calls an LLM; judgement is the caller's.",
+      "title": "事实契约",
+      "title_en": "Fact contract"
     },
     "0005-weight-system": {
       "blurb": "权重：计数住在边这一行上，读写比划出四象限，检索按权重取 Top-K。",
-      "blurb_en": "Weights: the counters ride the edge row, the read/write ratio splits four quadrants, retrieval is weight-ordered Top-K."
+      "blurb_en": "Weights: the counters ride the edge row, the read/write ratio splits four quadrants, retrieval is weight-ordered Top-K.",
+      "title": "权重系统",
+      "title_en": "Weight system"
     },
     "0006-stateless-agent-session-as-data": {
       "blurb": "会话即数据：agent 读自己的投影、追加自己的记录，从不改写历史。",
-      "blurb_en": "Session as data: an agent reads its own projection and appends its own records, never mutating history."
+      "blurb_en": "Session as data: an agent reads its own projection and appends its own records, never mutating history.",
+      "title": "会话即数据",
+      "title_en": "Session as data"
     },
     "0007-consumption-boundary": {
       "blurb": "消费边界：唯一跨进程形态是 HTTP 服务，纯 Rust，没有 Python 层。",
-      "blurb_en": "The consumption boundary: HTTP is the only cross-process form — pure Rust, no Python layer."
+      "blurb_en": "The consumption boundary: HTTP is the only cross-process form — pure Rust, no Python layer.",
+      "title": "消费边界",
+      "title_en": "Consumption boundary"
     },
     "0008-unified-channel-log": {
       "blurb": "统一 channel 日志：人的消息与 LLM 对话同一个容器，上下文是投影，压缩是启发式。",
-      "blurb_en": "One channel log for human messages and the LLM conversation; context is a projection, compression is heuristic."
+      "blurb_en": "One channel log for human messages and the LLM conversation; context is a projection, compression is heuristic.",
+      "title": "统一日志",
+      "title_en": "Channel log"
     },
     "0009-multi-party-participation": {
       "blurb": "多方参与：身份分两层（成员行与画像事实），插话策略复用同一套信号。",
-      "blurb_en": "Multi-party participation: identity has two layers — a members row and profile facts — and the interrupt policy reuses the same signals."
+      "blurb_en": "Multi-party participation: identity has two layers — a members row and profile facts — and the interrupt policy reuses the same signals.",
+      "title": "多方参与",
+      "title_en": "Multi-party"
     },
     "0010-algorithm-improvement": {
       "blurb": "算法改进：写时消解实体，再自动认知分箱，给每个节点定社区。",
-      "blurb_en": "Write-time entity resolution, then automatic cognitive binning that assigns every node a community."
+      "blurb_en": "Write-time entity resolution, then automatic cognitive binning that assigns every node a community.",
+      "title": "写时消解",
+      "title_en": "Write-time resolution"
     },
     "0011-structured-log": {
       "blurb": "结构化日志：内部状态写成可丢的诊断行，按时间键，有行数上限。",
-      "blurb_en": "The structured log: internal state as disposable diagnostic rows, keyed by time and capped in rows."
+      "blurb_en": "The structured log: internal state as disposable diagnostic rows, keyed by time and capped in rows.",
+      "title": "结构化日志",
+      "title_en": "Structured log"
     },
     "0012-code-store": {
       "blurb": "代码仓：交付的脚本按裸代理 id 一行一个，有自己的 ns。",
-      "blurb_en": "The code store: delivered scripts, one row per piece of code, keyed by a bare surrogate id."
+      "blurb_en": "The code store: delivered scripts, one row per piece of code, keyed by a bare surrogate id.",
+      "title": "代码仓",
+      "title_en": "Code store"
     },
     "0013-bulk-export": {
       "blurb": "备份是一个 Parquet 包裹加仓库元数据，能被没见过 k10r 的工具读回来。",
-      "blurb_en": "A backup is one Parquet bundle with warehouse metadata, readable by a tool that never saw k10r."
+      "blurb_en": "A backup is one Parquet bundle with warehouse metadata, readable by a tool that never saw k10r.",
+      "title": "备份导出",
+      "title_en": "Bulk export"
     },
     "0014-member-as-node": {
       "blurb": "成员就是节点：身份行加入事实图，成为图中的用户节点集合。",
-      "blurb_en": "The member is a node: identity rows join the fact graph as its user node set."
+      "blurb_en": "The member is a node: identity rows join the fact graph as its user node set.",
+      "title": "成员即节点",
+      "title_en": "Member as node"
     },
     "graph-memory": {
       "blurb": "记忆架构的计算时机光谱，以及属性图在 agent 记忆里的定位。",
       "blurb_en": "The compute-timing spectrum of memory architectures, and where the property graph sits.",
-      "url": "https://github.com/orbsh/wiki/blob/main/graph-memory.md"
+      "url": "https://github.com/orbsh/wiki/blob/main/graph-memory.md",
+      "title": "图谱化记忆",
+      "title_en": "Graph memory"
     },
     "kv-storage-engine": {
       "blurb": "KV 引擎的架构设计、复合键编码与用例。",
       "blurb_en": "KV engine architecture, composite key encoding, and use cases.",
-      "url": "https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md"
+      "url": "https://github.com/orbsh/wiki/blob/main/kv-storage-engine.md",
+      "title": "KV 存储引擎",
+      "title_en": "KV storage engine"
     },
     "agent-memory": {
       "blurb": "记忆架构选型：从文档走到原子事实。",
       "blurb_en": "Memory architecture selection: from documents down to atomic facts.",
-      "url": "https://github.com/orbsh/wiki/blob/main/agent-memory.md"
+      "url": "https://github.com/orbsh/wiki/blob/main/agent-memory.md",
+      "title": "记忆选型",
+      "title_en": "Memory selection"
     },
     "stateless-agent-architecture": {
       "blurb": "无状态 agent 架构：回合、技能、记忆三者怎么分工。",
       "blurb_en": "The stateless agent architecture: how turns, skills and memory divide the work.",
-      "url": "https://github.com/orbsh/wiki/blob/main/stateless-agent-architecture.md"
+      "url": "https://github.com/orbsh/wiki/blob/main/stateless-agent-architecture.md",
+      "title": "无状态架构",
+      "title_en": "Stateless agents"
     },
     "property-graph-queries": {
       "blurb": "SQL/PGQ 属性图查询的形态与边界。",
       "blurb_en": "SQL/PGQ property-graph queries: their shape and their limits.",
-      "url": "https://github.com/orbsh/wiki/blob/main/property-graph-queries.md"
+      "url": "https://github.com/orbsh/wiki/blob/main/property-graph-queries.md",
+      "title": "属性图查询",
+      "title_en": "Property graph queries"
     },
     "krystallizer": {
       "blurb": "这个记忆核心自己的设计文档（wiki 版）。",
       "blurb_en": "The memory core's own design document, in its wiki rendition.",
-      "url": "https://github.com/orbsh/wiki/blob/main/krystallizer.md"
+      "url": "https://github.com/orbsh/wiki/blob/main/krystallizer.md",
+      "title": "记忆核心",
+      "title_en": "Memory core"
     }
   }
 }

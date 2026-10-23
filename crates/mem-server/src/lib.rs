@@ -1550,6 +1550,12 @@ pub struct GraphNodeDto {
     /// The node's community (ADR-0010 §2) — the color cluster, and the
     /// reason the binning is inspectable at all.
     pub community_id: u64,
+    /// The node's open attributes — `title` / `content` / `source` and whatever
+    /// else the writer attached. A renderer needs them to caption a node without
+    /// opening the document, which is the point of the corpus; the analysis face
+    /// may carry them (ADR-0007 allows the shape to drift with the analysis
+    /// need), and they are small: a few short strings per node.
+    pub props: serde_json::Map<String, serde_json::Value>,
 }
 
 /// One link: a fact, with `source` / `target` as node ids (what the client
@@ -1604,17 +1610,26 @@ async fn viz_vendor() -> impl IntoResponse {
 
 async fn fetch_graph(State(state): State<Arc<MemState>>, Path(scope): Path<u64>) -> Json<GraphDto> {
     let mut graph = state.graph.lock().await;
-    let nodes: Vec<GraphNodeDto> = graph
-        .scope_entities(scope)
-        .into_iter()
-        .map(|(node_id, row)| GraphNodeDto {
+    let mut nodes: Vec<GraphNodeDto> = Vec::new();
+    for (node_id, row) in graph.scope_entities(scope) {
+        let props = graph
+            .entity_props(scope, node_id)
+            .map(|found| {
+                found
+                    .into_iter()
+                    .map(|(name, value)| (name, dynamic_to_json(value)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        nodes.push(GraphNodeDto {
             id: node_id,
             kind: row.kind.as_str().unwrap_or_default().to_string(),
             literal_num: row.literal_num,
             name: row.name,
             community_id: row.community_id,
-        })
-        .collect();
+            props,
+        });
+    }
     let links: Vec<GraphLinkDto> = graph
         .scope_facts(scope)
         .into_iter()
@@ -1648,5 +1663,32 @@ impl From<fjall::Error> for EngineError {
 impl IntoResponse for EngineError {
     fn into_response(self) -> axum::response::Response {
         (StatusCode::INTERNAL_SERVER_ERROR, Json(self)).into_response()
+    }
+}
+
+/// A node attribute as wire JSON. The bag is storage's shape (`UInt` / `Int` /
+/// `Str` / …); a renderer only ever needs JSON, and bytes are the one variant
+/// with no JSON counterpart — they are shown as a length, never as a wall of
+/// numbers that would bury the rest of the card.
+fn dynamic_to_json(value: mem_core::DynamicValue) -> serde_json::Value {
+    use mem_core::DynamicValue as D;
+    match value {
+        D::UInt(n) => serde_json::Value::from(n),
+        D::Int(n) => serde_json::Value::from(n),
+        D::F64(n) => serde_json::Number::from_f64(n)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        D::Str(text) => serde_json::Value::String(text),
+        D::Bool(flag) => serde_json::Value::Bool(flag),
+        D::Null => serde_json::Value::Null,
+        D::Bytes(bytes) => serde_json::Value::String(format!("<{} bytes>", bytes.len())),
+        D::Array(items) => {
+            serde_json::Value::Array(items.into_iter().map(dynamic_to_json).collect())
+        }
+        D::Obj(map) => serde_json::Value::Object(
+            map.into_iter()
+                .map(|(name, value)| (name, dynamic_to_json(value)))
+                .collect(),
+        ),
     }
 }

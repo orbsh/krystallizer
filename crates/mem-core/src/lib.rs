@@ -51,13 +51,17 @@ pub use embedding::{l2_normalize, EmbedError, Embedder, LocalEmbedder};
 pub use graph::{
     Anchored, ChainHop, CommunitySeqKey, CommunitySeqRow, CommunitySlice, EntityKey, EntityRow,
     FactBody, FactTuple, Facts, GraphStore, IngestError, IngestOutcome, NodeId, Recall, Relation,
-    Seed, Term, Touch, COMMUNITY_NS, ENTITY_NS, FACT_NS, FUNCTIONAL_PROP, LANDING_FLOOR,
-    LITERAL_KIND, LPA_RADIUS, LPA_ROUNDS, MEMBER_NS, REF_FIELD, USER_KIND, WEIGHT_SCALE,
+    Seed, Term, Touch, COMMUNITY_NS, CONTENT_FIELD, ENTITY_NS, FACT_NS, FUNCTIONAL_PROP,
+    LANDING_FLOOR, LITERAL_KIND, LPA_RADIUS, LPA_ROUNDS, MEMBER_NS, REF_FIELD, SOURCE_FIELD,
+    TITLE_FIELD, USER_KIND, WEIGHT_SCALE,
 };
 pub use log::{
     event as log_event, field as log_field, level as log_level, LogEntry, LogKey, LogRow, LogStore,
     DEFAULT_MAX_ROWS,
 };
+/// The props bag's value type, re-exported so a door can carry node attributes
+/// without taking its own dependency on the storage library.
+pub use okm_core::obj_dynamic::DynamicValue;
 pub use render::{render_head, render_memory, RenderFormat};
 pub use service::{open_service, ServiceStores};
 pub use view::{assemble, member_memory, role_name, Projection, DEFAULT_SCOPE};

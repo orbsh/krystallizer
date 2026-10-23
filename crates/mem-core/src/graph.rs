@@ -803,6 +803,37 @@ pub struct CommunitySlice {
 /// owns the decision to descend.
 pub const REF_FIELD: &str = "ref";
 
+/// The conventional props a node carries so a reader never needs the document.
+///
+/// `title` is what a view draws (≤ 10 characters or 2–3 words), `content` is what
+/// the node SAYS (~60 characters, two or three sentences), `source` points back
+/// at the file and line it came from. They are props, not declared fields: they
+/// merge into the node's dynamic segment like every other attribute, so a node
+/// that has none is still a legal node, and no data is stored twice.
+pub const TITLE_FIELD: &str = "title";
+pub const CONTENT_FIELD: &str = "content";
+pub const SOURCE_FIELD: &str = "source";
+
+/// What a node's vector is computed over (ADR-0003 as amended 2026-10-23): its
+/// label AND the text it carries.
+///
+/// A vector over the label alone lets a reader search a node by NAME and never
+/// by what it says — which sends the reader back into the source document, the
+/// one thing a fact graph exists to avoid. Only `title` and `content` join the
+/// vector; every other attribute stays out, or an arbitrary prop would move the
+/// node's semantic position.
+fn embedding_text(value: &str, props: &BTreeMap<String, DynamicValue>) -> String {
+    let mut parts: Vec<&str> = vec![value];
+    for name in [TITLE_FIELD, CONTENT_FIELD] {
+        if let Some(DynamicValue::Str(text)) = props.get(name) {
+            if !text.trim().is_empty() {
+                parts.push(text.as_str());
+            }
+        }
+    }
+    parts.join("\n")
+}
+
 /// The ids in a `ref` value: one id or an array of ids. Anything else (a string,
 /// a nested object) is not a reference and yields nothing — a writer's mistake
 /// must not turn into a phantom target.
@@ -2034,7 +2065,7 @@ impl GraphStore {
         let embedding = match &self.embedder {
             Some(engine) => Vector::new(
                 engine
-                    .embed(&term.value)
+                    .embed(&embedding_text(&term.value, &term.props))
                     .map_err(|e| IngestError::Embedding(e.to_string()))?,
             ),
             None => Vector::new(Vec::new()),

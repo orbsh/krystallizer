@@ -488,6 +488,30 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   `DOCUMENTED_BY` counts only a `/wiki/` path — a bare `PLAN.md` in another
   project's README means that project's own plan, and resolving it here invents a
   relationship the text never stated.
+  **Nodes carry their own text (2026-10-23).** A node without the text it stands
+  for sends the reader back into the document, which is the one thing the corpus
+  exists to avoid, so every node now carries three conventional props — `title`
+  (the short label a view draws, ~10 characters), `content` (two or three
+  sentences, ~70 characters in Chinese and ~120 in English) and `source` (file
+  and line, or URL). `name` keeps the full H1 as the IDENTITY: `ADR-0013: 备份是
+  一个装着 Parquet 与仓库元数据的包裹` is unique and addressable but reads as a
+  badge, so the badge shows the title and the card shows the identity. The
+  embedding follows: ADR-0003 amended to compute the vector over `name` +
+  `title` + `content` — searching by name and never finding what a node says is
+  the same defect one layer down. `GET /graph/{scope}` carries the props
+  (analysis face, ADR-0007), which is what the hover card renders.
+  Granularity stays one node per HEADING, not per paragraph: a section's content
+  is its own first sentence(s), and the source line points at the rest.
+  **Verdict on that converter (2026-10-23): not a reference for extraction.**
+  The mechanical pass earns the STRUCTURAL half — file → document, heading →
+  section, a citation resolved from an ADR number or a `.md` path, a crate read
+  from a `Cargo.toml` — and nothing else. Its assertion layer is a rule standing
+  in for a judgement: a heading is not a claim, a section's first sentence is
+  not what the section says, so the corpus looks complete only because every
+  heading became a node. Knowledge extraction is a model's job; the converter is
+  not to be extended, and its title/summary heuristics are not a pattern to copy
+  into the extraction path. What survives is the four-layer rendering contract
+  (with `level`) and the idempotence lesson.
 - [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), SKILL topological four-part nodes, Aura Actor nodes. (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.) ADR-0010 takes the incremental LOCAL form of community detection onto the write side and leaves OPEN whether that promotes a slice of Phase 5 ahead of Phase 3/4 — an open ruling, not settled.
 
 Deferred gates:

@@ -95,11 +95,149 @@ def tuple_(head, head_kind, head_props, rel, rel_props, tail, tail_kind, tail_pr
     return [head, head_kind, head_props, rel, rel_props, tail, tail_kind, tail_props]
 
 
+SENTENCE_END = re.compile(r"(?<=[。！？!?])|(?<=\.)\s+")
+TITLE_PREFIX = re.compile(r"^(?:ADR[- ]?\d{4}\s*[:：]\s*|\d{4}\s*[—–-]\s*)")
+LIST_MARK = re.compile(r"^\s*(?:[-*+]|\d+\.)\s+")
+FENCE = re.compile(r"^\s*(?:```|~~~)")
+NUMBERING = re.compile(r"^\d+(?:\.\d+)*\.?\s+")
+BACKTICKS = re.compile(r"`([^`]*)`")
+LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+EMPHASIS = re.compile(r"\*{2,}")
+DANGLING = re.compile(r"[，,、；;：:/\\(（\[【—-]+$")
+# Headings that say nothing on their own: a view needs them prefixed with the
+# document, or ten nodes in a row all read "Context".
+GENERIC = {
+    "context", "decision", "decisions", "consequences", "background", "overview",
+    "summary", "history", "scope", "status", "problem", "limits", "non-goals",
+    "alternatives", "risks", "implementation", "example", "examples", "motivation",
+    "rationale", "open questions", "references",
+    "背景", "决定", "后果", "上下文", "概述", "摘要", "历史", "状态", "问题", "范围",
+    "取舍", "风险", "实现", "示例", "动机", "开放问题", "参考",
+}
+
+
+def clean(text: str) -> str:
+    """Markdown out of a label: backticks, links and emphasis are formatting."""
+    text = LINK.sub(r"\1", text)
+    text = BACKTICKS.sub(r"\1", text)
+    return EMPHASIS.sub("", text).strip()
+
+
+def short_title(raw: str, limit: int = 22) -> str:
+    """A label a view can draw: prefix gone, subtitle after the dash gone.
+
+    "ADR-0005: Weight System — Counters on the Edge Row, Read-Write Quadrants"
+    is an identity, not a title — a node badge showing `ADR-0005` says nothing.
+    The identity keeps the whole string; the title is what a reader sees.
+    """
+    text = clean(TITLE_PREFIX.sub("", raw.strip()))
+    for dash in ("—", "–", " - ", "：", ": "):
+        if dash in text:
+            head = text.split(dash, 1)[0].strip()
+            if len(head) >= 2:
+                text = head
+                break
+    # A parenthetical is detail, never the label: "Memory kinds (who initiates)"
+    # is a title plus an explanation, and a badge has room for the first only.
+    if "(" in text:
+        text = text.split("(", 1)[0].strip() or text
+    if len(text) > limit:
+        cut = text[:limit]
+        space = cut.rfind(" ")
+        text = cut[:space] if space > limit // 2 else cut
+    return DANGLING.sub("", text).strip()
+
+
+def clause_title(text: str, limit: int = 16) -> str:
+    """A claim's label: its first clause, not its first N characters.
+
+    A claim is a sentence; cutting it blind produces "The backup is one Par".
+    """
+    body = clean(text)
+    for mark in ("，", ", ", "；", "; ", "：", " — "):
+        if mark in body:
+            head = body.split(mark, 1)[0].strip()
+            if 3 <= len(head) <= limit:
+                return head
+    return short_title(body, limit)
+
+
+CJK = re.compile(r"[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]")
+
+
+def smart_join(lines: list[str]) -> str:
+    """Glue wrapped lines without inventing a space inside Chinese text.
+
+    Markdown wraps CJK mid-sentence; joining those lines with a space puts a gap
+    the writer never wrote, while joining an English line break without one fuses
+    two words. The character on each side decides.
+    """
+    out = ""
+    for line in lines:
+        if not line:
+            continue
+        if not out:
+            out = line
+            continue
+        gap = "" if CJK.match(out[-1]) and CJK.match(line[0]) else " "
+        out = f"{out}{gap}{line}"
+    return out
+
+
+def summarize(body: list[str], budget: int = 120) -> str:
+    """The first sentence(s) of a section, up to `budget` characters.
+
+    The graph is the SUMMARY layer: one node per section says what the section
+    says, and `source` points back at the paragraph. Mirroring the prose instead
+    would put the document back into the graph, one paragraph at a time.
+    """
+    kept = []
+    in_fence = False
+    for line in body:
+        if FENCE.match(line):
+            # A code block is not prose: its first line is `#[derive(...)]` or a
+            # shell command, which reads as a fact and is not one.
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        text = LIST_MARK.sub("", line).strip()
+        if not text or text.startswith("|"):
+            continue
+        if text.startswith(">") or text.startswith("<!--"):
+            continue
+        kept.append(clean(text))
+    joined = smart_join(kept).strip()
+    if not joined:
+        return ""
+    if len(joined) <= budget:
+        return joined
+    out = ""
+    for piece in SENTENCE_END.split(joined):
+        piece = piece.strip()
+        if not piece:
+            continue
+        if out and len(out) + len(piece) + 1 > budget and len(out) >= budget // 2:
+            break
+        out = smart_join([out, piece]) if out else piece
+        if len(out) >= budget:
+            break
+    if len(out) > budget or not out:
+        # One sentence longer than the budget is still one sentence: cut it at a
+        # word boundary rather than shipping a paragraph.
+        cut = (out or joined)[:budget]
+        space = cut.rfind(" ")
+        if space > budget // 2:
+            cut = cut[:space]
+        out = cut.rstrip("，,、；;：: ") + "…"
+    return out
+
+
 def read_doc(path: Path):
-    """Title, sections and the reference facts of one markdown file."""
+    """Title, sections (each with its own body) and the references of one file."""
     lines = path.read_text(encoding="utf-8").splitlines()
     title = None
-    sections = []
+    headings = []
     cites = set()
     crates = set()
     for number, line in enumerate(lines, start=1):
@@ -109,7 +247,7 @@ def read_doc(path: Path):
             if level == 1 and title is None:
                 title = text
             elif level >= 2:
-                sections.append((text, level, number))
+                headings.append((text, level, number))
         for match in ADR_RE.finditer(line):
             cites.add(("adr", match.group(1)))
         for match in PATH_RE.finditer(line):
@@ -117,6 +255,27 @@ def read_doc(path: Path):
         for match in CRATE_RE.finditer(line):
             crates.add(match.group(1))
     title = title or path.stem
+
+    def body_between(start: int, stop: int) -> list[str]:
+        return lines[start:stop]
+
+    sections = []
+    for index, (text, level, line_no) in enumerate(headings):
+        # A section's own prose stops at the NEXT heading of any level; when the
+        # heading is followed straight by a sub-heading, the body would be empty
+        # and the section contributes nothing, so it takes the sub-tree instead.
+        stop = len(lines)
+        for other_text, other_level, other_line in headings[index + 1 :]:
+            stop = other_line - 1
+            break
+        body = body_between(line_no, stop)
+        if not "".join(part.strip() for part in body):
+            for other_text, other_level, other_line in headings[index + 1 :]:
+                if other_level <= level:
+                    stop = other_line - 1
+                    break
+            body = body_between(line_no, stop)
+        sections.append((text, level, line_no, body))
     return title, sections, cites, crates
 
 
@@ -132,8 +291,12 @@ def doc_props(doc) -> dict:
         "slug": doc["slug"],
         "lang": doc["lang"],
         "type": doc["type"],
+        "title": doc.get("display_title") or doc["title"],
+        "source": doc.get("source") or doc["rel_path"],
         "path": doc["rel_path"],
     }
+    if doc.get("content"):
+        props["content"] = doc["content"]
     for field in ("blurb", "blurb_en", "url"):
         if doc.get(field):
             props[field] = doc[field]
@@ -145,6 +308,9 @@ def project_props(project) -> dict:
         "key": project["key"],
         "path": project.get("path", ""),
         "repo": project.get("repo", ""),
+        "title": project["name"],
+        "content": project.get("blurb", ""),
+        "source": project.get("repo", ""),
         "blurb": project.get("blurb", ""),
         "blurb_en": project.get("blurb_en", ""),
     }
@@ -174,6 +340,17 @@ def build(paths, trees=None, site=None, claims=()):
         }
         meta = (site.get("documents") or {}).get(key) or {}
         entry.update({f: meta[f] for f in ("blurb", "blurb_en", "url") if f in meta})
+        # The three props a reader needs without opening the file (2026-10-23):
+        # a short TITLE a view can draw, one sentence of CONTENT, and the SOURCE
+        # that points back at the paragraph. Editorial where the corpus is
+        # curated (site.json), derived where it is not.
+        wanted = "title" if lang == "zh" else "title_en"
+        fallback = "blurb" if lang == "zh" else "blurb_en"
+        entry["display_title"] = (
+            meta.get(wanted) or short_title(title) or title
+        )
+        entry["content"] = meta.get(fallback, "")
+        entry["source"] = meta.get("url") or str(path)
         docs[stem] = entry
         by_key.setdefault(key, []).append(entry)
         adr = re.match(r"^(\d{4})-", key)
@@ -195,11 +372,19 @@ def build(paths, trees=None, site=None, claims=()):
     #    no headings would produce no node at all -- the report shows that
     #    rather than inventing a lonely document node nothing points at.
     for stem, doc in docs.items():
-        for index, (text, level, line) in enumerate(doc["sections"]):
+        for index, (text, level, line, body) in enumerate(doc["sections"]):
             # A heading is not an identity: "Context" appears in ten ADRs, and a
             # node every one of them points at would make each query land on the
             # same word. The section's value carries its document, which keeps
-            # the name readable and the node addressable.
+            # the name readable and the node addressable; the TITLE is the short
+            # label a view draws, prefixed with the document when the heading
+            # alone is too generic to say anything ("Context" × 14).
+            label = short_title(text)
+            label = NUMBERING.sub("", label).strip() or label
+            if doc.get("display_title") and (
+                label.lower().strip(" .:：") in GENERIC or len(label) <= 4
+            ):
+                label = f"{doc['display_title']} · {label}"
             facts.append(
                 tuple_(
                     f"{text} ({stem})",
@@ -211,6 +396,9 @@ def build(paths, trees=None, site=None, claims=()):
                         "line": line,
                         "level": level,
                         "index": index,
+                        "title": label[:40],
+                        "content": summarize(body, 70 if doc["lang"] == "zh" else 120),
+                        "source": f"{doc['rel_path']}:{line}",
                     },
                     "SECTION_OF",
                     {"functional": True},
@@ -396,7 +584,7 @@ def build(paths, trees=None, site=None, claims=()):
                 raise SystemExit(f"{path}: unknown document `{key}`")
             doc = next((d for d in group if d["lang"] == "en"), group[0])
             slug = doc["slug"]
-            headings = {text for text, _, _ in doc["sections"]}
+            headings = {text for text, _, _, _ in doc["sections"]}
             claim_rows = entry.get("claims", [])
             for index, claim in enumerate(claim_rows):
                 text = claim["text"]
@@ -415,7 +603,15 @@ def build(paths, trees=None, site=None, claims=()):
                         {"index": index},
                         text,
                         "claim",
-                        {"doc": slug, "key": key, "lang": doc["lang"], "index": index},
+                        {
+                            "doc": slug,
+                            "key": key,
+                            "lang": doc["lang"],
+                            "index": index,
+                            "title": clause_title(text, 18),
+                            "content": text,
+                            "source": f"{doc['rel_path']} · {heading}",
+                        },
                     )
                 )
                 for predicate in ("concerns", "rejects", "requires"):
@@ -445,7 +641,7 @@ def post(base: str, scope: int, batch):
         headers={"content-type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=120) as response:
+    with urllib.request.urlopen(request, timeout=900) as response:
         return json.loads(response.read().decode())
 
 
@@ -454,7 +650,7 @@ def main() -> int:
     parser.add_argument("paths", nargs="+")
     parser.add_argument("--base", default="http://127.0.0.1:7760")
     parser.add_argument("--scope", type=int, default=1)
-    parser.add_argument("--batch", type=int, default=200)
+    parser.add_argument("--batch", type=int, default=50)
     parser.add_argument(
         "--site",
         metavar="FILE",
