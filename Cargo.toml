@@ -26,11 +26,3 @@ zstd = "0.13"
 
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
-
-# TEMPORARY (verification only): okm's restore mirrors are not pushed yet.
-# Remove this block and re-lock (`cargo update -p okm-core -p okm-derive -p okm-vector`)
-# once they are on origin/main.
-[patch."https://github.com/orbsh/okm"]
-okm-core = { path = "../okm/okm-core" }
-okm-derive = { path = "../okm/okm-derive" }
-okm-vector = { path = "../okm/okm-vector" }

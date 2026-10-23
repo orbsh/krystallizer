@@ -1058,15 +1058,18 @@ impl GraphStore {
             .map(|(key, row)| (key.node_id, row))
     }
 
-    /// The entity's open attributes (the dynamic segment) — the collection's own
-    /// read. `&mut` is the collection's signature (it interns names on the way in),
-    /// not a write here.
+    /// The entity's open attributes: the document's names the schema does not
+    /// declare. `fetch` answers both halves (ADR-0035 — the document is one
+    /// map), so the row's own fields are dropped here; `None` = no props, the
+    /// same answer the retired segment-only read gave.
     pub fn entity_props(
         &mut self,
         scope: u64,
         node_id: u64,
     ) -> Option<BTreeMap<String, DynamicValue>> {
-        self.entities.get_fields(&EntityKey { scope, node_id })
+        let mut doc = self.entities.fetch(&EntityKey { scope, node_id })?;
+        doc.retain(|name, _| !EntityRow::FIELDS.iter().any(|f| f.name == name));
+        (!doc.is_empty()).then_some(doc)
     }
 
     /// One fact, read back by id.
@@ -2053,7 +2056,9 @@ impl GraphStore {
         // than maintain it row by row (it reloads on the next retrieval).
         self.tables.forget(scope);
         if !term.props.is_empty() {
-            self.entities.put_fields(&key, &term.props);
+            // Non-declared names: `merge` writes the segment, the row stays as
+            // written above.
+            self.entities.merge(&key, &term.props);
         }
         Ok(Endpoint::Entity(node_id))
     }
@@ -2063,12 +2068,10 @@ impl GraphStore {
         if props.is_empty() {
             return;
         }
-        let key = EntityKey { scope, node_id };
-        let mut merged = self.entities.get_fields(&key).unwrap_or_default();
-        for (k, v) in props {
-            merged.insert(k.clone(), v.clone());
-        }
-        self.entities.put_fields(&key, &merged);
+        // `merge` IS the delta write: it reads the stored segment, overwrites
+        // the names given and leaves the rest — so the read-modify-write that
+        // used to live here is the verb's own work now.
+        self.entities.merge(&EntityKey { scope, node_id }, props);
     }
 
     /// Write one edge and its open props in ONE engine batch (ADR-0002:
@@ -2120,14 +2123,14 @@ impl GraphStore {
         // GRAPH's, written in the same batch as the row so one commit carries
         // both. It deletes the previous assertion's segment first — props belong
         // to the claim being written, never to the one it replaces.
-        facts.put_fields_into(batch, edge_id, props);
+        facts.replace_into(batch, edge_id, props);
         Ok(())
     }
 
     /// The fact's open props (its dynamic segment), when it has one — the
     /// graph's own read (okm ADR-0034 §4), not a second decoder beside it.
     pub fn fact_props(&self, edge_id: u64) -> Option<BTreeMap<String, DynamicValue>> {
-        self.facts().get_fields(edge_id)
+        self.facts().attrs(edge_id)
     }
 
     /// One node as a graph endpoint: the ref carries the entity key's own

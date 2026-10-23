@@ -242,7 +242,9 @@ impl LogStore {
         );
         if !fields.is_empty() {
             // The vocabulary-resolving write: names allocate on first sight.
-            self.table.put_fields(&key, &fields);
+            // `merge` is the document write; these names are non-declared, so
+            // they land in the segment and the row written above is untouched.
+            self.table.merge(&key, &fields);
         }
         // Keep the trim index in KEY order, not arrival order: a clock step
         // backwards makes the two differ, and "oldest" must mean the smallest
@@ -321,9 +323,10 @@ impl LogStore {
     /// One row, fixed fields and dynamic ones together. `None` = absent.
     ///
     /// `&mut` because the document read resolves field names through the
-    /// table's vocabulary (the same reason okm's own `get_document` is `&mut`).
+    /// table's vocabulary (the same reason okm's own `fetch` is `&mut`-shaped
+    /// behind a `&self` door).
     pub fn get(&mut self, key: &LogKey) -> Option<BTreeMap<String, DynamicValue>> {
-        self.table.get_document(key)
+        self.table.fetch(key)
     }
 
     /// Rows in time order, oldest first — the whole table as it stands. The
@@ -332,7 +335,7 @@ impl LogStore {
     pub fn entries(&mut self) -> Vec<LogEntry> {
         let keys: Vec<LogKey> = self.recent.iter().cloned().collect();
         keys.iter()
-            .filter_map(|key| self.table.get_document(key).map(|doc| (key.clone(), doc)))
+            .filter_map(|key| self.table.fetch(key).map(|doc| (key.clone(), doc)))
             .collect()
     }
 
@@ -417,14 +420,10 @@ impl LogStore {
             let Some(oldest) = self.recent.pop_front() else {
                 return;
             };
-            // `delete` needs the row as well: the collection derives the face
-            // set it removes from that row, so read the real one back (one
-            // point read per trimmed row — bounded and rare) instead of
-            // handing it a stand-in.
-            match self.table.get(&oldest) {
-                Some(row) => self.table.delete(&oldest, &row),
-                None => continue,
-            }
+            // `purge` derives the removal set from the STORED row, so the trim
+            // no longer reads the row back first (ADR-0035: the caller cannot
+            // hand it the wrong one). Absent = no-op, `false`.
+            self.table.purge(&oldest);
         }
     }
 }

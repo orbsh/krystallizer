@@ -430,7 +430,7 @@ impl ChannelStore {
     /// initialization memory is snapshotted as a SET of edge ids, so the head
     /// stays byte-stable while `?format=` keeps choosing the representation).
     fn checkpoint_head(&mut self, key: &CheckpointKey) -> Option<Vec<u64>> {
-        let doc = self.checkpoints.get_document(key)?;
+        let doc = self.checkpoints.fetch(key)?;
         match doc.get(checkpoint_field::HEAD) {
             Some(okm_core::obj_dynamic::DynamicValue::Array(items)) => Some(
                 items
@@ -456,7 +456,9 @@ impl ChannelStore {
                     .collect(),
             ),
         );
-        self.checkpoints.put_fields(key, &fields);
+        // The head is a dynamic name, so `merge` routes it to the segment and
+        // leaves the row alone (ADR-0035: names decide the arm, not the verb).
+        self.checkpoints.merge(key, &fields);
     }
 
     /// Open a compression AT the pointer k10r served (ADR-0008 §4): the node
