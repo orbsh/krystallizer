@@ -64,7 +64,7 @@ use crate::render::RenderFormat;
 use okm_core::obj_dynamic::DynamicValue;
 use okm_core::{
     write_slot, Collection, Document, DocumentEncode, EdgeHead, FjallStore, Graph, GraphEncode,
-    KeyEncode, MemBatch, NodeRef, Vector, VectorElem, VirtualStorage, Vocab, PRIMARY_SLOT,
+    KeyEncode, Batch, NodeRef, Vector, VectorElem, VirtualStorage, Vocab, PRIMARY_SLOT,
 };
 use okm_vector::ExactIndex;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -1740,7 +1740,7 @@ impl GraphStore {
             dst: body.dst.clone(),
             predicate: predicate.clone(),
         };
-        let mut batch = MemBatch::default();
+        let mut batch = Batch::default();
         facts
             .unlink_into(&mut batch, edge_id)
             .map_err(IngestError::Storage)?;
@@ -1975,7 +1975,7 @@ impl GraphStore {
                     // `link_into` — ADR-0010's owed item, paid 2026-10-19).
                     // The old props entry is deleted in the same batch, so a
                     // rewrite with no props leaves none behind.
-                    let mut batch = MemBatch::default();
+                    let mut batch = Batch::default();
                     self.facts()
                         .unlink_into(&mut batch, incumbent)
                         .map_err(IngestError::Storage)?;
@@ -2120,7 +2120,7 @@ impl GraphStore {
         kind: &str,
         props: &BTreeMap<String, DynamicValue>,
     ) -> Result<(), IngestError> {
-        let mut batch = MemBatch::default();
+        let mut batch = Batch::default();
         self.write_edge_into(&mut batch, edge_id, edge, scope, src, dst, kind, props)?;
         self.store
             .commit_batch(batch)
@@ -2132,7 +2132,7 @@ impl GraphStore {
     #[allow(clippy::too_many_arguments)] // one edge's own fields, not a grab bag
     fn write_edge_into(
         &mut self,
-        batch: &mut MemBatch,
+        batch: &mut Batch,
         edge_id: u64,
         edge: &Facts,
         scope: u64,
@@ -2242,7 +2242,7 @@ impl GraphStore {
 
     /// The same flush into a caller-owned batch, so the ids and the rows
     /// that carry them commit together.
-    fn write_community_seq_into(&self, batch: &mut MemBatch, scope: u64) {
+    fn write_community_seq_into(&self, batch: &mut Batch, scope: u64) {
         let Some(next) = self.next_community.get(&scope) else {
             return;
         };
@@ -2274,7 +2274,7 @@ impl GraphStore {
     /// `by_community` entry is exactly that case.
     fn write_entity_into(
         &self,
-        batch: &mut MemBatch,
+        batch: &mut Batch,
         key: &EntityKey,
         row: &EntityRow,
         old: Option<&EntityRow>,
@@ -2394,7 +2394,7 @@ impl GraphStore {
             }
         }
 
-        let mut batch = MemBatch::default();
+        let mut batch = Batch::default();
         for node in &ids {
             let row = &local[node];
             let winning = assign[node];
