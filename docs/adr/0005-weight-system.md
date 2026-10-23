@@ -1,6 +1,6 @@
 # ADR-0005: Weight System — Counters on the Edge Row, Read-Write Quadrants, Tool Index
 
-**Status**: Landed 2026-10-19 (the counters ride the edge row; the delta-append table survives only as the multi-writer escape); 2026-10-22 appended the recency ring (payload layout v3)
+**Status**: Landed 2026-10-19 (the counters ride the edge row; the delta-append table survives only as the multi-writer escape); 2026-10-22 appended the recency ring (payload layout v3); 2026-10-23 revision accepted (fields widened, time moved to query time) — not yet landed
 **Date**: 2026-09-08
 **Chinese**: [0005-weight-system.zh-CN.md](0005-weight-system.zh-CN.md)
 
@@ -112,6 +112,42 @@ pins one fact to one ranking entry. So the face exists:
 no projection table to maintain beside the row. The bare weight face remains
 undeclared, and so does `by_confidence`: neither has a reader.
 
+## Revision 2026-10-23: time leaves the stored value, and two signals retire
+
+**Accepted; not yet landed** — the code still folds the formula above, with
+`rarity_bonus` and `time_decay`.
+
+- **`last_read` / `last_write` retire.** The recency ring widens from one to
+  two — `recent_read[8]` / `recent_write[8]` — because a write's ring answers
+  "when was this fact last re-asserted", which two clocks could not separate
+  from "when was it last read". Payload goes to v4; the two rings are then the
+  only time-bearing fields on the row. The cost is 32 more bytes per row and
+  two `#[ok_len(8)]` contracts to pad.
+- **`time_decay` retires.** The stored weight keeps the three log terms only,
+  so it never goes stale between two writes and `by_scope_weight` orders by
+  volume and nothing else. Time moves to the QUERY: the rings feed a re-rank of
+  the set recall already fetched — the same in-memory sort the Consequences
+  section describes. Putting a time-dependent term back into the stored value
+  would reintroduce exactly the staleness this removes.
+- **`rarity_bonus` retires.** It was a hand-set threshold pair (read > 3,
+  write < 3) standing in for what the coefficient gap already says: read 1.0
+  against write 0.5. The deep-water quadrant keeps its meaning; it no longer
+  needs a constant of its own, and the constants stop being a policy surface
+  nobody read.
+- **`weight` becomes the ranking key, not a derived cache.** The formula is its
+  default producer; an outside writer may set an absolute value (0 = unset,
+  i.e. fold the formula). No second field. The subjective value does NOT enter
+  the formula at this stage — the point of this revision is that the data a
+  later formula needs exists, not that the formula is final.
+
+**What the row must carry for that later formula** (the reason the fields are
+widened before the formula is settled): the three counters, the two access
+rings, `confidence` (already declared; today only the LPA vote reads it), and
+the ranking key. Anything a future term needs beyond these — a citation count
+for fact-to-fact references, a separate count for by-id fetches — is added
+when the reader that consumes it arrives, per this ADR's own discipline: a
+field nobody scans is a write nobody asked for.
+
 ## Consequences
 
 - Today's ranking is an in-memory sort over the set recall already fetched —
@@ -119,10 +155,10 @@ undeclared, and so does `by_confidence`: neither has a reader.
 - Cold-tier work (Phase 5+ fallout) and progressive loading want the same
   scope-keyed projection; when either arrives, one table serves both, and the
   decision above names its shape.
-- Time decay makes a fact's weight non-monotonic between folds, which is
-  acceptable: nothing derived is kept in step today, and the ordering
-  tolerates day-scale staleness (same eventual-consistency posture as skill
-  boundary reconsolidation).
+- The stored weight is monotone, so nothing derived can go stale. Recency is a
+  query-time re-rank over the set recall already fetched; a scope-wide Top-K
+  ordered by recent activity therefore has no face — it would be stale by
+  construction. Add one only with a reader that accepts that.
 
 ## History
 
