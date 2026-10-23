@@ -417,8 +417,8 @@ async fn one_hop_traversal_resolves_both_ends() {
     );
 }
 
-/// The renderer's door: one scope's graph as nodes + links — what
-/// `docs/kg-demo-3d.html` reads instead of hand-written packets. Nothing
+/// The renderer's door: one scope's graph as nodes + links — what the served
+/// `/viz` page reads instead of hand-written packets. Nothing
 /// from another scope rides it, and an empty scope is a legal empty graph.
 #[tokio::test]
 async fn the_visualization_door_serves_one_scope_as_nodes_and_links() {

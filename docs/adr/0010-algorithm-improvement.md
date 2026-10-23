@@ -366,14 +366,13 @@ does.
 The persisted `community_id` can be handed to visualization at zero cost: a
 deterministic tuple → renderer conversion (no LLM involved) feeds
 **3d-force-graph** — the WebGL/three.js force-graph library with orbit-style
-camera control, the carrier this repo already exercises in
-`docs/kg-demo-3d.html`. That demo streams node/edge packets into the running
-layout and reheats the simulation per batch instead of redrawing the tree,
-which is exactly the producer shape here. Node color binds to
-`community_id` (one color cluster per community) and node size to weight, so
-the growth of order in long-term memory — the binning itself — is inspectable
-straight from `GET /graph/{scope}`, which now carries `community_id` on every
-node; the demo page still colours by node kind.
+camera control, the carrier `/viz` serves. The page streams node/edge packets
+into the running layout and reheats the simulation per batch instead of
+redrawing the tree, which is exactly the producer shape here. Node colour binds
+to `community_id` by default (one colour cluster per community, with a toggle
+for node kind) and node size to degree, so the growth of order in long-term
+memory — the binning itself — is inspectable straight from
+`GET /graph/{scope}`, which carries `community_id` on every node.
 
 ## Consequences
 

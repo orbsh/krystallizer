@@ -452,8 +452,9 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   (3) **the ladder works on a real corpus** — `search` puts ADR-0013 at 0.727 for
   "how is a backup bundle read by another tool", and `recall` answers with that
   document's community (its 8 sections and their `SECTION_OF` edges).
-  **Claims LANDED for ADR-0013 (2026-10-22):** `docs/kg/claims/0013-bulk-export.json`
-  holds 33 atomic assertions, one per fact, in controlled language — one object
+  **Claims LANDED for ADR-0013 (2026-10-22):** `docs/kg/claims.json` — one file
+  keyed by document — holds 33 atomic assertions for ADR-0013, one per fact, in
+  controlled language — one object
   keeps one name for the whole set, one claim states one thing, and each claim
   names the SECTION it belongs to (a heading the file lacks is a hard error, so
   drift is caught at conversion, never stored as a floating triple). `--claims`
@@ -467,6 +468,26 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   because the embedder's spread is 0.55–0.73 and wording dominates. Recorded, not
   fixed: the lever would be a query-expansion pass, not longer claim text.
   Next: the same pass over the remaining ADRs, then the skills/wiki corpus.
+  **Corpus widened to the site shape (2026-10-23).** The graph now carries the
+  four layers a landing page would draw — `project → document → section → claim` —
+  and `docs/kg/site.json` is the ONE editorial file: a project's sentence, a
+  document's sentence, and which tree is Chinese by default. Everything else stays
+  derived: `DEPENDS_ON` from each repo's Cargo.toml (16 edges over 9 projects),
+  `HAS_CRATE` from its `crates/` directories, `CONTAINS` from where a file lives,
+  `DOCUMENTED_BY` from a wiki URL in a README. `adr` folded into `document`, and
+  every node carries `lang`, so a renderer picks a language and a legend instead of
+  inferring either. Landed: 48 documents (25 en / 23 zh), 827 sections, 9 projects,
+  33 claims → 995 nodes / 1272 links, 0 refused; the top layer alone (project +
+  document) is 57 nodes / 297 links.
+  Two things this pass measured. **A repeat assertion is a NEW edge** unless the
+  relation is `functional` — a re-run doubles the corpus, so `SECTION_OF` and
+  `TWIN_OF` are now marked functional (a section has one home, a document one
+  twin) while the multi-valued families stay unprotected by design. And **CITES
+  now resolves ADR numbers**: the earlier pass matched only `.md` paths, so every
+  `ADR-0005` mention was silently dropped; 217 citations today against 29 before.
+  `DOCUMENTED_BY` counts only a `/wiki/` path — a bare `PLAN.md` in another
+  project's README means that project's own plan, and resolving it here invents a
+  relationship the text never stated.
 - [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), SKILL topological four-part nodes, Aura Actor nodes. (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.) ADR-0010 takes the incremental LOCAL form of community detection onto the write side and leaves OPEN whether that promotes a slice of Phase 5 ahead of Phase 3/4 — an open ruling, not settled.
 
 Deferred gates:
@@ -544,10 +565,12 @@ Deferred gates:
   that needs it.
   Verified by driving a real browser over CDP against a real store: counts, the
   detail panel's edge list, following an edge, the cap, and the colour toggle
-  (`tests/viz_surface.rs` holds the served-shape half of it). `docs/kg-demo-3d.html`
-  stays as the hand-fed design artifact (the physics pitfalls it documents are
-  still the reason the live page resolves endpoints before handing the array to
-  the engine); `docs/viz-style.js` remains that demo's own palette.
+  (`tests/viz_surface.rs` holds the served-shape half of it). The hand-fed demo
+  page (`docs/kg-demo-3d.html`, with its palette in `docs/viz-style.js`) is
+  WITHDRAWN 2026-10-23: `/viz` reads the same door against a live store, so the
+  demo was a second implementation of one viewer. The physics pitfalls it
+  documented remain the reason the live page resolves endpoints before handing
+  the array to the engine.
 - Boot from the config file LANDED 2026-10-21: the service's parameters are ONE
   file, `krystallizer.kdl`, read from the directory of the BINARY (canonicalized, so
   a supervisor's symlink still finds it) unless `--config` names another; `--path` is

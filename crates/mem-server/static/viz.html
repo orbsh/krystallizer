@@ -49,10 +49,16 @@
   #legend { bottom:12px; left:12px; max-width:320px; display:none; }
   #legend .item { display:flex; align-items:center; gap:6px; }
   #legend .sw { width:9px; height:9px; border-radius:50%; }
+  /* Labels are DRAWN, not DOM: a few hundred divs re-positioned every frame is
+     what makes a 3D view stutter, while one 2D canvas over the WebGL one costs
+     a few hundred fillText calls. Short on the canvas, full text on hover. */
+  #labels { position:fixed; inset:0; pointer-events:none; z-index:1; }
+  .row input[type=checkbox] { accent-color:#4a6bd8; }
 </style>
 </head>
 <body>
 <div id="graph"></div>
+<canvas id="labels"></canvas>
 
 <div class="panel" id="controls">
   <h1>k10r · 事实图</h1>
@@ -72,6 +78,11 @@
       <button id="byCommunity" class="on">社区</button>
       <button id="byKind">类型</button>
     </div>
+  </div>
+  <div class="row">
+    <label>标签</label>
+    <input id="showLabels" type="checkbox" checked>
+    <span style="color:var(--dim)">悬停看全文</span>
   </div>
   <div id="stats">—</div>
 </div>
@@ -140,9 +151,85 @@
     .linkWidth(l => (selected && (l.source.id === selected.id || l.target.id === selected.id)) ? 1.6 : 0.4)
     .linkDirectionalArrowLength(3)
     .linkDirectionalArrowRelPos(1)
-    .linkLabel(l => `${l.kind} · w${weight(l.weight)}`)
+    .linkLabel(l => `${l.source.name ?? '#' + l.source.id} —[${l.kind}]→ `
+      + `${l.target.name ?? '#' + l.target.id} · w${weight(l.weight)}`)
     .onNodeClick(selectNode)
     .onBackgroundClick(() => selectNode(null));
+
+  // ---- labels, drawn on a 2D canvas over the WebGL one -------------------
+  //
+  // Short on the canvas, full text on hover (nodeLabel / linkLabel above). The
+  // one-per-cell rule is what keeps a capped-but-still-dense picture readable:
+  // a label that would land on top of another one is DROPPED, and what gets
+  // dropped is the low-degree end — the selection and its neighbours always win.
+  const SHORT_NODE = 16, SHORT_LINK = 13;
+  const truncate = (text, max) => {
+    const t = (text || '').replace(/\s+/g, ' ').trim();
+    return t.length > max ? t.slice(0, max - 1) + '…' : t;
+  };
+  const labelCanvas = $('labels');
+  const labelCtx = labelCanvas.getContext('2d');
+  let labelDpr = 1;
+  function sizeLabels() {
+    labelDpr = window.devicePixelRatio || 1;
+    labelCanvas.width = Math.floor(window.innerWidth * labelDpr);
+    labelCanvas.height = Math.floor(window.innerHeight * labelDpr);
+    labelCanvas.style.width = window.innerWidth + 'px';
+    labelCanvas.style.height = window.innerHeight + 'px';
+  }
+  // The engine draws only when something moves, so the overlay keeps its own
+  // clock: every frame would burn a core for text nobody moved, and a slow
+  // timer makes the words lag behind the dots.
+  let lastLabelDraw = 0;
+  function drawLabels(now) {
+    requestAnimationFrame(drawLabels);
+    if (now - lastLabelDraw < 80) return;
+    lastLabelDraw = now;
+    labelCtx.setTransform(labelDpr, 0, 0, labelDpr, 0, 0);
+    labelCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    if (!graphData.nodes.length || !$('showLabels').checked) return;
+    const project = (p) => {
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return null;
+      const at = Graph.graph2ScreenCoords(p.x, p.y, p.z);
+      if (!at || !Number.isFinite(at.x) || !Number.isFinite(at.y)) return null;
+      if (at.x < 0 || at.y < 0 || at.x > window.innerWidth || at.y > window.innerHeight) return null;
+      return at;
+    };
+    const taken = new Set();
+    const free = (x, y) => {
+      const key = `${Math.floor(x / 96)}:${Math.floor(y / 15)}`;
+      if (taken.has(key)) return false;
+      taken.add(key);
+      return true;
+    };
+    labelCtx.font = '10px ui-monospace, Menlo, Consolas, monospace';
+    labelCtx.textAlign = 'center';
+    labelCtx.textBaseline = 'middle';
+    const ranked = [...graphData.nodes].sort((a, b) => {
+      const weightOf = (n) => (selected && (n.id === selected.id || neighbours.has(n.id)) ? 1 : 0);
+      return weightOf(b) - weightOf(a) || (degree.get(b.id) || 0) - (degree.get(a.id) || 0);
+    });
+    for (const node of ranked) {
+      const at = project(node);
+      if (!at) continue;
+      const isSelected = selected && node.id === selected.id;
+      if (!free(at.x, at.y + 9) && !isSelected) continue;
+      labelCtx.fillStyle = isSelected ? '#ffd479' : 'rgba(219,228,255,.78)';
+      labelCtx.fillText(truncate(node.name || `#${node.id}`, SHORT_NODE), at.x, at.y + 9);
+    }
+    labelCtx.font = '9px ui-monospace, Menlo, Consolas, monospace';
+    for (const link of graphData.links) {
+      const { source: s, target: t } = link;
+      if (!Number.isFinite(s.x) || !Number.isFinite(t.x)) continue;
+      const at = project({ x: (s.x + t.x) / 2, y: (s.y + t.y) / 2, z: (s.z + t.z) / 2 });
+      if (!at || !free(at.x, at.y)) continue;
+      const touch = selected && (s.id === selected.id || t.id === selected.id);
+      labelCtx.fillStyle = touch ? 'rgba(255,212,121,.9)' : 'rgba(139,154,196,.6)';
+      labelCtx.fillText(truncate(link.kind, SHORT_LINK), at.x, at.y);
+    }
+  }
+  sizeLabels();
+  requestAnimationFrame(drawLabels);
 
   function recount() {
     degree = new Map();
@@ -317,7 +404,10 @@
     $('byKind').classList.add('on'); $('byCommunity').classList.remove('on');
     Graph.nodeColor(Graph.nodeColor()); renderLegend();
   };
-  window.addEventListener('resize', () => Graph.width(window.innerWidth).height(window.innerHeight));
+  window.addEventListener('resize', () => {
+    Graph.width(window.innerWidth).height(window.innerHeight);
+    sizeLabels();
+  });
   load();
 </script>
 </body>
