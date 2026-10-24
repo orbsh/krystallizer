@@ -8,6 +8,7 @@
 //!
 //! Skipped (not failed) when `duckdb` is missing or its iceberg extension cannot
 //! load: both are properties of the machine, not of the files.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use std::process::Command;
 

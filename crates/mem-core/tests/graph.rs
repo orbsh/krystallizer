@@ -5,6 +5,7 @@
 //!
 //! The round trips are locked, not just the bytes: a byte-pass with an
 //! empty query is the silent-corruption shape this file exists to catch.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use mem_core::graph::{
     FactTuple, GraphStore, IngestError, IngestOutcome, Touch, RECENT_BASE, RECENT_SLOTS,

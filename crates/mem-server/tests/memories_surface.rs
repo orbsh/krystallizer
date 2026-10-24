@@ -9,6 +9,7 @@
 //! door), a structural bug is a 400 carrying the core's own reason, and
 //! the graph shares the `memory` keyspace with the code store without
 //! either seeing the other.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use mem_server::{EntityDto, FactViewDto, GraphDto, IngestOutcomeDto};
 use std::net::SocketAddr;

@@ -5,6 +5,7 @@
 //! carries what a skill-to-code link is decided from. The query round trip
 //! is locked, not just the bytes (okm junction lesson: byte-pass +
 //! query-empty is the classic silent corruption shape).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use mem_core::code::{CodeRow, CodeStore};
 use okm_core::KeyEncode;

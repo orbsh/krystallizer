@@ -14,6 +14,7 @@
 //!
 //! Skips (prints why) when the machine has no embedding artifact, so the
 //! default gate stays runnable anywhere.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use mem_core::graph::{FactTuple, GraphStore};
 use mem_core::{KrystallizerConfig, LANDING_FLOOR};

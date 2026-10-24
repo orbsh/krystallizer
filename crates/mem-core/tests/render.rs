@@ -5,6 +5,7 @@
 //! which counters — and differ only in syntax; `struct` carries no text at
 //! all, because there the answer IS the data. These tests lock that claim on
 //! constructed slices, so they need no embedding engine and no storage.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use mem_core::graph::{CommunitySlice, FactView, Facts, ResolvedNode};
 use mem_core::{render_head, render_memory, RenderFormat};

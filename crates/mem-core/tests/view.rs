@@ -8,6 +8,7 @@
 //! (`DEFAULT_USER_NODE` / `DEFAULT_SCOPE`): the first entity a scope ever
 //! resolves takes id 1, so a test can pin the convention without a members
 //! table. Phase 2.7 replaces the constants with a member→node mapping.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use mem_core::channel::{kind, role};
 use mem_core::graph::FactTuple;

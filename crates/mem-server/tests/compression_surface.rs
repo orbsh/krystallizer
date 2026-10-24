@@ -7,6 +7,7 @@
 //! Real axum on an OS-picked port against a real Fjall keyspace, like the
 //! other surface tests: the ordering inside `fetch_session` (measure the
 //! idle against the OLD cursor, then stamp) is only observable here.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use mem_core::channel::role;
 use mem_core::{CompressionParams, TAIL_PROMPT};

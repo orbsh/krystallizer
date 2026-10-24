@@ -1,6 +1,7 @@
 //! The structured log's suite (ADR-0011): key order IS time order, `seq`
 //! survives a reopen, the dynamic segment round-trips, and the table trims
 //! its oldest rows at the ceiling instead of growing without limit.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use mem_core::log::{event, field, level, source};
 use mem_core::{LogKey, LogStore, DEFAULT_MAX_ROWS};

@@ -3,6 +3,7 @@
 //! Covers the three endpoints' round trips and the projection's
 //! checkpoint/increment semantics over the wire (not just at the
 //! store level — mem-core's own tests cover that).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use mem_core::channel::role;
 use mem_server::{AppendCheckpoint, AppendMessage, MessageKeyDto};

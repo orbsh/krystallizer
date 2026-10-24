@@ -8,6 +8,7 @@
 //! assembly and works, and a second process-level open of the same
 //! directory fails (one writer per directory, by construction — no silent
 //! second writer).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use mem_core::{open_service, CodeRow, EntityRow, FactTuple};
 use okm_core::{Document, KeyEncode};

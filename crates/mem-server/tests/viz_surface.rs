@@ -1,6 +1,7 @@
 //! The graph view is served BY the memory service (ADR-0007: no CORS on a
 //! service that holds user memory), and it draws what `GET /graph/{scope}`
 //! answers — so the page, its library and the data come from one origin.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 async fn spawn(dir: &std::path::Path) -> String {
     let router = mem_server::open(dir.to_path_buf()).unwrap();

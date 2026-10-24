@@ -6,6 +6,12 @@
 //! initialization memory included), and tasks. Zero LLM dependency,
 //! zero transport dependency. Design: docs/adr/.
 
+// Unit tests are allowed the unwrap/panic vocabulary the production targets
+// are denied: a panicking test is a failing test with a stack trace. Set once
+// here — `cfg(test)` is only on for this crate's own test build, never for
+// the `tests/` crates (those carry the same line at their own root).
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn))]
+
 pub mod bundle;
 pub mod channel;
 pub mod code;

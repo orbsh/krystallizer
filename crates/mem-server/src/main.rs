@@ -40,7 +40,12 @@ the `logs` ceiling.";
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config: Option<PathBuf> = None;
-    let mut addr: SocketAddr = DEFAULT_ADDR.parse().expect("the default address parses");
+    // `DEFAULT_ADDR` is this file's own literal; a broken literal is a build
+    // defect, so the parse falls back to the same loopback default instead of
+    // panicking at boot.
+    let mut addr: SocketAddr = DEFAULT_ADDR
+        .parse()
+        .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 7760)));
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {

@@ -8,6 +8,7 @@
 //! parsing, the file's default location, and the config reaching the stores. The
 //! model artifact is ~96 MB and deliberately NOT in the repo, so every test here
 //! skips (printing why) on a machine without it.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::SocketAddr;

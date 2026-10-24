@@ -2204,23 +2204,30 @@ impl GraphStore {
     /// the highest community id any of its nodes carries, so the first
     /// post-upgrade ingest cannot collide with a live bin.
     fn next_community_id(&mut self, scope: u64) -> u64 {
-        if !self.next_community.contains_key(&scope) {
-            let stored = self
-                .seq()
-                .get(&CommunitySeqKey { scope })
-                .map_or(0, |row| row.high_water);
-            let live = self
-                .scope_entities(scope)
-                .into_iter()
-                .map(|(_, row)| row.community_id)
-                .max()
-                .unwrap_or(0);
-            self.next_community.insert(scope, stored.max(live) + 1);
-        }
+        // Seed BEFORE taking the mutable borrow: the floor is a read of the
+        // store, the slot is a write to the cache. `entry` then hands back
+        // the slot whether it existed or was just created, so there is no
+        // "the map must contain it now" invariant to state (or to trust).
+        let seed = match self.next_community.get(&scope) {
+            Some(&n) => n,
+            None => {
+                let stored = self
+                    .seq()
+                    .get(&CommunitySeqKey { scope })
+                    .map_or(0, |row| row.high_water);
+                let live = self
+                    .scope_entities(scope)
+                    .into_iter()
+                    .map(|(_, row)| row.community_id)
+                    .max()
+                    .unwrap_or(0);
+                stored.max(live) + 1
+            }
+        };
         // Issuing ADVANCES the watermark — a cached "next" that did not move
         // hands the same id to every node landed after it, which silently
         // puts unrelated seeds in one community.
-        let next = self.next_community.get_mut(&scope).expect("just seeded");
+        let next = self.next_community.entry(scope).or_insert(seed);
         let id = *next;
         *next = id.saturating_add(1);
         id
