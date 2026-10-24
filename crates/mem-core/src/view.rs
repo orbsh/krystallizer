@@ -23,7 +23,7 @@
 //! the graph's own reads (ADR-0003).
 
 use crate::channel::{role, ChannelStore, SessionView};
-use crate::graph::{FactView, GraphStore};
+use crate::graph::{FactView, GraphStore, IngestError};
 use std::collections::BTreeSet;
 
 /// The corpus the head reads.
@@ -70,8 +70,10 @@ pub fn assemble(
     channel_id: u64,
     member_id: u64,
     scope: u64,
-) -> Projection {
-    let view = channels.fetch_full(channel_id, member_id);
+) -> Result<Projection, IngestError> {
+    let view = channels
+        .fetch_full(channel_id, member_id)
+        .map_err(IngestError::Storage)?;
     // The head is the FROZEN set the checkpoint recorded (ADR-0008 §2): the
     // initialization memory is snapshotted as a set of edge ids at compression
     // time and re-rendered per request, so `?format=` still picks the
@@ -79,10 +81,21 @@ pub fn assemble(
     // Before the first compression there is no snapshot, so the live traversal
     // answers — over EVERY member of the channel (ADR-0009 §1).
     let head = match &view.head {
-        Some(ids) => ids.iter().filter_map(|id| graph.fact_view(*id)).collect(),
-        None => member_memory(channels, graph, scope, channel_id),
+        Some(ids) => {
+            let mut head = Vec::with_capacity(ids.len());
+            for id in ids {
+                // An id whose edge is gone is absence (the frozen set outlived
+                // its row); a store that cannot answer is not, and it
+                // propagates.
+                if let Some(fact) = graph.fact_view(*id)? {
+                    head.push(fact);
+                }
+            }
+            head
+        }
+        None => member_memory(channels, graph, scope, channel_id)?,
     };
-    Projection { head, view }
+    Ok(Projection { head, view })
 }
 
 /// One turn as the LLM sees it (ADR-0009 §2): consecutive messages from the same
@@ -108,8 +121,14 @@ pub struct Turn {
 /// order is the log's own key order — the reply is keyed by its FIRST token's
 /// clock, so a message typed during a generation sorts before that reply while
 /// the reply's `end_ts` still says when it finished.
-pub fn conversation(channels: &mut ChannelStore, channel_id: u64, member_id: u64) -> Vec<Turn> {
-    let view = channels.fetch_full(channel_id, member_id);
+pub fn conversation(
+    channels: &mut ChannelStore,
+    channel_id: u64,
+    member_id: u64,
+) -> Result<Vec<Turn>, IngestError> {
+    let view = channels
+        .fetch_full(channel_id, member_id)
+        .map_err(IngestError::Storage)?;
     turns_of(channels, channel_id, &view.increment)
 }
 
@@ -119,7 +138,7 @@ pub fn turns_of(
     channels: &ChannelStore,
     channel_id: u64,
     rows: &[(crate::channel::MessageKey, crate::channel::MessageRow)],
-) -> Vec<Turn> {
+) -> Result<Vec<Turn>, IngestError> {
     let mut turns: Vec<Turn> = Vec::new();
     for (key, row) in rows {
         if row.kind != crate::channel::kind::TEXT {
@@ -128,10 +147,15 @@ pub fn turns_of(
         let Some(speaker) = role_name(row.role) else {
             continue;
         };
-        let name = channels
+        // An unregistered sender is absence, not a failure: the line falls
+        // back to the id-derived name.
+        let name = match channels
             .member(channel_id, row.sender)
-            .map(|member| member.display_name)
-            .unwrap_or_else(|| format!("member-{}", row.sender));
+            .map_err(IngestError::Storage)?
+        {
+            Some(member) => member.display_name,
+            None => format!("member-{}", row.sender),
+        };
         let line = format!("[{name}(id={})] {}", row.sender, row.content);
         let ended = row.end_ts_ms.max(key.ts_ms);
         match turns.last_mut() {
@@ -151,7 +175,7 @@ pub fn turns_of(
             }),
         }
     }
-    turns
+    Ok(turns)
 }
 
 /// The facts incident to EVERY member of the channel, both directions, each edge
@@ -167,22 +191,25 @@ pub fn member_memory(
     graph: &mut GraphStore,
     scope: u64,
     channel_id: u64,
-) -> Vec<FactView> {
-    let members = channels.members(channel_id);
+) -> Result<Vec<FactView>, IngestError> {
+    let members = channels
+        .members(channel_id)
+        .map_err(IngestError::Storage)?;
     let mut seen = BTreeSet::new();
     let mut head: Vec<FactView> = Vec::new();
     for (key, _) in members {
         let name = crate::channel::member_node(channel_id, key.member_id);
-        let Some((node, _)) = graph.entity_by_name(scope, &name) else {
+        let Some((node, _)) = graph.entity_by_name(scope, &name)? else {
             continue; // no facts hang on this member yet
         };
-        let edges = graph.out_edges(scope, node);
-        let incoming = graph.in_edges(scope, node);
+        let edges = graph.out_edges(scope, node)?;
+        let incoming = graph.in_edges(scope, node)?;
         for edge_id in edges.into_iter().chain(incoming) {
             if !seen.insert(edge_id) {
                 continue;
             }
-            if let Some(fact) = graph.fact_view(edge_id) {
+            // An id whose edge is gone is absence, not a failure.
+            if let Some(fact) = graph.fact_view(edge_id)? {
                 head.push(fact);
             }
         }
@@ -193,5 +220,5 @@ pub fn member_memory(
             .cmp(&a.edge.weight)
             .then_with(|| a.edge_id.cmp(&b.edge_id))
     });
-    head
+    Ok(head)
 }

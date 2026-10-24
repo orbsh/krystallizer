@@ -58,7 +58,7 @@ pub struct MemState {
 /// Open the database at `path` and build the router WITHOUT an embedding
 /// engine — nodes then carry no vector. This is the shape the
 /// storage-level tests use; a serving deployment wants `open_from_config`.
-pub fn open(path: PathBuf) -> Result<Router, fjall::Error> {
+pub fn open(path: PathBuf) -> Result<Router, String> {
     build(
         path,
         None,
@@ -78,7 +78,7 @@ pub fn open(path: PathBuf) -> Result<Router, fjall::Error> {
 pub fn open_with(
     path: PathBuf,
     embedder: Option<Arc<dyn mem_core::Embedder>>,
-) -> Result<Router, fjall::Error> {
+) -> Result<Router, String> {
     build(
         path,
         embedder,
@@ -94,7 +94,7 @@ pub fn open_with_compression(
     path: PathBuf,
     embedder: Option<Arc<dyn mem_core::Embedder>>,
     compression: mem_core::CompressionParams,
-) -> Result<Router, fjall::Error> {
+) -> Result<Router, String> {
     build(path, embedder, compression, mem_core::DEFAULT_MAX_ROWS)
 }
 
@@ -105,7 +105,7 @@ pub fn open_with_compression(
 pub enum OpenError {
     Config(mem_core::ConfigError),
     Embedding(mem_core::EmbedError),
-    Storage(fjall::Error),
+    Storage(String),
 }
 
 impl std::fmt::Display for OpenError {
@@ -125,7 +125,9 @@ impl std::error::Error for OpenError {
         match self {
             Self::Config(e) => Some(e),
             Self::Embedding(e) => Some(e),
-            Self::Storage(e) => Some(e),
+            // A store's refusal is the engine's own text, not a typed error to
+            // walk down from.
+            Self::Storage(_) => None,
         }
     }
 }
@@ -144,7 +146,7 @@ impl From<mem_core::EmbedError> for OpenError {
 
 impl From<fjall::Error> for OpenError {
     fn from(e: fjall::Error) -> Self {
-        Self::Storage(e)
+        Self::Storage(e.to_string())
     }
 }
 
@@ -157,12 +159,13 @@ impl From<fjall::Error> for OpenError {
 pub fn open_from_config(cfg: &mem_core::KrystallizerConfig) -> Result<Router, OpenError> {
     let dir = cfg.storage.data_dir()?;
     let engine = engine_from(cfg)?;
-    Ok(build(
+    build(
         dir,
         Some(engine),
         cfg.compression.params(),
         cfg.logs.max_rows,
-    )?)
+    )
+    .map_err(OpenError::Storage)
 }
 
 /// Build the engine the file names. Local = the artifact is loaded (a missing one is
@@ -204,7 +207,7 @@ fn build(
     embedder: Option<Arc<dyn mem_core::Embedder>>,
     compression: mem_core::CompressionParams,
     log_max_rows: usize,
-) -> Result<Router, fjall::Error> {
+) -> Result<Router, String> {
     let stores = mem_core::open_service(&path)?;
     let graph = match &embedder {
         // The serving process attaches its engine to the graph too: node
@@ -289,17 +292,19 @@ async fn append_message(
     State(state): State<Arc<MemState>>,
     Path(channel_id): Path<u64>,
     Json(body): Json<AppendMessage>,
-) -> Json<MessageKeyDto> {
+) -> Result<Json<MessageKeyDto>, FactError> {
     let mut store = state.store.lock().await;
-    let key = store.append(
-        channel_id,
-        body.ts_ms,
-        body.sub,
-        body.role,
-        body.kind,
-        &body.content,
-    );
-    Json(key.into())
+    let key = store
+        .append(
+            channel_id,
+            body.ts_ms,
+            body.sub,
+            body.role,
+            body.kind,
+            &body.content,
+        )
+        .map_err(FactError::internal)?;
+    Ok(Json(key.into()))
 }
 
 /// The key a message lives under, split into fields (the client needs
@@ -529,7 +534,7 @@ async fn fetch_session(
         channel_id,
         member_id,
         mem_core::view::DEFAULT_SCOPE,
-    );
+    )?;
     let assembled = assembled_bytes(&projection);
     // The clock is the caller's (`query.ts_ms`); the POSITION is k10r's. The
     // idle therefore measures how stale the record this member last saw has
@@ -541,7 +546,9 @@ async fn fetch_session(
     // Only the clock is stamped: the model's read always reaches the log's end,
     // so a stored POSITION would be a constant (ADR-0008 §2).
     if let Some(clock) = query.ts_ms {
-        channels.note_read(channel_id, member_id, clock);
+        channels
+            .note_read(channel_id, member_id, clock)
+            .map_err(FactError::internal)?;
     }
     // The head this read assembled is what the coming compression will have
     // been produced under, so the proposal freezes it NOW (ADR-0008 §2: the
@@ -550,7 +557,9 @@ async fn fetch_session(
     let verdict =
         mem_core::compress::evaluate(&projection.view, assembled, idle_ms, &state.compression);
     if let Some(v) = &verdict {
-        channels.open_checkpoint(channel_id, (v.checkpoint_ts, v.checkpoint_sub), &head_ids);
+        channels
+            .open_checkpoint(channel_id, (v.checkpoint_ts, v.checkpoint_sub), &head_ids)
+            .map_err(FactError::internal)?;
     }
     // ADR-0011's first writer: the verdict is a decision, and decisions go to the
     // diagnostic log — naming the split it chose, the trigger that fired and the
@@ -560,10 +569,11 @@ async fn fetch_session(
             .log
             .lock()
             .await
-            .record_verdict(now_ms(), channel_id, verdict);
+            .record_verdict(now_ms(), channel_id, verdict)
+            .map_err(FactError::internal)?;
     }
     let turns: Vec<TurnDto> =
-        mem_core::view::turns_of(&channels, channel_id, &projection.view.increment)
+        mem_core::view::turns_of(&channels, channel_id, &projection.view.increment)?
             .into_iter()
             .map(TurnDto::from)
             .collect();
@@ -586,25 +596,28 @@ fn now_ms() -> u64 {
 async fn read_channel(
     State(state): State<Arc<MemState>>,
     Path(channel_id): Path<u64>,
-) -> Json<Vec<ChannelEntry>> {
+) -> Result<Json<Vec<ChannelEntry>>, FactError> {
     let mut store = state.store.lock().await;
-    let rows = store.history(channel_id);
-    Json(
-        rows.into_iter()
-            .map(|(key, row)| ChannelEntry {
-                key: MessageKeyDto::from(key),
-                sender_name: store
-                    .member(channel_id, row.sender)
-                    .map(|member| member.display_name)
-                    .unwrap_or_else(|| format!("member-{}", row.sender)),
-                sender: row.sender,
-                role: mem_core::view::role_name(row.role).map(str::to_string),
-                kind: row.kind,
-                end_ts_ms: row.end_ts_ms,
-                content: row.content,
-            })
-            .collect(),
-    )
+    let rows = store.history(channel_id).map_err(FactError::internal)?;
+    let mut entries = Vec::with_capacity(rows.len());
+    for (key, row) in rows {
+        // An unregistered sender is absence, not a failure: the entry falls
+        // back to the id-derived name.
+        let sender_name = match store.member(channel_id, row.sender).map_err(FactError::internal)? {
+            Some(member) => member.display_name,
+            None => format!("member-{}", row.sender),
+        };
+        entries.push(ChannelEntry {
+            key: MessageKeyDto::from(key),
+            sender_name,
+            sender: row.sender,
+            role: mem_core::view::role_name(row.role).map(str::to_string),
+            kind: row.kind,
+            end_ts_ms: row.end_ts_ms,
+            content: row.content,
+        });
+    }
+    Ok(Json(entries))
 }
 
 /// The assembled context's size in bytes — what the budget trigger
@@ -648,6 +661,7 @@ async fn append_checkpoint(
     let mut store = state.store.lock().await;
     store
         .complete_checkpoint(channel_id, &body.summary)
+        .map_err(FactError::internal)?
         .map(|_pointer| StatusCode::NO_CONTENT)
         .ok_or_else(|| FactError {
             error: "no open compression node for this channel: the pointer comes from the \
@@ -708,16 +722,17 @@ impl From<CodeRow> for CodeRowDto {
 async fn put_code(
     State(state): State<Arc<MemState>>,
     Json(body): Json<PutCode>,
-) -> Json<CodeIdDto> {
+) -> Result<Json<CodeIdDto>, FactError> {
     let mut code = state.code.lock().await;
-    Json(CodeIdDto {
-        code_id: code.put(
+    let code_id = code
+        .put(
             &body.language,
             &body.description,
             &body.parameters,
             &body.source,
-        ),
-    })
+        )
+        .map_err(FactError::internal)?;
+    Ok(Json(CodeIdDto { code_id }))
 }
 
 /// `GET /export` — the WHOLE store as one `tar.zst` bundle (ADR-0013).
@@ -1014,11 +1029,13 @@ async fn import_bundle(
 async fn fetch_code(
     State(state): State<Arc<MemState>>,
     Path(code_id): Path<u64>,
-) -> Result<Json<CodeRowDto>, StatusCode> {
+) -> axum::response::Response {
     let code = state.code.lock().await;
-    code.get(code_id)
-        .map(|r| Json(r.into()))
-        .ok_or(StatusCode::NOT_FOUND)
+    match code.get(code_id) {
+        Ok(Some(row)) => Json(CodeRowDto::from(row)).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => FactError::internal(e).into_response(),
+    }
 }
 
 // ---- the fact graph (ns 36 entities / 37 facts) ----------------------
@@ -1063,6 +1080,17 @@ pub struct FactError {
     pub error: String,
     #[serde(skip)]
     status: StatusCode,
+}
+
+impl FactError {
+    /// A store that could not answer: the engine's own text rides along and
+    /// the door answers 500 (the same class as the graph's `Storage`).
+    fn internal(error: String) -> Self {
+        Self {
+            error,
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
 }
 
 impl From<IngestError> for FactError {
@@ -1293,12 +1321,13 @@ async fn search_facts(
 async fn anchored_entity(
     State(state): State<Arc<MemState>>,
     Path((scope, node_id)): Path<(u64, u64)>,
-) -> Result<Json<AnchoredDto>, StatusCode> {
+) -> axum::response::Response {
     let mut graph = state.graph.lock().await;
-    graph
-        .anchored(scope, node_id)
-        .map(|anchored| Json(AnchoredDto::from(anchored)))
-        .ok_or(StatusCode::NOT_FOUND)
+    match graph.anchored(scope, node_id) {
+        Ok(Some(anchored)) => Json(AnchoredDto::from(anchored)).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => FactError::from(e).into_response(),
+    }
 }
 
 /// `GET /graph/{scope}/timeline?k=` — the temporal entrance: the scope's facts in
@@ -1307,15 +1336,16 @@ async fn timeline_facts(
     State(state): State<Arc<MemState>>,
     Path(scope): Path<u64>,
     Query(query): Query<TopQuery>,
-) -> Json<Vec<FactViewDto>> {
+) -> Result<Json<Vec<FactViewDto>>, FactError> {
     let mut graph = state.graph.lock().await;
-    Json(
+    Ok(Json(
         graph
             .timeline(scope, query.k)
+            .map_err(FactError::from)?
             .into_iter()
             .map(FactViewDto::from)
             .collect(),
-    )
+    ))
 }
 
 /// `GET /graph/{scope}/chain?from=&kind=&hops=` — the causal entrance: follow ONE
@@ -1324,15 +1354,16 @@ async fn chain_facts(
     State(state): State<Arc<MemState>>,
     Path(scope): Path<u64>,
     Query(query): Query<ChainQuery>,
-) -> Json<Vec<ChainHopDto>> {
+) -> Result<Json<Vec<ChainHopDto>>, FactError> {
     let mut graph = state.graph.lock().await;
-    Json(
+    Ok(Json(
         graph
             .chain(scope, query.from, &query.kind, query.hops)
+            .map_err(FactError::from)?
             .into_iter()
             .map(ChainHopDto::from)
             .collect(),
-    )
+    ))
 }
 
 /// One fact BY ITS ID — the deterministic read, the mirror of the write that
@@ -1341,12 +1372,13 @@ async fn chain_facts(
 async fn fetch_fact(
     State(state): State<Arc<MemState>>,
     Path((scope, edge_id)): Path<(u64, u64)>,
-) -> Result<Json<FactViewDto>, StatusCode> {
+) -> axum::response::Response {
     let mut graph = state.graph.lock().await;
-    graph
-        .fact_in_scope(scope, edge_id)
-        .map(|fact| Json(FactViewDto::from(fact)))
-        .ok_or(StatusCode::NOT_FOUND)
+    match graph.fact_in_scope(scope, edge_id) {
+        Ok(Some(fact)) => Json(FactViewDto::from(fact)).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => FactError::from(e).into_response(),
+    }
 }
 
 /// Withdraw one fact — the write side's third verb, beside link and rewrite. The
@@ -1373,15 +1405,16 @@ async fn top_facts(
     State(state): State<Arc<MemState>>,
     Path(scope): Path<u64>,
     Query(query): Query<TopQuery>,
-) -> Json<Vec<FactViewDto>> {
+) -> Result<Json<Vec<FactViewDto>>, FactError> {
     let mut graph = state.graph.lock().await;
-    Json(
+    Ok(Json(
         graph
             .top_by_weight(scope, query.k)
+            .map_err(FactError::from)?
             .into_iter()
             .map(FactViewDto::from)
             .collect(),
-    )
+    ))
 }
 
 /// `GET /memories/{scope}/recall?q=&k=&ts_ms=` — the read shape ADR-0003
@@ -1509,18 +1542,20 @@ impl From<mem_core::graph::FactView> for FactViewDto {
 async fn fetch_entity(
     State(state): State<Arc<MemState>>,
     Path((scope, name)): Path<(u64, String)>,
-) -> Result<Json<EntityDto>, StatusCode> {
+) -> axum::response::Response {
     let mut graph = state.graph.lock().await;
-    let (node_id, row) = graph
-        .entity_by_name(scope, &name)
-        .ok_or(StatusCode::NOT_FOUND)?;
-    Ok(Json(EntityDto {
-        node_id: Some(node_id),
-        user: None,
-        kind: row.kind.as_str().unwrap_or_default().to_string(),
-        literal_num: row.literal_num,
-        name: row.name,
-    }))
+    match graph.entity_by_name(scope, &name) {
+        Ok(Some((node_id, row))) => Json(EntityDto {
+            node_id: Some(node_id),
+            user: None,
+            kind: row.kind.as_str().unwrap_or_default().to_string(),
+            literal_num: row.literal_num,
+            name: row.name,
+        })
+        .into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => FactError::from(e).into_response(),
+    }
 }
 
 /// `GET /graph/{scope}/entities/{node_id}/edges` — the node's outgoing
@@ -1529,15 +1564,16 @@ async fn fetch_entity(
 async fn list_entity_edges(
     State(state): State<Arc<MemState>>,
     Path((scope, node_id)): Path<(u64, u64)>,
-) -> Json<Vec<FactViewDto>> {
+) -> Result<Json<Vec<FactViewDto>>, FactError> {
     let mut graph = state.graph.lock().await;
-    Json(
+    Ok(Json(
         graph
             .out_facts(scope, node_id)
+            .map_err(FactError::from)?
             .into_iter()
             .map(FactViewDto::from)
             .collect(),
-    )
+    ))
 }
 
 /// One node of a rendered graph.
@@ -1608,12 +1644,17 @@ async fn viz_vendor() -> impl IntoResponse {
     )
 }
 
-async fn fetch_graph(State(state): State<Arc<MemState>>, Path(scope): Path<u64>) -> Json<GraphDto> {
+async fn fetch_graph(
+    State(state): State<Arc<MemState>>,
+    Path(scope): Path<u64>,
+) -> Result<Json<GraphDto>, FactError> {
     let mut graph = state.graph.lock().await;
     let mut nodes: Vec<GraphNodeDto> = Vec::new();
-    for (node_id, row) in graph.scope_entities(scope) {
+    for (node_id, row) in graph.scope_entities(scope).map_err(FactError::from)? {
+        // No open attributes on this node is absence; the bag is empty.
         let props = graph
             .entity_props(scope, node_id)
+            .map_err(FactError::from)?
             .map(|found| {
                 found
                     .into_iter()
@@ -1632,6 +1673,7 @@ async fn fetch_graph(State(state): State<Arc<MemState>>, Path(scope): Path<u64>)
     }
     let links: Vec<GraphLinkDto> = graph
         .scope_facts(scope)
+        .map_err(FactError::from)?
         .into_iter()
         .map(|fact| GraphLinkDto {
             edge_id: fact.edge_id,
@@ -1643,7 +1685,7 @@ async fn fetch_graph(State(state): State<Arc<MemState>>, Path(scope): Path<u64>)
             weight: fact.edge.weight,
         })
         .collect();
-    Json(GraphDto { nodes, links })
+    Ok(Json(GraphDto { nodes, links }))
 }
 
 /// The engine's own failures on a door. `FactError` covers the graph's

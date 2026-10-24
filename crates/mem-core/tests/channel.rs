@@ -44,14 +44,14 @@ fn fetch_returns_entries_in_time_order() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
 
-    store.append(CH, 999, 0, role::USER, 0, "earlier ms");
-    store.append(CH, 1000, 0, role::USER, 0, "first");
-    store.append(CH, 1000, 1, role::ASSISTANT, 0, "same-ms tiebreak");
-    store.append(CH, 2000, 0, role::ASSISTANT, 0, "last");
+    store.append(CH, 999, 0, role::USER, 0, "earlier ms").unwrap();
+    store.append(CH, 1000, 0, role::USER, 0, "first").unwrap();
+    store.append(CH, 1000, 1, role::ASSISTANT, 0, "same-ms tiebreak").unwrap();
+    store.append(CH, 2000, 0, role::ASSISTANT, 0, "last").unwrap();
     // A second channel's row: must NOT leak into CH's projection.
-    store.append(2, 1500, 0, role::USER, 0, "other channel");
+    store.append(2, 1500, 0, role::USER, 0, "other channel").unwrap();
 
-    let view = store.fetch_full(CH, DEFAULT_MEMBER);
+    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
     assert_eq!(view.coverage_ts, 0, "no checkpoint yet");
     assert_eq!(view.coverage_sub, 0);
     assert!(view.summary.is_none());
@@ -76,11 +76,11 @@ fn fetch_returns_entries_in_time_order() {
 fn returned_keys_round_trip_to_rows() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
-    store.append(CH, 10, 0, role::USER, 0, "hello");
-    let view = store.fetch_full(CH, DEFAULT_MEMBER);
+    store.append(CH, 10, 0, role::USER, 0, "hello").unwrap();
+    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
     assert_eq!(view.increment.len(), 1);
     let (key, row) = &view.increment[0];
-    let got = store.fetch_full(CH, DEFAULT_MEMBER); // read path stable
+    let got = store.fetch_full(CH, DEFAULT_MEMBER).unwrap(); // read path stable
     assert_eq!(got.increment[0].1, *row);
     assert_eq!(key.channel_id, CH);
     assert_eq!(row.role, role::USER);
@@ -96,12 +96,12 @@ fn checkpoint_coverage_splits_the_projection() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
 
-    store.append(CH, 10, 0, role::USER, 0, "m1");
-    store.append(CH, 20, 0, role::ASSISTANT, 0, "m2");
-    store.append(CH, 30, 0, role::USER, 0, "m3");
+    store.append(CH, 10, 0, role::USER, 0, "m1").unwrap();
+    store.append(CH, 20, 0, role::ASSISTANT, 0, "m2").unwrap();
+    store.append(CH, 30, 0, role::USER, 0, "m3").unwrap();
 
-    store.append_checkpoint(CH, (20, 0), "m1 and m2 were about testing", &[]);
-    let view = store.fetch_full(CH, DEFAULT_MEMBER);
+    store.append_checkpoint(CH, (20, 0), "m1 and m2 were about testing", &[]).unwrap();
+    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
     assert_eq!(view.coverage_ts, 20);
     assert_eq!(view.coverage_sub, 0);
     assert_eq!(
@@ -121,8 +121,8 @@ fn checkpoint_coverage_splits_the_projection() {
 
     // Advancing coverage overwrites the same checkpoint row (and the
     // summary): m3 becomes covered too, increment drains.
-    store.append_checkpoint(CH, (30, 0), "everything so far", &[]);
-    let view = store.fetch_full(CH, DEFAULT_MEMBER);
+    store.append_checkpoint(CH, (30, 0), "everything so far", &[]).unwrap();
+    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
     assert_eq!(view.coverage_ts, 30);
     assert!(view.increment.is_empty());
 }
@@ -136,13 +136,13 @@ fn a_same_millisecond_record_after_the_pointer_stays_in_the_increment() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
 
-    store.append(CH, 1000, 0, role::USER, 0, "the split record");
-    store.append(CH, 1000, 1, role::TOOL, 2, "tool_result, same ms");
-    store.append(CH, 1500, 0, role::ASSISTANT, 0, "later");
+    store.append(CH, 1000, 0, role::USER, 0, "the split record").unwrap();
+    store.append(CH, 1000, 1, role::TOOL, 2, "tool_result, same ms").unwrap();
+    store.append(CH, 1500, 0, role::ASSISTANT, 0, "later").unwrap();
 
     // Coverage lands ON (1000, 0) — the split record itself.
-    store.append_checkpoint(CH, (1000, 0), "up to the split", &[]);
-    let view = store.fetch_full(CH, DEFAULT_MEMBER);
+    store.append_checkpoint(CH, (1000, 0), "up to the split", &[]).unwrap();
+    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
     let texts: Vec<&str> = view
         .increment
         .iter()
@@ -155,8 +155,8 @@ fn a_same_millisecond_record_after_the_pointer_stays_in_the_increment() {
     );
 
     // Advancing to (1000, 1) covers that one too, and nothing else.
-    store.append_checkpoint(CH, (1000, 1), "now the burst is in", &[]);
-    let view = store.fetch_full(CH, DEFAULT_MEMBER);
+    store.append_checkpoint(CH, (1000, 1), "now the burst is in", &[]).unwrap();
+    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
     assert_eq!(view.coverage_sub, 1);
     let texts: Vec<&str> = view
         .increment
@@ -172,11 +172,11 @@ fn a_same_millisecond_record_after_the_pointer_stays_in_the_increment() {
 #[test]
 fn channels_are_isolated() {
     let (_d, mut store) = open();
-    store.append(1, 100, 0, role::USER, 0, "ch1");
-    store.append(2, 100, 0, role::USER, 0, "ch2");
-    store.append_checkpoint(1, (100, 0), "ch1 summary", &[]);
+    store.append(1, 100, 0, role::USER, 0, "ch1").unwrap();
+    store.append(2, 100, 0, role::USER, 0, "ch2").unwrap();
+    store.append_checkpoint(1, (100, 0), "ch1 summary", &[]).unwrap();
 
-    let v2 = store.fetch_full(2, DEFAULT_MEMBER);
+    let v2 = store.fetch_full(2, DEFAULT_MEMBER).unwrap();
     assert_eq!(v2.coverage_ts, 0, "ch2 has no checkpoint");
     assert!(v2.summary.is_none());
     assert_eq!(v2.increment.len(), 1);
@@ -191,34 +191,34 @@ fn channels_are_isolated() {
 fn the_read_at_stamps_advances_and_never_rewinds() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
-    store.append(CH, 100, 0, role::USER, 0, "m1");
+    store.append(CH, 100, 0, role::USER, 0, "m1").unwrap();
 
-    assert_eq!(store.read_at(CH, DEFAULT_MEMBER), None, "never read");
-    assert_eq!(store.fetch_full(CH, DEFAULT_MEMBER).read_at, None);
+    assert_eq!(store.read_at(CH, DEFAULT_MEMBER).unwrap(), None, "never read");
+    assert_eq!(store.fetch_full(CH, DEFAULT_MEMBER).unwrap().read_at, None);
 
-    store.note_read(CH, DEFAULT_MEMBER, 1_000);
-    assert_eq!(store.read_at(CH, DEFAULT_MEMBER), Some(1_000));
+    store.note_read(CH, DEFAULT_MEMBER, 1_000).unwrap();
+    assert_eq!(store.read_at(CH, DEFAULT_MEMBER).unwrap(), Some(1_000));
     assert_eq!(
-        store.fetch_full(CH, DEFAULT_MEMBER).read_at,
+        store.fetch_full(CH, DEFAULT_MEMBER).unwrap().read_at,
         Some(1_000),
         "the projection carries it, so the engine needs no second read"
     );
 
-    store.note_read(CH, DEFAULT_MEMBER, 900);
+    store.note_read(CH, DEFAULT_MEMBER, 900).unwrap();
     assert_eq!(
-        store.read_at(CH, DEFAULT_MEMBER),
+        store.read_at(CH, DEFAULT_MEMBER).unwrap(),
         Some(1_000),
         "an older read must not move the clock backwards"
     );
-    store.note_read(CH, DEFAULT_MEMBER, 2_000);
-    assert_eq!(store.read_at(CH, DEFAULT_MEMBER), Some(2_000));
+    store.note_read(CH, DEFAULT_MEMBER, 2_000).unwrap();
+    assert_eq!(store.read_at(CH, DEFAULT_MEMBER).unwrap(), Some(2_000));
 
     assert_eq!(
-        store.read_at(CH, 2),
+        store.read_at(CH, 2).unwrap(),
         None,
         "another member's cursor is its own"
     );
-    assert_eq!(store.read_at(2, DEFAULT_MEMBER), None, "another channel's");
+    assert_eq!(store.read_at(2, DEFAULT_MEMBER).unwrap(), None, "another channel's");
 }
 
 /// A compression OPENS a node at the pointer k10r served and COMPLETES it with
@@ -229,11 +229,11 @@ fn a_compression_opens_a_node_and_completes_it() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
     for (ts, text) in [(100, "m1"), (200, "m2"), (900, "m3")] {
-        store.append(CH, ts, 0, role::USER, 0, text);
+        store.append(CH, ts, 0, role::USER, 0, text).unwrap();
     }
 
-    store.open_checkpoint(CH, (200, 0), &[7, 8]);
-    let open = store.fetch_full(CH, DEFAULT_MEMBER);
+    store.open_checkpoint(CH, (200, 0), &[7, 8]).unwrap();
+    let open = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
     assert_eq!(
         open.coverage_ts, 0,
         "an open node is not a coverage point yet"
@@ -245,8 +245,8 @@ fn a_compression_opens_a_node_and_completes_it() {
     );
     assert_eq!(open.increment.len(), 3, "the whole log is still raw");
 
-    assert_eq!(store.complete_checkpoint(CH, "m1 and m2"), Some((200, 0)));
-    let view = store.fetch_full(CH, DEFAULT_MEMBER);
+    assert_eq!(store.complete_checkpoint(CH, "m1 and m2").unwrap(), Some((200, 0)));
+    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
     assert_eq!((view.coverage_ts, view.coverage_sub), (200, 0));
     assert_eq!(view.summary.as_deref(), Some("m1 and m2"));
     assert!(!view.compressing);
@@ -261,24 +261,24 @@ fn a_compression_opens_a_node_and_completes_it() {
 fn nodes_accumulate_and_the_read_follows_the_newest_complete_one() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
-    store.append(CH, 100, 0, role::USER, 0, "m1");
-    store.append(CH, 200, 0, role::USER, 0, "m2");
-    store.append(CH, 900, 0, role::USER, 0, "m3");
+    store.append(CH, 100, 0, role::USER, 0, "m1").unwrap();
+    store.append(CH, 200, 0, role::USER, 0, "m2").unwrap();
+    store.append(CH, 900, 0, role::USER, 0, "m3").unwrap();
 
-    store.append_checkpoint(CH, (200, 0), "first summary", &[1]);
-    store.open_checkpoint(CH, (900, 0), &[2]);
+    store.append_checkpoint(CH, (200, 0), "first summary", &[1]).unwrap();
+    store.open_checkpoint(CH, (900, 0), &[2]).unwrap();
 
-    let v = store.fetch_full(CH, DEFAULT_MEMBER);
+    let v = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
     assert_eq!(v.coverage_ts, 200, "the open node does not move the read");
     assert_eq!(v.summary.as_deref(), Some("first summary"));
     assert!(v.compressing);
     assert_eq!(v.increment.len(), 1, "m3 is still raw");
 
     assert_eq!(
-        store.complete_checkpoint(CH, "second summary"),
+        store.complete_checkpoint(CH, "second summary").unwrap(),
         Some((900, 0))
     );
-    let v = store.fetch_full(CH, DEFAULT_MEMBER);
+    let v = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
     assert_eq!(v.coverage_ts, 900);
     assert_eq!(v.summary.as_deref(), Some("second summary"));
     assert_eq!(v.head, Some(vec![2]), "the new node carries its own head");
@@ -292,11 +292,11 @@ fn nodes_accumulate_and_the_read_follows_the_newest_complete_one() {
 fn re_opening_the_same_pointer_is_the_same_node() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
-    store.append(CH, 100, 0, role::USER, 0, "m1");
-    store.open_checkpoint(CH, (100, 0), &[5]);
-    store.open_checkpoint(CH, (100, 0), &[5]);
-    assert_eq!(store.complete_checkpoint(CH, "once"), Some((100, 0)));
-    let v = store.fetch_full(CH, DEFAULT_MEMBER);
+    store.append(CH, 100, 0, role::USER, 0, "m1").unwrap();
+    store.open_checkpoint(CH, (100, 0), &[5]).unwrap();
+    store.open_checkpoint(CH, (100, 0), &[5]).unwrap();
+    assert_eq!(store.complete_checkpoint(CH, "once").unwrap(), Some((100, 0)));
+    let v = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
     assert_eq!(v.summary.as_deref(), Some("once"));
     assert!(!v.compressing, "one node, completed once");
 }
@@ -307,9 +307,9 @@ fn re_opening_the_same_pointer_is_the_same_node() {
 fn a_summary_without_an_open_node_is_refused() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
-    store.append(CH, 100, 0, role::USER, 0, "m1");
-    assert_eq!(store.complete_checkpoint(CH, "orphan"), None);
-    let view = store.fetch_full(CH, DEFAULT_MEMBER);
+    store.append(CH, 100, 0, role::USER, 0, "m1").unwrap();
+    assert_eq!(store.complete_checkpoint(CH, "orphan").unwrap(), None);
+    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
     assert_eq!(view.coverage_ts, 0);
     assert!(view.summary.is_none());
 }
@@ -321,18 +321,18 @@ fn a_summary_without_an_open_node_is_refused() {
 fn members_name_their_senders_and_a_rename_rewrites_nothing() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
-    store.put_member(CH, 1, "小王", mem_core::member_role::HUMAN);
-    store.put_member(CH, 2, "k10r", mem_core::member_role::AGENT);
-    store.put_member(2, 1, "别人", mem_core::member_role::HUMAN);
+    store.put_member(CH, 1, "小王", mem_core::member_role::HUMAN).unwrap();
+    store.put_member(CH, 2, "k10r", mem_core::member_role::AGENT).unwrap();
+    store.put_member(2, 1, "别人", mem_core::member_role::HUMAN).unwrap();
 
-    assert_eq!(store.member(CH, 1).unwrap().display_name, "小王");
+    assert_eq!(store.member(CH, 1).unwrap().unwrap().display_name, "小王");
     assert_eq!(
-        store.member(CH, 2).unwrap().role,
+        store.member(CH, 2).unwrap().unwrap().role,
         mem_core::member_role::AGENT
     );
-    assert!(store.member(CH, 9).is_none());
+    assert!(store.member(CH, 9).unwrap().is_none());
 
-    let members = store.members(CH);
+    let members = store.members(CH).unwrap();
     assert_eq!(
         members.len(),
         2,
@@ -341,16 +341,16 @@ fn members_name_their_senders_and_a_rename_rewrites_nothing() {
     assert_eq!(members[0].0.member_id, 1);
     assert_eq!(members[1].0.member_id, 2);
 
-    store.append_from(CH, 100, 0, 1, 0, role::USER, 0, "你好");
-    let view = store.fetch_full(CH, DEFAULT_MEMBER);
+    store.append_from(CH, 100, 0, 1, 0, role::USER, 0, "你好").unwrap();
+    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
     assert_eq!(view.increment[0].1.sender, 1);
     assert_eq!(
         view.increment[0].1.content, "你好",
         "the log stores raw text"
     );
 
-    store.put_member(CH, 1, "王先生", mem_core::member_role::HUMAN);
-    let view = store.fetch_full(CH, DEFAULT_MEMBER);
+    store.put_member(CH, 1, "王先生", mem_core::member_role::HUMAN).unwrap();
+    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
     assert_eq!(view.increment[0].1.sender, 1, "the id is the stable part");
-    assert_eq!(store.member(CH, 1).unwrap().display_name, "王先生");
+    assert_eq!(store.member(CH, 1).unwrap().unwrap().display_name, "王先生");
 }

@@ -27,6 +27,7 @@ fn open() -> (tempfile::TempDir, ServiceStores) {
 
 fn projection(stores: &mut ServiceStores) -> Projection {
     assemble(&mut stores.channels, &mut stores.graph, 7, 1, DEFAULT_SCOPE)
+        .expect("the projection assembles")
 }
 
 /// An empty corpus is a legal answer, not an error: no head, no summary,
@@ -111,13 +112,13 @@ fn increment_starts_after_the_compression_point() {
     let _member = 1u64;
     stores
         .channels
-        .append(channel, 1000, 0, role::USER, kind::TEXT, "hi");
+        .append(channel, 1000, 0, role::USER, kind::TEXT, "hi").unwrap();
     stores
         .channels
-        .append(channel, 1001, 0, role::ASSISTANT, kind::TEXT, "hello");
+        .append(channel, 1001, 0, role::ASSISTANT, kind::TEXT, "hello").unwrap();
     stores
         .channels
-        .append_checkpoint(channel, (1000, 0), "greeting done", &[]);
+        .append_checkpoint(channel, (1000, 0), "greeting done", &[]).unwrap();
 
     let p = projection(&mut stores);
     assert_eq!(p.view.coverage_ts, 1000);
@@ -175,11 +176,12 @@ fn the_head_is_frozen_at_the_compression() {
         7,
         (verdict.checkpoint_ts, verdict.checkpoint_sub),
         &head_ids,
-    );
+    ).unwrap();
     stores
         .channels
         .complete_checkpoint(7, "the summary")
-        .expect("the node is open");
+        .expect("the node is open")
+        .expect("a node is open");
 
     // The graph gains a preference AFTER the compression: a live traversal
     // would now include it, the frozen head must not.
@@ -208,20 +210,20 @@ fn conversation_merges_a_user_burst_and_keeps_the_replys_end() {
     let ch = 7u64;
     stores
         .channels
-        .put_member(ch, 10, "小王", mem_core::member_role::HUMAN);
+        .put_member(ch, 10, "小王", mem_core::member_role::HUMAN).unwrap();
     stores
         .channels
-        .put_member(ch, 11, "小李", mem_core::member_role::HUMAN);
+        .put_member(ch, 11, "小李", mem_core::member_role::HUMAN).unwrap();
     stores
         .channels
-        .put_member(ch, 2, "k10r", mem_core::member_role::AGENT);
+        .put_member(ch, 2, "k10r", mem_core::member_role::AGENT).unwrap();
 
     stores
         .channels
-        .append_from(ch, 1_000, 0, 10, 0, role::USER, kind::TEXT, "在吗");
+        .append_from(ch, 1_000, 0, 10, 0, role::USER, kind::TEXT, "在吗").unwrap();
     stores
         .channels
-        .append_from(ch, 1_050, 0, 11, 0, role::USER, kind::TEXT, "问个事");
+        .append_from(ch, 1_050, 0, 11, 0, role::USER, kind::TEXT, "问个事").unwrap();
     // The reply is keyed by its FIRST token and ends 4 s later.
     stores.channels.append_from(
         ch,
@@ -232,13 +234,13 @@ fn conversation_merges_a_user_burst_and_keeps_the_replys_end() {
         role::ASSISTANT,
         kind::TEXT,
         "在，你说",
-    );
+    ).unwrap();
     // Typed while that reply was still streaming.
     stores
         .channels
-        .append_from(ch, 1_200, 0, 10, 0, role::USER, kind::TEXT, "急");
+        .append_from(ch, 1_200, 0, 10, 0, role::USER, kind::TEXT, "急").unwrap();
 
-    let turns = mem_core::view::conversation(&mut stores.channels, ch, 1);
+    let turns = mem_core::view::conversation(&mut stores.channels, ch, 1).unwrap();
     assert_eq!(
         turns.len(),
         3,
@@ -274,15 +276,19 @@ fn conversation_merges_a_user_burst_and_keeps_the_replys_end() {
 fn the_default_member_is_seeded_on_first_touch() {
     let (_d, mut stores) = open();
     let ch = 9u64;
-    assert!(stores.channels.member(ch, 1).is_none(), "nothing yet");
+    assert!(stores.channels.member(ch, 1).unwrap().is_none(), "nothing yet");
     stores
         .channels
-        .append(ch, 10, 0, role::USER, kind::TEXT, "hi");
-    let seeded = stores.channels.member(ch, 1).expect("member 1 seeded");
+        .append(ch, 10, 0, role::USER, kind::TEXT, "hi").unwrap();
+    let seeded = stores
+        .channels
+        .member(ch, 1)
+        .expect("no store failure")
+        .expect("member 1 seeded");
     assert_eq!(seeded.display_name, mem_core::channel::DEFAULT_MEMBER_NAME);
     assert_eq!(seeded.role, mem_core::member_role::HUMAN);
 
-    let turns = mem_core::view::conversation(&mut stores.channels, ch, 1);
+    let turns = mem_core::view::conversation(&mut stores.channels, ch, 1).unwrap();
     assert_eq!(
         turns[0].text,
         format!("[{}(id=1)] hi", mem_core::channel::DEFAULT_MEMBER_NAME)
@@ -299,7 +305,7 @@ fn the_head_comes_from_every_member_of_the_channel() {
     for (member, name, drink) in [(10u64, "小王", "美式"), (11u64, "小李", "拿铁")] {
         stores
             .channels
-            .put_member(7, member, name, mem_core::member_role::HUMAN);
+            .put_member(7, member, name, mem_core::member_role::HUMAN).unwrap();
         let node = mem_core::channel::member_node(7, member);
         stores
             .graph

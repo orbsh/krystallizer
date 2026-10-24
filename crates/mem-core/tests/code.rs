@@ -39,15 +39,15 @@ fn put_assigns_ids_and_get_round_trips_the_row() {
             "log into a host via ssh",
             r#"{"host": "string", "user": "string"}"#,
             "ssh $args.host",
-        ),
+        ).unwrap(),
         1
     );
     assert_eq!(
-        store.put("python", "sum two ints", r#"{"n": "int"}"#, "print(1)"),
+        store.put("python", "sum two ints", r#"{"n": "int"}"#, "print(1)").unwrap(),
         2
     );
 
-    let row = store.get(1).expect("row 1 present");
+    let row = store.get(1).expect("row 1 present").expect("row 1 present");
     assert_eq!(
         row,
         CodeRow {
@@ -57,7 +57,7 @@ fn put_assigns_ids_and_get_round_trips_the_row() {
             source: "ssh $args.host".into(),
         }
     );
-    assert!(store.get(3).is_none(), "unknown id = absent, not an error");
+    assert!(store.get(3).unwrap().is_none(), "unknown id = absent, not an error");
 }
 
 /// Ids are recovered from storage: a fresh process must not reuse an id
@@ -67,17 +67,17 @@ fn ids_are_recovered_across_reopen() {
     let dir = tempfile::tempdir().unwrap();
     {
         let mut store = CodeStore::open(dir.path()).unwrap();
-        assert_eq!(store.put("nu", "first", "{}", "first"), 1);
-        assert_eq!(store.put("nu", "second", "{}", "second"), 2);
+        assert_eq!(store.put("nu", "first", "{}", "first").unwrap(), 1);
+        assert_eq!(store.put("nu", "second", "{}", "second").unwrap(), 2);
     }
     let mut store = CodeStore::open(dir.path()).unwrap();
     assert_eq!(
-        store.put("python", "third", "{}", "third"),
+        store.put("python", "third", "{}", "third").unwrap(),
         3,
         "continues past the max"
     );
     assert_eq!(
-        store.get(1).unwrap().source,
+        store.get(1).expect("the row reads").expect("the row is there").source,
         "first",
         "id 1 was not overwritten"
     );

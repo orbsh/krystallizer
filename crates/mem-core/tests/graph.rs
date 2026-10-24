@@ -187,10 +187,10 @@ fn entities_resolve_by_name_within_a_scope() {
     let fact = tuple(PIVOT);
 
     graph.ingest(1, &fact).unwrap();
-    let (head_id, head) = graph.entity_by_name(1, "galaxy_repo").unwrap();
+    let (head_id, head) = graph.entity_by_name(1, "galaxy_repo").unwrap().unwrap();
     assert_eq!(head.name, "galaxy_repo");
     assert_eq!(head_id, 1, "the first node of a fresh table");
-    let (tail_id, _) = graph.entity_by_name(1, "k10r_core").unwrap();
+    let (tail_id, _) = graph.entity_by_name(1, "k10r_core").unwrap().unwrap();
 
     // The kind label came back through the field's own vocabulary.
     assert_eq!(head.kind.as_str(), Some("repository"));
@@ -198,13 +198,13 @@ fn entities_resolve_by_name_within_a_scope() {
     // Re-ingesting the same fact resolves the SAME nodes (no duplicate
     // entity for a name already in the scope).
     graph.ingest(1, &fact).unwrap();
-    assert_eq!(graph.entity_by_name(1, "galaxy_repo").unwrap().0, head_id);
+    assert_eq!(graph.entity_by_name(1, "galaxy_repo").unwrap().unwrap().0, head_id);
 
     // Another scope: a separate node, not a shared one.
-    assert!(graph.entity_by_name(2, "galaxy_repo").is_none());
+    assert!(graph.entity_by_name(2, "galaxy_repo").unwrap().is_none());
     graph.ingest(2, &fact).unwrap();
-    assert_ne!(graph.entity_by_name(2, "galaxy_repo").unwrap().0, head_id);
-    assert_ne!(graph.entity_by_name(2, "k10r_core").unwrap().0, tail_id);
+    assert_ne!(graph.entity_by_name(2, "galaxy_repo").unwrap().unwrap().0, head_id);
+    assert_ne!(graph.entity_by_name(2, "k10r_core").unwrap().unwrap().0, tail_id);
 }
 
 /// Head/tail props are the ENTITY's attributes (ADR-0004's slot rule): they
@@ -223,7 +223,7 @@ fn entity_props_land_on_the_node_and_merge() {
             ),
         )
         .unwrap();
-    let (head_id, _) = graph.entity_by_name(1, "galaxy_repo").unwrap();
+    let (head_id, _) = graph.entity_by_name(1, "galaxy_repo").unwrap().unwrap();
 
     graph
         .ingest(
@@ -234,7 +234,7 @@ fn entity_props_land_on_the_node_and_merge() {
         )
         .unwrap();
 
-    let props = graph.entity_props(1, head_id).expect("the node has props");
+    let props = graph.entity_props(1, head_id).expect("the node has props").unwrap();
     assert_eq!(
         props.get("vcs"),
         Some(&DynamicValue::Str("gitea".into())),
@@ -265,9 +265,9 @@ fn multi_valued_relation_links_parallel_edges() {
         IngestOutcome::Linked { edge_id: 2 }
     );
 
-    let (user_id, _) = graph.entity_by_name(1, "user").unwrap();
-    assert_eq!(graph.typed_out(1, user_id, "PREFERS").len(), 2);
-    assert_eq!(graph.out_edges(1, user_id).len(), 2);
+    let (user_id, _) = graph.entity_by_name(1, "user").unwrap().unwrap();
+    assert_eq!(graph.typed_out(1, user_id, "PREFERS").unwrap().len(), 2);
+    assert_eq!(graph.out_edges(1, user_id).unwrap().len(), 2);
 }
 
 /// A relation declaring `functional` at one source has ONE incumbent: a
@@ -293,13 +293,13 @@ fn functional_relation_rewrites_the_incumbent() {
         "the winner keeps the incumbent's edge id"
     );
 
-    let (core_id, _) = graph.entity_by_name(1, "k10r_core").unwrap();
-    assert_eq!(graph.typed_out(1, core_id, "STORAGE_ENGINE").len(), 1);
+    let (core_id, _) = graph.entity_by_name(1, "k10r_core").unwrap().unwrap();
+    assert_eq!(graph.typed_out(1, core_id, "STORAGE_ENGINE").unwrap().len(), 1);
 
-    let fact = graph.fact(edge_id).unwrap();
+    let fact = graph.fact(edge_id).unwrap().unwrap();
     assert_eq!(fact.kind, "STORAGE_ENGINE");
     assert_eq!(fact.edge.since, 200);
-    let (slatedb_id, _) = graph.entity_by_name(1, "slatedb_engine").unwrap();
+    let (slatedb_id, _) = graph.entity_by_name(1, "slatedb_engine").unwrap().unwrap();
     let expected = NodeRef::new(
         <EntityRow as Document>::NS_PREFIX,
         &EntityKey {
@@ -313,14 +313,14 @@ fn functional_relation_rewrites_the_incumbent() {
 
     // The old object keeps no stale in-edge: the traversal faces follow the
     // rewrite.
-    let (fjall_id, _) = graph.entity_by_name(1, "fjall_engine").unwrap();
-    assert!(graph.typed_out(1, fjall_id, "STORAGE_ENGINE").is_empty());
+    let (fjall_id, _) = graph.entity_by_name(1, "fjall_engine").unwrap().unwrap();
+    assert!(graph.typed_out(1, fjall_id, "STORAGE_ENGINE").unwrap().is_empty());
 
     // The rewrite is ONE batch (unlink_into + link_into), and the dynamic
     // segment is k10r's entry: the old assertion's props must not survive
     // into the new one.
     let props = graph
-        .fact_props(edge_id)
+        .fact_props(edge_id).unwrap()
         .expect("the assertion's own record");
     assert!(
         !props.contains_key("reason"),
@@ -331,9 +331,9 @@ fn functional_relation_rewrites_the_incumbent() {
         Some(&DynamicValue::Bool(true)),
         "the new assertion's own declaration is what the entry holds"
     );
-    assert_eq!(graph.fact(edge_id).unwrap().edge.since, 200);
+    assert_eq!(graph.fact(edge_id).unwrap().unwrap().edge.since, 200);
     assert_eq!(
-        graph.out_edges(1, core_id),
+        graph.out_edges(1, core_id).unwrap(),
         vec![edge_id],
         "one edge, one commit"
     );
@@ -360,9 +360,9 @@ fn functional_relation_drops_an_older_weaker_fact() {
         IngestOutcome::Dropped { edge_id }
     );
 
-    let fact = graph.fact(edge_id).unwrap();
+    let fact = graph.fact(edge_id).unwrap().unwrap();
     assert_eq!(fact.edge.since, 200, "the incumbent is untouched");
-    let (fjall_id, _) = graph.entity_by_name(1, "fjall_engine").unwrap();
+    let (fjall_id, _) = graph.entity_by_name(1, "fjall_engine").unwrap().unwrap();
     let expected = NodeRef::new(
         <EntityRow as Document>::NS_PREFIX,
         &EntityKey {
@@ -391,7 +391,7 @@ fn literal_object_becomes_a_node() {
         .unwrap();
 
     let (node_id, row) = graph
-        .entity_by_name(1, "1990")
+        .entity_by_name(1, "1990").unwrap()
         .expect("the literal is reachable by its text");
     assert_eq!(row.literal_num, 1990);
     assert_eq!(row.kind.as_str(), Some(LITERAL_KIND));
@@ -404,7 +404,7 @@ fn literal_object_becomes_a_node() {
             &tuple(r#"["user","person",{},"BORN_ON",{},"1990-01-01","literal",{}]"#),
         )
         .unwrap();
-    let (_, row) = graph.entity_by_name(1, "1990-01-01").unwrap();
+    let (_, row) = graph.entity_by_name(1, "1990-01-01").unwrap().unwrap();
     assert_eq!(row.literal_num, 0);
     assert_ne!(node_id, 0);
 }
@@ -429,7 +429,7 @@ fn fact_open_props_ride_the_edge_dynamic_segment() {
         panic!("the first fact links");
     };
 
-    let props = graph.fact_props(edge_id).expect("the edge has props");
+    let props = graph.fact_props(edge_id).expect("the edge has props").unwrap();
     assert_eq!(
         props.get("reason"),
         Some(&DynamicValue::Str("network_graph_too_heavy".into()))
@@ -444,7 +444,7 @@ fn fact_open_props_ride_the_edge_dynamic_segment() {
         "a declared field is not also a dynamic one"
     );
 
-    let fact = graph.fact(edge_id).unwrap();
+    let fact = graph.fact(edge_id).unwrap().unwrap();
     assert_eq!(fact.edge.since, 5, "the declared field carries the value");
     assert_eq!(fact.edge.confidence, 255, "absent confidence is full");
 }
@@ -460,13 +460,13 @@ fn node_refs_are_self_describing() {
         panic!("links");
     };
 
-    let fact = graph.fact(edge_id).unwrap();
+    let fact = graph.fact(edge_id).unwrap().unwrap();
     let (decoded, taken) = NodeRef::decode(&fact.src.encode()).expect("ref decodes");
     assert_eq!(taken, fact.src.encode().len());
     assert_eq!(decoded, fact.src);
     assert_eq!(decoded.ns_id(), mem_core::ENTITY_NS);
 
-    let (adg_id, _) = graph.entity_by_name(1, "ADG").unwrap();
+    let (adg_id, _) = graph.entity_by_name(1, "ADG").unwrap().unwrap();
     assert_eq!(
         EntityKey::decode(&decoded.pkey),
         EntityKey {
@@ -494,7 +494,7 @@ fn ids_are_recovered_across_reopen() {
             .unwrap();
     }
     let mut graph = GraphStore::open(dir.path()).unwrap();
-    let (existing, _) = graph.entity_by_name(1, "galaxy_repo").unwrap();
+    let (existing, _) = graph.entity_by_name(1, "galaxy_repo").unwrap().unwrap();
     assert_eq!(existing, 1, "the stored node is still the first");
 
     let IngestOutcome::Linked { edge_id } = graph
@@ -507,7 +507,7 @@ fn ids_are_recovered_across_reopen() {
         panic!("links");
     };
     assert_eq!(edge_id, 3, "the edge counter continues past the stored ids");
-    let (user_id, _) = graph.entity_by_name(1, "user").unwrap();
+    let (user_id, _) = graph.entity_by_name(1, "user").unwrap().unwrap();
     assert_eq!(user_id, 3, "the node counter continues too");
 }
 
@@ -614,8 +614,8 @@ fn retrieval_without_an_engine_lands_nothing() {
         )
         .unwrap();
     assert!(graph.retrieve(1, "alpha", 5).unwrap().is_empty());
-    let (node_id, _) = graph.entity_by_name(1, "alpha").unwrap();
-    assert!(graph.entity(1, node_id).unwrap().embedding.is_empty());
+    let (node_id, _) = graph.entity_by_name(1, "alpha").unwrap().unwrap();
+    assert!(graph.entity(1, node_id).unwrap().unwrap().embedding.is_empty());
 }
 
 /// The read shape (ADR-0010 §5): the query lands, the answer is the landed
@@ -696,7 +696,7 @@ fn a_landed_fact_carries_one_write_and_the_folded_weight() {
         )
         .unwrap();
 
-    let edge = graph.fact(1).unwrap().edge;
+    let edge = graph.fact(1).unwrap().unwrap().edge;
     assert_eq!(edge.write_count, 1);
     assert_eq!(edge.read_count, 0);
     assert_eq!(edge.last_write, 1_000_000);
@@ -725,11 +725,11 @@ fn recall_counts_reads_and_orders_the_served_facts_by_weight() {
         )
         .unwrap();
     // No engine attached: land explicitly on the tail by its node id.
-    let (beta, beta_row) = graph.entity_by_name(1, "beta").unwrap();
-    let alpha = graph.entity_by_name(1, "alpha").unwrap().0;
-    let gamma = graph.entity_by_name(1, "gamma").unwrap().0;
-    let edge_a = graph.out_facts(1, alpha)[0].edge_id;
-    let edge_b = graph.out_facts(1, gamma)[0].edge_id;
+    let (beta, beta_row) = graph.entity_by_name(1, "beta").unwrap().unwrap();
+    let alpha = graph.entity_by_name(1, "alpha").unwrap().unwrap().0;
+    let gamma = graph.entity_by_name(1, "gamma").unwrap().unwrap().0;
+    let edge_a = graph.out_facts(1, alpha).unwrap()[0].edge_id;
+    let edge_b = graph.out_facts(1, gamma).unwrap()[0].edge_id;
 
     // A boosted fact is reached and it is the one ranked first.
     graph.touch(1, edge_b, mem_core::Touch::Tool, 2000).unwrap();
@@ -880,23 +880,23 @@ fn a_landed_fact_bins_both_endpoints() {
         )
         .unwrap();
 
-    let (alpha, _) = graph.entity_by_name(1, "alpha").unwrap();
-    let (beta, _) = graph.entity_by_name(1, "beta").unwrap();
-    let community = graph.entity(1, alpha).unwrap().community_id;
-    assert_eq!(community, graph.entity(1, beta).unwrap().community_id);
+    let (alpha, _) = graph.entity_by_name(1, "alpha").unwrap().unwrap();
+    let (beta, _) = graph.entity_by_name(1, "beta").unwrap().unwrap();
+    let community = graph.entity(1, alpha).unwrap().unwrap().community_id;
+    assert_eq!(community, graph.entity(1, beta).unwrap().unwrap().community_id);
     assert!(community != 0, "every node is seeded with a real community");
 
-    let members = graph.community_members(1, community);
+    let members = graph.community_members(1, community).unwrap();
     let ids: Vec<u64> = members.iter().map(|(node, _)| *node).collect();
     assert_eq!(members.len(), 2);
     assert!(ids.contains(&alpha) && ids.contains(&beta));
 
     // The abandoned seed (the lower id, absorbed by the higher one) has no
     // member left under it.
-    let (orphan, _) = graph.entity_by_name(1, "alpha").unwrap();
+    let (orphan, _) = graph.entity_by_name(1, "alpha").unwrap().unwrap();
     let _ = orphan;
     assert!(
-        graph.community_members(1, 1).is_empty(),
+        graph.community_members(1, 1).unwrap().is_empty(),
         "the stale by_community entry is gone"
     );
 }
@@ -974,8 +974,8 @@ fn community_ids_are_never_reused_across_a_reopen() {
                 &tuple(r#"["alpha","thing",{},"IS",{},"beta","thing",{}]"#),
             )
             .unwrap();
-        let (alpha, _) = graph.entity_by_name(1, "alpha").unwrap();
-        graph.entity(1, alpha).unwrap().community_id
+        let (alpha, _) = graph.entity_by_name(1, "alpha").unwrap().unwrap();
+        graph.entity(1, alpha).unwrap().unwrap().community_id
     };
 
     let mut graph = GraphStore::open(dir.path()).unwrap();
@@ -985,8 +985,8 @@ fn community_ids_are_never_reused_across_a_reopen() {
             &tuple(r#"["gamma","thing",{},"IS",{},"delta","thing",{}]"#),
         )
         .unwrap();
-    let (gamma, _) = graph.entity_by_name(1, "gamma").unwrap();
-    let later = graph.entity(1, gamma).unwrap().community_id;
+    let (gamma, _) = graph.entity_by_name(1, "gamma").unwrap().unwrap();
+    let later = graph.entity(1, gamma).unwrap().unwrap().community_id;
     assert!(
         later > first,
         "the sequence survives the reopen: {later} > {first}"
@@ -1003,18 +1003,18 @@ fn communities_are_per_scope() {
     graph.ingest(1, &fact).unwrap();
     graph.ingest(2, &fact).unwrap();
 
-    let (alpha_one, _) = graph.entity_by_name(1, "alpha").unwrap();
-    let (alpha_two, _) = graph.entity_by_name(2, "alpha").unwrap();
-    let one = graph.entity(1, alpha_one).unwrap().community_id;
-    let two = graph.entity(2, alpha_two).unwrap().community_id;
+    let (alpha_one, _) = graph.entity_by_name(1, "alpha").unwrap().unwrap();
+    let (alpha_two, _) = graph.entity_by_name(2, "alpha").unwrap().unwrap();
+    let one = graph.entity(1, alpha_one).unwrap().unwrap().community_id;
+    let two = graph.entity(2, alpha_two).unwrap().unwrap().community_id;
 
     let members_one: Vec<u64> = graph
-        .community_members(1, one)
+        .community_members(1, one).unwrap()
         .into_iter()
         .map(|(node, _)| node)
         .collect();
     let members_two: Vec<u64> = graph
-        .community_members(2, two)
+        .community_members(2, two).unwrap()
         .into_iter()
         .map(|(node, _)| node)
         .collect();
@@ -1050,7 +1050,7 @@ fn top_by_weight_ranks_the_scope_and_stops_at_k() {
         .unwrap();
 
     let base: Vec<u64> = graph
-        .scope_facts(1)
+        .scope_facts(1).unwrap()
         .iter()
         .map(|fact| fact.edge_id)
         .collect();
@@ -1063,7 +1063,7 @@ fn top_by_weight_ranks_the_scope_and_stops_at_k() {
         .touch(1, base[1], mem_core::Touch::Write, 6_000)
         .unwrap();
 
-    let top = graph.top_by_weight(1, 2);
+    let top = graph.top_by_weight(1, 2).unwrap();
     assert_eq!(top.len(), 2, "k bounds the result");
     assert_eq!(
         top[0].edge_id, base[1],
@@ -1081,11 +1081,11 @@ fn top_by_weight_ranks_the_scope_and_stops_at_k() {
         "the ranking is the scope's own three edges"
     );
     assert_eq!(
-        graph.top_by_weight(2, 1).len(),
+        graph.top_by_weight(2, 1).unwrap().len(),
         1,
         "a scope only ever sees its own facts"
     );
-    assert!(graph.top_by_weight(1, 0).is_empty());
+    assert!(graph.top_by_weight(1, 0).unwrap().is_empty());
 }
 
 /// PLAN 4c: a fact may name ANOTHER fact by id in its props, and the reader
@@ -1139,27 +1139,27 @@ fn a_fact_can_point_at_another_fact_and_nothing_validates_the_pointer() {
     };
 
     assert_eq!(
-        graph.fact_view(single).unwrap().refs,
+        graph.fact_view(single).unwrap().unwrap().refs,
         vec![detail],
         "one id is one reference"
     );
     assert_eq!(
-        graph.fact_view(many).unwrap().refs,
+        graph.fact_view(many).unwrap().unwrap().refs,
         vec![detail, single, 999_999],
         "an array is kept in order, dangling id and all"
     );
     assert!(
-        graph.fact_view(detail).unwrap().refs.is_empty(),
+        graph.fact_view(detail).unwrap().unwrap().refs.is_empty(),
         "a fact with no `ref` points at nothing"
     );
     assert!(
-        graph.fact_view(not_an_id).unwrap().refs.is_empty(),
+        graph.fact_view(not_an_id).unwrap().unwrap().refs.is_empty(),
         "a string is not a reference — a writer's mistake must not become a target"
     );
 
     // Following the pointer is the deterministic read, and a dangling one is a miss.
-    assert!(graph.fact_in_scope(1, detail).is_some());
-    assert!(graph.fact_in_scope(1, 999_999).is_none());
+    assert!(graph.fact_in_scope(1, detail).unwrap().is_some());
+    assert!(graph.fact_in_scope(1, 999_999).unwrap().is_none());
 }
 
 /// PLAN 4b: the three entrances read the write-time structure instead of asking a
@@ -1195,11 +1195,11 @@ fn the_three_entrances_need_no_query() {
         r#"["a","thing",{},"PREFERS",{"since":5},"x","thing",{}]"#.into(),
     );
 
-    let a = graph.entity_by_name(1, "a").expect("a exists").0;
+    let a = graph.entity_by_name(1, "a").expect("a exists").unwrap().0;
 
     // Entity-anchored: everything that touches `a` comes back, and it comes back
     // FIRST — the community's other facts, if any, follow it.
-    let anchored = graph.anchored(1, a).expect("a is a node");
+    let anchored = graph.anchored(1, a).expect("a is a node").unwrap();
     assert_eq!(anchored.node_id, a);
     let touch_a: Vec<u64> = anchored
         .facts
@@ -1219,29 +1219,29 @@ fn the_three_entrances_need_no_query() {
         "the anchor's facts lead the answer"
     );
     assert!(
-        graph.anchored(1, 999_999).is_none(),
+        graph.anchored(1, 999_999).unwrap().is_none(),
         "no node, no anchored read"
     );
 
     // Temporal: `since` is the order — newest first, no search involved.
-    let timeline = graph.timeline(1, 3);
+    let timeline = graph.timeline(1, 3).unwrap();
     let sinces: Vec<u64> = timeline.iter().map(|f| f.edge.since).collect();
     assert_eq!(sinces, vec![30, 20, 10], "learned order, newest first");
-    assert!(graph.timeline(1, 0).is_empty());
+    assert!(graph.timeline(1, 0).unwrap().is_empty());
 
     // Causal: hop by hop over ONE predicate, cycle-safe and hop-bounded.
-    let chain = graph.chain(1, a, "LEADS_TO", 5);
+    let chain = graph.chain(1, a, "LEADS_TO", 5).unwrap();
     let depths: Vec<usize> = chain.iter().map(|hop| hop.depth).collect();
     assert_eq!(depths, vec![0, 1, 2], "a → b → c → a closes the loop");
     assert_eq!(chain[0].fact.edge_id, a_leads_b);
     assert_eq!(chain[1].fact.edge_id, b_leads_c);
     assert_eq!(chain[2].fact.edge_id, c_leads_a);
     assert!(
-        graph.chain(1, a, "LEADS_TO", 2).len() <= 2,
+        graph.chain(1, a, "LEADS_TO", 2).unwrap().len() <= 2,
         "the hop bound is a bound"
     );
     assert!(
-        graph.chain(1, a, "PREFERS", 3).len() == 1,
+        graph.chain(1, a, "PREFERS", 3).unwrap().len() == 1,
         "only the named predicate is followed"
     );
 }
@@ -1265,9 +1265,9 @@ fn the_scope_is_denormalized_onto_the_row_and_a_rewrite_keeps_it() {
     else {
         panic!("first fact links");
     };
-    assert_eq!(graph.fact_in_scope(7, edge_id).unwrap().edge.scope, 7);
+    assert_eq!(graph.fact_in_scope(7, edge_id).unwrap().unwrap().edge.scope, 7);
     assert!(
-        graph.fact_in_scope(8, edge_id).is_none(),
+        graph.fact_in_scope(8, edge_id).unwrap().is_none(),
         "the copy agrees with the endpoints, which is what the face depends on"
     );
 
@@ -1283,7 +1283,7 @@ fn the_scope_is_denormalized_onto_the_row_and_a_rewrite_keeps_it() {
         panic!("a functional relation rewrites");
     };
     assert_eq!(again, edge_id, "same row");
-    let view = graph.fact_in_scope(7, edge_id).unwrap();
+    let view = graph.fact_in_scope(7, edge_id).unwrap().unwrap();
     assert_eq!(view.edge.scope, 7, "the copy survives the rewrite");
     assert_eq!(view.dst.name, "box_b", "the endpoints are the new ones");
 }
@@ -1307,7 +1307,7 @@ fn the_timeline_skips_other_scopes_on_a_scope_blind_face() {
         )
         .unwrap();
 
-    let timeline = graph.timeline(1, 10);
+    let timeline = graph.timeline(1, 10).unwrap();
     assert_eq!(timeline.len(), 1, "only scope 1's fact");
     assert_eq!(timeline[0].edge.scope, 1);
 }
@@ -1337,7 +1337,7 @@ fn a_rewrite_does_not_leave_the_fact_in_the_ranking_twice() {
             .unwrap();
     }
 
-    let top = graph.top_by_weight(1, 10);
+    let top = graph.top_by_weight(1, 10).unwrap();
     let ids: Vec<u64> = top.iter().map(|fact| fact.edge_id).collect();
     assert_eq!(ids, vec![edge_id], "one fact, one entry: {ids:?}");
 }
@@ -1355,7 +1355,7 @@ fn a_user_endpoint_is_a_node_of_the_identity_collection() {
     let mut stores = mem_core::open_service(dir.path()).unwrap();
     stores
         .channels
-        .put_member(1, 1, "orbit", mem_core::channel::member_role::AGENT);
+        .put_member(1, 1, "orbit", mem_core::channel::member_role::AGENT).unwrap();
     let graph = &mut stores.graph;
 
     let fact = tuple(r#"["member-1-1","user",{},"PREFERS",{},"coffee","drink",{}]"#);
@@ -1367,8 +1367,8 @@ fn a_user_endpoint_is_a_node_of_the_identity_collection() {
     // The person is a NODE: the traversal from the member ref finds the fact,
     // and the fact resolves that endpoint through the identity row.
     let user = graph.user_ref(1, 1);
-    assert_eq!(graph.out_edges_of(&user), vec![edge_id]);
-    let view = graph.fact_view(edge_id).unwrap();
+    assert_eq!(graph.out_edges_of(&user).unwrap(), vec![edge_id]);
+    let view = graph.fact_view(edge_id).unwrap().unwrap();
     assert_eq!(
         view.src.name, "orbit",
         "the display name comes from the row"
@@ -1383,17 +1383,17 @@ fn a_user_endpoint_is_a_node_of_the_identity_collection() {
 
     // No entity row was created for the person: the identity layer is not
     // extracted knowledge, so the landing index never contains it.
-    assert!(graph.entity_by_name(1, "member-1-1").is_none());
+    assert!(graph.entity_by_name(1, "member-1-1").unwrap().is_none());
     assert!(graph
-        .scope_entities(1)
+        .scope_entities(1).unwrap()
         .iter()
         .all(|(_, row)| row.name != "member-1-1"));
 
     // A rename touches the ROW and nothing else: same edge id, new name.
     stores
         .channels
-        .put_member(1, 1, "orbit2", mem_core::channel::member_role::AGENT);
-    let renamed = graph.fact_view(edge_id).unwrap();
+        .put_member(1, 1, "orbit2", mem_core::channel::member_role::AGENT).unwrap();
+    let renamed = graph.fact_view(edge_id).unwrap().unwrap();
     assert_eq!(renamed.src.name, "orbit2");
     assert_eq!(renamed.edge_id, edge_id);
 }
@@ -1417,7 +1417,7 @@ fn an_unregistered_user_reference_is_refused_and_creates_nothing() {
         Err(IngestError::Refused(_))
     ));
     assert!(
-        graph.scope_facts(1).is_empty(),
+        graph.scope_facts(1).unwrap().is_empty(),
         "a refused fact lands nothing"
     );
 }

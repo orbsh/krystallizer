@@ -54,9 +54,9 @@ fn a_row_round_trips_with_its_dynamic_fields() {
             (field::TRIGGER, DynamicValue::Str("cache_clock".into())),
             (field::IDLE_MS, DynamicValue::UInt(301_000)),
         ]),
-    );
+    ).unwrap();
 
-    let doc = store.get(&key).expect("row present");
+    let doc = store.get(&key).expect("row present").expect("row present");
     assert_eq!(
         doc.get("level"),
         Some(&DynamicValue::UInt(level::WARN as u64))
@@ -86,8 +86,8 @@ fn a_row_without_dynamic_fields_is_an_event_line() {
         "",
         "",
         BTreeMap::new(),
-    );
-    let doc = store.get(&key).expect("row present");
+    ).unwrap();
+    let doc = store.get(&key).expect("row present").expect("row present");
     assert_eq!(doc.get(field::CHANNEL), None);
     assert_eq!(
         doc.get("event"),
@@ -101,12 +101,12 @@ fn a_row_without_dynamic_fields_is_an_event_line() {
 fn rows_read_in_time_order_and_same_millisecond_rows_keep_their_order() {
     let dir = tempdir();
     let mut store = LogStore::open(dir.path()).expect("open");
-    store.append(2, level::INFO, "second_ts", "", "", BTreeMap::new());
-    store.append(1, level::INFO, "first_ts", "", "", BTreeMap::new());
-    store.append(1, level::INFO, "first_ts_again", "", "", BTreeMap::new());
+    store.append(2, level::INFO, "second_ts", "", "", BTreeMap::new()).unwrap();
+    store.append(1, level::INFO, "first_ts", "", "", BTreeMap::new()).unwrap();
+    store.append(1, level::INFO, "first_ts_again", "", "", BTreeMap::new()).unwrap();
 
     let events: Vec<String> = store
-        .entries()
+        .entries().unwrap()
         .into_iter()
         .filter_map(|(_, doc)| match doc.get("event") {
             Some(DynamicValue::Str(s)) => Some(s.clone()),
@@ -123,12 +123,12 @@ fn seq_survives_a_reopen() {
     let dir = tempdir();
     let first = {
         let mut store = LogStore::open(dir.path()).expect("open");
-        store.append(5, level::INFO, "before", "", "", BTreeMap::new())
+        store.append(5, level::INFO, "before", "", "", BTreeMap::new()).unwrap()
     };
     assert_eq!(first.seq, 0);
 
     let mut store = LogStore::open(dir.path()).expect("reopen");
-    let second = store.append(5, level::INFO, "after", "", "", BTreeMap::new());
+    let second = store.append(5, level::INFO, "after", "", "", BTreeMap::new()).unwrap();
     assert_eq!(second.ts_ms, 5, "same millisecond on purpose");
     assert_eq!(second.seq, 1, "the counter continued past the stored key");
     assert_eq!(store.len(), 2, "both rows survive");
@@ -141,11 +141,11 @@ fn the_ceiling_drops_the_oldest_rows() {
     let dir = tempdir();
     let mut store = LogStore::open(dir.path()).expect("open").with_max_rows(3);
     for i in 0..5u64 {
-        store.append(i, level::INFO, &format!("e{i}"), "", "", BTreeMap::new());
+        store.append(i, level::INFO, &format!("e{i}"), "", "", BTreeMap::new()).unwrap();
     }
     assert_eq!(store.len(), 3);
     let events: Vec<String> = store
-        .entries()
+        .entries().unwrap()
         .into_iter()
         .filter_map(|(_, doc)| match doc.get("event") {
             Some(DynamicValue::Str(s)) => Some(s.clone()),
@@ -186,10 +186,10 @@ fn the_verdict_row_carries_the_decision_it_made() {
         max_gap_ms: None,
     };
 
-    let key = store.record_verdict(9_000, 7, &verdict);
+    let key = store.record_verdict(9_000, 7, &verdict).unwrap();
     assert_eq!(key.ts_ms, 9_000, "the server's own clock keys the row");
 
-    let row = store.get(&key).expect("the row lands");
+    let row = store.get(&key).expect("the row lands").expect("the row lands");
     assert_eq!(row[field::CHANNEL], DynamicValue::UInt(7));
     assert_eq!(row[field::SPLIT_TS], DynamicValue::UInt(1_500));
     assert_eq!(row[field::SPLIT_SUB], DynamicValue::UInt(2));
@@ -205,10 +205,10 @@ fn the_verdict_row_carries_the_decision_it_made() {
         "an absent signal writes no field — absence must not read as zero"
     );
 
-    let entry = store.entries().into_iter().next().expect("one entry");
+    let entry = store.entries().unwrap().into_iter().next().expect("one entry");
     assert_eq!(entry.0, key);
-    assert_eq!(store.since(9_000).len(), 1);
-    assert!(store.since(9_001).is_empty(), "the window is a lower bound");
+    assert_eq!(store.since(9_000).unwrap().len(), 1);
+    assert!(store.since(9_001).unwrap().is_empty(), "the window is a lower bound");
 }
 
 /// The four declared fields (ADR-0011 §8): a level, an event, a source and a
@@ -226,9 +226,9 @@ fn the_declared_fields_are_a_level_two_labels_and_a_note() {
         source::ENGINE,
         "panic: boom",
         BTreeMap::new(),
-    );
+    ).unwrap();
 
-    let row = store.row(&key).expect("row present");
+    let row = store.row(&key).expect("row present").expect("row present");
     assert_eq!(row.level, level::ERROR);
     assert_eq!(row.event.as_str(), Some(event::ENGINE_ERROR));
     assert_eq!(row.source.as_str(), Some(source::ENGINE));
@@ -243,8 +243,8 @@ fn the_declared_fields_are_a_level_two_labels_and_a_note() {
         "",
         "",
         BTreeMap::new(),
-    );
-    let bare = store.row(&bare).expect("row present");
+    ).unwrap();
+    let bare = store.row(&bare).expect("row present").expect("row present");
     assert_eq!(bare.note, "");
     assert_eq!(bare.source.as_str(), Some(""));
     assert_eq!(
@@ -264,14 +264,14 @@ fn the_counter_is_a_watermark_that_the_trim_cannot_rewind() {
     let dir = tempdir();
     let last_seq = {
         let mut store = LogStore::open(dir.path()).expect("open").with_max_rows(1);
-        store.append(1, level::INFO, "a", "", "", BTreeMap::new());
-        let kept = store.append(2, level::INFO, "b", "", "", BTreeMap::new());
+        store.append(1, level::INFO, "a", "", "", BTreeMap::new()).unwrap();
+        let kept = store.append(2, level::INFO, "b", "", "", BTreeMap::new()).unwrap();
         assert_eq!(store.len(), 1, "the trim keeps the ceiling");
         kept.seq
     };
 
     let mut store = LogStore::open(dir.path()).expect("reopen");
-    let next = store.append(3, level::INFO, "c", "", "", BTreeMap::new());
+    let next = store.append(3, level::INFO, "c", "", "", BTreeMap::new()).unwrap();
     assert_eq!(
         next.seq,
         last_seq + 1,

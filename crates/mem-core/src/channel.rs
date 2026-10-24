@@ -219,20 +219,21 @@ pub struct ChannelStore {
 impl ChannelStore {
     /// Open (or create) this group's keyspace at `path` and attach the
     /// channel tables — the standalone form (tests, single-table tools).
-    pub fn open(path: &std::path::Path) -> Result<Self, fjall::Error> {
-        Ok(Self::wrap(FjallStore::open(path, crate::KEYSPACE_CHANNEL)?))
+    pub fn open(path: &std::path::Path) -> Result<Self, String> {
+        let store = FjallStore::open(path, crate::KEYSPACE_CHANNEL).map_err(|e| e.to_string())?;
+        Self::wrap(store)
     }
 
     /// Attach the channel tables to an already-open store handle — the
     /// attach point `crate::service::open_service` uses so every table
     /// group shares the process's one database.
-    pub fn wrap(store: FjallStore) -> Self {
-        Self {
+    pub fn wrap(store: FjallStore) -> Result<Self, String> {
+        Ok(Self {
             messages: <MessageRow as okm_core::Document>::collection(store.clone()),
             checkpoints: <CheckpointRow as okm_core::Document>::collection(store.clone()),
             cursors: <CursorRow as okm_core::Document>::collection(store.clone()),
             members: <MemberRow as okm_core::Document>::collection(store),
-        }
+        })
     }
 
     /// This group's tables, `(name, ns)` — each name from the row that declares
@@ -303,7 +304,7 @@ impl ChannelStore {
         role: u8,
         kind: u8,
         content: &str,
-    ) -> MessageKey {
+    ) -> Result<MessageKey, String> {
         // The single-party shape writes its one user — there is no "nobody
         // said it" (ADR-0009 §1).
         self.append_from(
@@ -331,8 +332,8 @@ impl ChannelStore {
         role: u8,
         kind: u8,
         content: &str,
-    ) -> MessageKey {
-        self.ensure_member(channel_id);
+    ) -> Result<MessageKey, String> {
+        self.ensure_member(channel_id)?;
         let key = MessageKey {
             channel_id,
             ts_ms,
@@ -345,28 +346,26 @@ impl ChannelStore {
             end_ts_ms,
             content: content.to_string(),
         };
-        self.messages.put(&key, &row);
-        key
+        self.messages.put(&key, &row).map_err(|e| e.to_string())?;
+        Ok(key)
     }
 
     /// Member 1 always exists (ADR-0009 §1): a channel's first touch seeds it
     /// with the default name, so a log never carries a message nobody owns.
-    fn ensure_member(&mut self, channel_id: u64) {
-        if self
-            .members
-            .get(&MemberKey {
-                channel_id,
-                member_id: DEFAULT_MEMBER,
-            })
-            .is_none()
-        {
+    fn ensure_member(&mut self, channel_id: u64) -> Result<(), String> {
+        let key = MemberKey {
+            channel_id,
+            member_id: DEFAULT_MEMBER,
+        };
+        if self.members.get(&key).map_err(|e| e.to_string())?.is_none() {
             self.put_member(
                 channel_id,
                 DEFAULT_MEMBER,
                 DEFAULT_MEMBER_NAME,
                 member_role::HUMAN,
-            );
+            )?;
         }
+        Ok(())
     }
 
     /// The agent's projection read (ADR-0008 §2): the NEWEST node that carries a
@@ -374,30 +373,33 @@ impl ChannelStore {
     /// it, and the pointer the increment is cut at. Nodes below it are history
     /// (invisible to the read); a node above it with an empty summary is a
     /// compression in flight.
-    pub fn fetch_full(&mut self, channel_id: u64, member_id: u64) -> SessionView {
-        self.ensure_member(channel_id);
-        let nodes = self.checkpoints_of(channel_id);
+    pub fn fetch_full(&mut self, channel_id: u64, member_id: u64) -> Result<SessionView, String> {
+        self.ensure_member(channel_id)?;
+        let nodes = self.checkpoints_of(channel_id)?;
         let complete = nodes.iter().rfind(|(_, row)| !row.summary.is_empty());
         let coverage = complete.map_or((0, 0), |(key, _)| (key.ts_ms, key.sub));
         let summary = complete.map(|(_, row)| row.summary.clone());
-        let head = complete.and_then(|(key, _)| self.checkpoint_head(key));
+        let head = match complete {
+            Some((key, _)) => self.checkpoint_head(key)?,
+            None => None,
+        };
         let compressing = nodes
             .last()
             .is_some_and(|(key, row)| row.summary.is_empty() && (key.ts_ms, key.sub) > coverage);
-        SessionView {
+        Ok(SessionView {
             coverage_ts: coverage.0,
             coverage_sub: coverage.1,
             summary,
             head,
             compressing,
-            increment: self.messages_after(channel_id, coverage),
-            read_at: self.read_at(channel_id, member_id),
-        }
+            increment: self.messages_after(channel_id, coverage)?,
+            read_at: self.read_at(channel_id, member_id)?,
+        })
     }
 
     /// Every checkpoint node of one channel, in key order (== pointer order).
     /// Prefix scan over the channel's range, same discipline as the log read.
-    fn checkpoints_of(&mut self, channel_id: u64) -> Vec<(CheckpointKey, CheckpointRow)> {
+    fn checkpoints_of(&mut self, channel_id: u64) -> Result<Vec<(CheckpointKey, CheckpointRow)>, String> {
         let mut prefix = Vec::with_capacity(3 + 8);
         prefix.extend_from_slice(CheckpointRow::NS_PREFIX);
         write_slot(&mut prefix, PRIMARY_SLOT);
@@ -407,31 +409,35 @@ impl ChannelStore {
             sub: 0,
         };
         probe.encode_prefix_named(&mut prefix, &["channel_id"]);
-        let suffixes: Vec<Vec<u8>> = self
+        let suffixes = self
             .checkpoints
             .store()
             .scan_suffix(&prefix)
-            .iter()
-            .map(|sfx| sfx.to_vec())
-            .collect();
+            .map_err(|e| e.to_string())?;
         let mut out = Vec::with_capacity(suffixes.len());
-        for sfx in suffixes {
+        for sfx in &suffixes {
             let mut full = prefix.clone();
-            full.extend_from_slice(&sfx);
+            full.extend_from_slice(sfx);
             let key = CheckpointKey::decode(&full[3..]);
-            if let Some(row) = self.checkpoints.get(&key) {
+            // A node that vanished between the scan and the read is absence; a
+            // store that cannot answer is not, and it propagates.
+            if let Some(row) = self.checkpoints.get(&key).map_err(|e| e.to_string())? {
                 out.push((key, row));
             }
         }
-        out
+        Ok(out)
     }
 
     /// The frozen head stored with one node, if any (ADR-0008 §2: the
     /// initialization memory is snapshotted as a SET of edge ids, so the head
     /// stays byte-stable while `?format=` keeps choosing the representation).
-    fn checkpoint_head(&mut self, key: &CheckpointKey) -> Option<Vec<u64>> {
-        let doc = self.checkpoints.fetch(key)?;
-        match doc.get(checkpoint_field::HEAD) {
+    fn checkpoint_head(&mut self, key: &CheckpointKey) -> Result<Option<Vec<u64>>, String> {
+        // `None` here is a node with no stored head; a store that cannot answer
+        // is not that, and it propagates.
+        let Some(doc) = self.checkpoints.fetch(key).map_err(|e| e.to_string())? else {
+            return Ok(None);
+        };
+        Ok(match doc.get(checkpoint_field::HEAD) {
             Some(okm_core::obj_dynamic::DynamicValue::Array(items)) => Some(
                 items
                     .iter()
@@ -442,11 +448,11 @@ impl ChannelStore {
                     .collect(),
             ),
             _ => None,
-        }
+        })
     }
 
     /// Write the frozen head ids into a node's dynamic segment.
-    fn write_head(&mut self, key: &CheckpointKey, head: &[u64]) {
+    fn write_head(&mut self, key: &CheckpointKey, head: &[u64]) -> Result<(), String> {
         let mut fields = std::collections::BTreeMap::new();
         fields.insert(
             checkpoint_field::HEAD.to_string(),
@@ -458,14 +464,19 @@ impl ChannelStore {
         );
         // The head is a dynamic name, so `merge` routes it to the segment and
         // leaves the row alone (ADR-0035: names decide the arm, not the verb).
-        self.checkpoints.merge(key, &fields);
+        self.checkpoints.merge(key, &fields).map_err(|e| e.to_string())
     }
 
     /// Open a compression AT the pointer k10r served (ADR-0008 §4): the node
     /// exists with an EMPTY summary — it carries the frozen head and marks the
     /// span as taken, while the read keeps answering from the node below until
     /// this one lands. Re-opening the same pointer is a no-op by key.
-    pub fn open_checkpoint(&mut self, channel_id: u64, pointer: (u64, u16), head: &[u64]) {
+    pub fn open_checkpoint(
+        &mut self,
+        channel_id: u64,
+        pointer: (u64, u16),
+        head: &[u64],
+    ) -> Result<(), String> {
         let key = CheckpointKey {
             channel_id,
             ts_ms: pointer.0,
@@ -476,29 +487,38 @@ impl ChannelStore {
             &CheckpointRow {
                 summary: String::new(),
             },
-        );
-        self.write_head(&key, head);
+        )
+        .map_err(|e| e.to_string())?;
+        self.write_head(&key, head)
     }
 
     /// Land a summary on the newest OPEN node — its pointer is the one k10r
     /// derived, never a caller's number (ADR-0008 §4). `None` when nothing is
     /// open: there is no position to land on, so the door answers 400 rather
     /// than inventing one.
-    pub fn complete_checkpoint(&mut self, channel_id: u64, summary: &str) -> Option<(u64, u16)> {
-        let nodes = self.checkpoints_of(channel_id);
-        let (key, _) = nodes.iter().rfind(|(_, row)| row.summary.is_empty())?;
+    pub fn complete_checkpoint(
+        &mut self,
+        channel_id: u64,
+        summary: &str,
+    ) -> Result<Option<(u64, u16)>, String> {
+        let nodes = self.checkpoints_of(channel_id)?;
+        let Some((key, _)) = nodes.iter().rfind(|(_, row)| row.summary.is_empty()) else {
+            return Ok(None);
+        };
         let key = key.clone();
-        let head = self.checkpoint_head(&key).unwrap_or_default();
-        self.checkpoints.put(
-            &key,
-            &CheckpointRow {
-                summary: summary.to_string(),
-            },
-        );
+        let head = self.checkpoint_head(&key)?.unwrap_or_default();
+        self.checkpoints
+            .put(
+                &key,
+                &CheckpointRow {
+                    summary: summary.to_string(),
+                },
+            )
+            .map_err(|e| e.to_string())?;
         // The head is rewritten with the summary: `put` replaces the whole
         // document, so the node's upward half has to ride along.
-        self.write_head(&key, &head);
-        Some((key.ts_ms, key.sub))
+        self.write_head(&key, &head)?;
+        Ok(Some((key.ts_ms, key.sub)))
     }
 
     /// Write a complete node directly (tests, and the backfill path if one ever
@@ -509,26 +529,28 @@ impl ChannelStore {
         pointer: (u64, u16),
         summary: &str,
         head: &[u64],
-    ) {
+    ) -> Result<(), String> {
         let key = CheckpointKey {
             channel_id,
             ts_ms: pointer.0,
             sub: pointer.1,
         };
-        self.checkpoints.put(
-            &key,
-            &CheckpointRow {
-                summary: summary.to_string(),
-            },
-        );
-        self.write_head(&key, head);
+        self.checkpoints
+            .put(
+                &key,
+                &CheckpointRow {
+                    summary: summary.to_string(),
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        self.write_head(&key, head)
     }
 
     /// Stamp the member's read CLOCK (the caller's clock at this read). The
     /// model's read always reaches the log's end, so no position is stored — the
     /// checkpoint is what cuts the increment (ADR-0008 §2). Never rewinds: an
     /// earlier clock leaves the stored one alone.
-    pub fn note_read(&mut self, channel_id: u64, member_id: u64, read_at: u64) {
+    pub fn note_read(&mut self, channel_id: u64, member_id: u64, read_at: u64) -> Result<(), String> {
         let key = CursorKey {
             channel_id,
             member_id,
@@ -537,51 +559,66 @@ impl ChannelStore {
         if self
             .cursors
             .get(&key)
+            .map_err(|e| e.to_string())?
             .is_some_and(|row| row.read_at >= read_at)
         {
-            return;
+            return Ok(());
         }
-        self.cursors.put(&key, &CursorRow { read_at });
+        self.cursors
+            .put(&key, &CursorRow { read_at })
+            .map_err(|e| e.to_string())
     }
 
     /// The caller's clock at that member's last read — the cache clock's
     /// observable (ADR-0008 §3).
-    pub fn read_at(&self, channel_id: u64, member_id: u64) -> Option<u64> {
-        self.cursors
+    pub fn read_at(&self, channel_id: u64, member_id: u64) -> Result<Option<u64>, String> {
+        Ok(self
+            .cursors
             .get(&CursorKey {
                 channel_id,
                 member_id,
             })
-            .map(|row| row.read_at)
+            .map_err(|e| e.to_string())?
+            .map(|row| row.read_at))
     }
 
     /// Register (or rename) a member — the identity layer's only write
     /// (ADR-0009 §1). Idempotent by key: the log stores raw sender ids, so a
     /// rename re-attributes every past message without rewriting one.
-    pub fn put_member(&mut self, channel_id: u64, member_id: u64, display_name: &str, role: u8) {
-        self.members.put(
-            &MemberKey {
-                channel_id,
-                member_id,
-            },
-            &MemberRow {
-                display_name: display_name.to_string(),
-                role,
-            },
-        );
+    pub fn put_member(
+        &mut self,
+        channel_id: u64,
+        member_id: u64,
+        display_name: &str,
+        role: u8,
+    ) -> Result<(), String> {
+        self.members
+            .put(
+                &MemberKey {
+                    channel_id,
+                    member_id,
+                },
+                &MemberRow {
+                    display_name: display_name.to_string(),
+                    role,
+                },
+            )
+            .map_err(|e| e.to_string())
     }
 
     /// One member's identity, if registered.
-    pub fn member(&self, channel_id: u64, member_id: u64) -> Option<MemberRow> {
-        self.members.get(&MemberKey {
-            channel_id,
-            member_id,
-        })
+    pub fn member(&self, channel_id: u64, member_id: u64) -> Result<Option<MemberRow>, String> {
+        self.members
+            .get(&MemberKey {
+                channel_id,
+                member_id,
+            })
+            .map_err(|e| e.to_string())
     }
 
     /// Every member of one channel, in member-id order (prefix scan — only the
     /// channel's key range is read).
-    pub fn members(&mut self, channel_id: u64) -> Vec<(MemberKey, MemberRow)> {
+    pub fn members(&mut self, channel_id: u64) -> Result<Vec<(MemberKey, MemberRow)>, String> {
         let mut prefix = Vec::with_capacity(3 + 8);
         prefix.extend_from_slice(MemberRow::NS_PREFIX);
         write_slot(&mut prefix, PRIMARY_SLOT);
@@ -590,28 +627,28 @@ impl ChannelStore {
             member_id: 0,
         };
         probe.encode_prefix_named(&mut prefix, &["channel_id"]);
-        let suffixes: Vec<Vec<u8>> = self
+        let suffixes = self
             .members
             .store()
             .scan_suffix(&prefix)
-            .iter()
-            .map(|sfx| sfx.to_vec())
-            .collect();
+            .map_err(|e| e.to_string())?;
         let mut out = Vec::with_capacity(suffixes.len());
-        for sfx in suffixes {
+        for sfx in &suffixes {
             let mut full = prefix.clone();
-            full.extend_from_slice(&sfx);
+            full.extend_from_slice(sfx);
             let key = MemberKey::decode(&full[3..]);
-            if let Some(row) = self.members.get(&key) {
+            // A member row that vanished between the scan and the read is
+            // absence; a store that cannot answer is not, and it propagates.
+            if let Some(row) = self.members.get(&key).map_err(|e| e.to_string())? {
                 out.push((key, row));
             }
         }
-        out
+        Ok(out)
     }
 
     /// The channel's WHOLE log, key order — the human view (ADR-0009 §3: people
     /// read the channel; no checkpoint, no merging, every record as written).
-    pub fn history(&mut self, channel_id: u64) -> Vec<(MessageKey, MessageRow)> {
+    pub fn history(&mut self, channel_id: u64) -> Result<Vec<(MessageKey, MessageRow)>, String> {
         self.messages_after(channel_id, (0, 0))
     }
 
@@ -624,7 +661,11 @@ impl ChannelStore {
     /// The comparison is LEXICOGRAPHIC on the pointer: a record that shares
     /// the coverage point's millisecond but sorts after it is NOT covered
     /// (its `sub` is larger), which a ts-only compare would silently drop.
-    fn messages_after(&self, channel_id: u64, after: (u64, u16)) -> Vec<(MessageKey, MessageRow)> {
+    fn messages_after(
+        &self,
+        channel_id: u64,
+        after: (u64, u16),
+    ) -> Result<Vec<(MessageKey, MessageRow)>, String> {
         // Header is `[ns 2B][0x00]` — the primary slot is a fixed face, one
         // byte (okm ADR-0030).
         let mut prefix = Vec::with_capacity(3 + 8);
@@ -636,24 +677,29 @@ impl ChannelStore {
             sub: 0,
         };
         probe.encode_prefix_named(&mut prefix, &["channel_id"]);
-        self.messages
+        let suffixes = self
+            .messages
             .store()
             .scan_suffix(&prefix)
-            .iter()
-            .filter_map(|sfx| {
-                // suffix = `[ts_ms 8B][sub 2B]` after
-                // `[ns 2B][0x00][channel_id 8B]`; decode via full-key
-                // reconstruction (the graph's pattern).
-                let mut full = prefix.clone();
-                full.extend_from_slice(sfx);
-                let key = MessageKey::decode(&full[3..]);
-                if (key.ts_ms, key.sub) <= after {
-                    return None;
-                }
-                let row = self.messages.get(&key)?;
-                Some((key, row))
-            })
-            .collect()
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::with_capacity(suffixes.len());
+        for sfx in &suffixes {
+            // suffix = `[ts_ms 8B][sub 2B]` after
+            // `[ns 2B][0x00][channel_id 8B]`; decode via full-key
+            // reconstruction (the graph's pattern).
+            let mut full = prefix.clone();
+            full.extend_from_slice(sfx);
+            let key = MessageKey::decode(&full[3..]);
+            if (key.ts_ms, key.sub) <= after {
+                continue;
+            }
+            // A row that vanished between the scan and the read is absence; a
+            // store that cannot answer is not, and it propagates.
+            if let Some(row) = self.messages.get(&key).map_err(|e| e.to_string())? {
+                out.push((key, row));
+            }
+        }
+        Ok(out)
     }
 }
 

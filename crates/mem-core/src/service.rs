@@ -42,17 +42,19 @@ pub struct ServiceStores {
 /// Open (or create) the service database at `path` and attach every table
 /// group to it. A second call on the same directory fails on Fjall's lock
 /// (one writer per directory, by construction).
-pub fn open_service(path: &std::path::Path) -> Result<ServiceStores, fjall::Error> {
-    let db = fjall::Database::create_or_recover(fjall::Config::new(path))?;
-    let channel_store = FjallStore::from_db(db.clone(), KEYSPACE_CHANNEL)?;
-    let memory_store = FjallStore::from_db(db, KEYSPACE_MEMORY)?;
+pub fn open_service(path: &std::path::Path) -> Result<ServiceStores, String> {
+    let db = fjall::Database::create_or_recover(fjall::Config::new(path))
+        .map_err(|e| e.to_string())?;
+    let channel_store =
+        FjallStore::from_db(db.clone(), KEYSPACE_CHANNEL).map_err(|e| e.to_string())?;
+    let memory_store = FjallStore::from_db(db, KEYSPACE_MEMORY).map_err(|e| e.to_string())?;
     Ok(ServiceStores {
-        channels: ChannelStore::wrap(channel_store.clone()),
+        channels: ChannelStore::wrap(channel_store.clone())?,
         // The graph holds the identity collection's handle too (ADR-0014): a
         // `user` endpoint is validated and rendered by a point read across
         // keyspaces, never by a batch that would span them.
-        graph: GraphStore::wrap(memory_store.clone()).with_channel(channel_store.clone()),
-        log: LogStore::wrap(channel_store),
-        code: CodeStore::wrap(memory_store),
+        graph: GraphStore::wrap(memory_store.clone())?.with_channel(channel_store.clone()),
+        log: LogStore::wrap(channel_store)?,
+        code: CodeStore::wrap(memory_store)?,
     })
 }

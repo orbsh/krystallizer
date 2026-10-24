@@ -89,15 +89,14 @@ where
 /// leaves the store where it was, and the issuers must not move either.
 pub(crate) fn finish_import(
     out: Result<usize, String>,
-    reseed: impl FnOnce(),
+    reseed: impl FnOnce() -> Result<(), String>,
 ) -> Result<usize, String> {
-    match out {
-        Ok(rows) => {
-            reseed();
-            Ok(rows)
-        }
-        Err(e) => Err(e),
-    }
+    let rows = out?;
+    // The reseed reads the store back (watermark + key scan): a failure there
+    // means the imported rows are in place but the issuer did not learn where
+    // they stop, which the caller has to hear about.
+    reseed()?;
+    Ok(rows)
 }
 
 /// The table's name for an ns, from the catalog — what the graph's edge export

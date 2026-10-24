@@ -991,13 +991,14 @@ pub struct GraphStore {
 impl GraphStore {
     /// Open (or create) the graph tables in the `memory` keyspace at
     /// `path` — the standalone form (tests, single-table tools).
-    pub fn open(path: &std::path::Path) -> Result<Self, fjall::Error> {
-        Ok(Self::wrap(FjallStore::open(path, crate::KEYSPACE_MEMORY)?))
+    pub fn open(path: &std::path::Path) -> Result<Self, String> {
+        let store = FjallStore::open(path, crate::KEYSPACE_MEMORY).map_err(|e| e.to_string())?;
+        Self::wrap(store)
     }
 
     /// Attach the graph tables to an already-open store handle — the
     /// attach point `crate::service::open_service` uses.
-    pub fn wrap(store: FjallStore) -> Self {
+    pub fn wrap(store: FjallStore) -> Result<Self, String> {
         let entities = <EntityRow as Document>::collection(store.clone());
         // Id recovery, both tables: scan the last key in table order.
         // Entity keys are `[scope][node_id]`, so the last key carries the
@@ -1006,6 +1007,7 @@ impl GraphStore {
         // starts at 1 — ids are unique but not contiguous per scope.
         let next_node = entities
             .scan_keys()
+            .map_err(|e| e.to_string())?
             .last()
             .map_or(1, |k| k.node_id.saturating_add(1));
         // `[ns 2B][0x00]` — the primary slot is a fixed face, one byte
@@ -1017,11 +1019,11 @@ impl GraphStore {
         edge_prefix[0..2].copy_from_slice(Facts::NS_PREFIX);
         let next_edge = store
             .scan_suffix(&edge_prefix)
-            .iter()
+            .map_err(|e| e.to_string())?
             .last()
-            .and_then(|sfx| sfx.as_slice().try_into().ok().map(u64::from_be_bytes))
+            .and_then(|sfx| <[u8; 8]>::try_from(sfx.as_slice()).ok().map(u64::from_be_bytes))
             .map_or(1, |id| id.saturating_add(1));
-        Self {
+        Ok(Self {
             entities,
             store,
             next_node,
@@ -1030,7 +1032,7 @@ impl GraphStore {
             members: None,
             tables: ScopeTables::default(),
             next_community: HashMap::new(),
-        }
+        })
     }
 
     /// Attach the CHANNEL keyspace, which is where the identity collection
@@ -1044,11 +1046,13 @@ impl GraphStore {
     /// Open both keyspaces of one database directory — the standalone form a
     /// test needs when it exercises user endpoints (a process opens the
     /// database once and attaches keyspaces; see `crate::service`).
-    pub fn open_with_channel(path: &std::path::Path) -> Result<Self, fjall::Error> {
-        let db = fjall::Database::create_or_recover(fjall::Config::new(path))?;
-        let memory = FjallStore::from_db(db.clone(), crate::KEYSPACE_MEMORY)?;
-        let channel = FjallStore::from_db(db, crate::KEYSPACE_CHANNEL)?;
-        Ok(Self::wrap(memory).with_channel(channel))
+    pub fn open_with_channel(path: &std::path::Path) -> Result<Self, String> {
+        let db = fjall::Database::create_or_recover(fjall::Config::new(path))
+            .map_err(|e| e.to_string())?;
+        let memory = FjallStore::from_db(db.clone(), crate::KEYSPACE_MEMORY)
+            .map_err(|e| e.to_string())?;
+        let channel = FjallStore::from_db(db, crate::KEYSPACE_CHANNEL).map_err(|e| e.to_string())?;
+        Ok(Self::wrap(memory)?.with_channel(channel))
     }
 
     /// Attach the embedding engine (ADR-0003). `open_service` cannot
@@ -1071,8 +1075,10 @@ impl GraphStore {
     }
 
     /// One node by id.
-    pub fn entity(&self, scope: u64, node_id: u64) -> Option<EntityRow> {
-        self.entities.get(&EntityKey { scope, node_id })
+    pub fn entity(&self, scope: u64, node_id: u64) -> Result<Option<EntityRow>, IngestError> {
+        self.entities
+            .get(&EntityKey { scope, node_id })
+            .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
     /// The exact name/alias entrance: scan the `by_name` face and verify
@@ -1080,13 +1086,20 @@ impl GraphStore {
     /// `[name][scope][node_id]`, so a prefix scan reaches every scope and
     /// every longer name that shares the prefix — the text-first regime's
     /// documented cost, paid here by the two comparisons).
-    pub fn entity_by_name(&mut self, scope: u64, name: &str) -> Option<(u64, EntityRow)> {
-        self.entities
+    pub fn entity_by_name(
+        &mut self,
+        scope: u64,
+        name: &str,
+    ) -> Result<Option<(u64, EntityRow)>, IngestError> {
+        let hits = self
+            .entities
             .scan::<ByName>(name.as_bytes())
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
+        Ok(hits
             .into_iter()
             .filter_map(|(key, row)| row.map(|row| (key.decoded, row)))
             .find(|(key, row)| key.scope == scope && row.name == name)
-            .map(|(key, row)| (key.node_id, row))
+            .map(|(key, row)| (key.node_id, row)))
     }
 
     /// The entity's open attributes: the document's names the schema does not
@@ -1097,45 +1110,74 @@ impl GraphStore {
         &mut self,
         scope: u64,
         node_id: u64,
-    ) -> Option<BTreeMap<String, DynamicValue>> {
-        let mut doc = self.entities.fetch(&EntityKey { scope, node_id })?;
+    ) -> Result<Option<BTreeMap<String, DynamicValue>>, IngestError> {
+        // No stored document (either slot) is absence; a store that cannot
+        // answer is not, and it propagates.
+        let Some(mut doc) = self
+            .entities
+            .fetch(&EntityKey { scope, node_id })
+            .map_err(|e| IngestError::Storage(e.to_string()))?
+        else {
+            return Ok(None);
+        };
         doc.retain(|name, _| !EntityRow::FIELDS.iter().any(|f| f.name == name));
-        (!doc.is_empty()).then_some(doc)
+        Ok((!doc.is_empty()).then_some(doc))
     }
 
     /// One fact, read back by id.
-    pub fn fact(&mut self, edge_id: u64) -> Option<FactBody> {
+    pub fn fact(&mut self, edge_id: u64) -> Result<Option<FactBody>, IngestError> {
         let mut facts = self.facts();
-        let body = facts.get_edge(edge_id)?;
-        let kind = facts.predicate_vocab_name(body.predicate_vocab_id)?;
-        Some(FactBody {
+        let Some(body) = facts
+            .get_edge(edge_id)
+            .map_err(|e| IngestError::Storage(e.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let Some(kind) = facts
+            .predicate_vocab_name(body.predicate_vocab_id)
+            .map_err(|e| IngestError::Storage(e.to_string()))?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(FactBody {
             edge_id,
             src: body.src,
             dst: body.dst,
             kind,
             edge: Facts::decode_payload(&body.payload),
-        })
+        }))
     }
 
     /// One fact, read back by id, with both endpoints resolved to their
     /// node rows (an absent endpoint renders as a node id and an empty
     /// name — never an error: the edge is truth even if its node row was
     /// removed).
-    pub fn fact_view(&mut self, edge_id: u64) -> Option<FactView> {
-        let body = self.facts().get_edge(edge_id)?;
-        let kind = self.facts().predicate_vocab_name(body.predicate_vocab_id)?;
+    pub fn fact_view(&mut self, edge_id: u64) -> Result<Option<FactView>, IngestError> {
+        let mut facts = self.facts();
+        let Some(body) = facts
+            .get_edge(edge_id)
+            .map_err(|e| IngestError::Storage(e.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let Some(kind) = facts
+            .predicate_vocab_name(body.predicate_vocab_id)
+            .map_err(|e| IngestError::Storage(e.to_string()))?
+        else {
+            return Ok(None);
+        };
         let refs = self
-            .fact_props(edge_id)
+            .fact_props(edge_id)?
             .and_then(|props| props.get(REF_FIELD).map(refs_of))
             .unwrap_or_default();
-        Some(FactView {
+        Ok(Some(FactView {
             edge_id,
             kind,
-            src: self.resolve_ref(&body.src),
-            dst: self.resolve_ref(&body.dst),
+            src: self.resolve_ref(&body.src)?,
+            dst: self.resolve_ref(&body.dst)?,
             edge: Facts::decode_payload(&body.payload),
             refs,
-        })
+        }))
     }
 
     /// This graph's tables, `(name, ns)` — the names from the declarations.
@@ -1168,7 +1210,10 @@ impl GraphStore {
             Some(crate::export::table(&mut self.entities, path))
         } else if name == <Facts as Document>::TABLE_NAME {
             let mut facts = self.facts();
-            let batch = facts.to_record_batch_table(crate::export::name_of);
+            let batch = match facts.to_record_batch_table(crate::export::name_of) {
+                Ok(batch) => batch,
+                Err(e) => return Some(Err(format!("the facts table: {e}"))),
+            };
             Some(crate::export::batch(&batch, path))
         } else if name == <CommunitySeqRow as Document>::TABLE_NAME {
             // An ISSUER row, not data: a restored graph without it re-issues
@@ -1200,7 +1245,7 @@ impl GraphStore {
             // The cache is per scope and lazily read from the row; dropping it
             // is what makes a restored watermark visible.
             self.next_community.clear();
-            Some(crate::export::finish_import(out, || {}))
+            Some(crate::export::finish_import(out, || Ok(())))
         } else {
             None
         }
@@ -1209,10 +1254,11 @@ impl GraphStore {
     /// Recompute every in-process issuer from the store — the open path, reused
     /// after a restore wrote rows underneath. A restore that skips this hands
     /// out ids the restored rows already carry.
-    pub fn reseed(&mut self) {
+    pub fn reseed(&mut self) -> Result<(), String> {
         let next_node = self
             .entities
             .scan_keys()
+            .map_err(|e| e.to_string())?
             .last()
             .map_or(1, |k| k.node_id.saturating_add(1));
         let mut pk_prefix = Vec::with_capacity(3);
@@ -1223,14 +1269,15 @@ impl GraphStore {
         let next_edge = self
             .store
             .scan_suffix(&edge_prefix)
-            .iter()
+            .map_err(|e| e.to_string())?
             .last()
-            .and_then(|sfx| sfx.as_slice().try_into().ok().map(u64::from_be_bytes))
+            .and_then(|sfx| <[u8; 8]>::try_from(sfx.as_slice()).ok().map(u64::from_be_bytes))
             .map_or(1, |id| id.saturating_add(1));
         self.next_node = next_node;
         self.next_edge = next_edge;
         self.next_community.clear();
         self.tables.clear();
+        Ok(())
     }
 
     /// One fact by ITS ID — the deterministic read (ADR-0004's identity), the
@@ -1241,10 +1288,16 @@ impl GraphStore {
     /// This is what a reference LINK resolves to: a fact can name a less central
     /// fact by id in its props, and the reader decides whether to follow it — the
     /// navigation shape skills use, one level down.
-    pub fn fact_in_scope(&mut self, scope: u64, edge_id: u64) -> Option<FactView> {
-        let body = self.facts().get_edge(edge_id)?;
+    pub fn fact_in_scope(&mut self, scope: u64, edge_id: u64) -> Result<Option<FactView>, IngestError> {
+        let Some(body) = self
+            .facts()
+            .get_edge(edge_id)
+            .map_err(|e| IngestError::Storage(e.to_string()))?
+        else {
+            return Ok(None);
+        };
         if EntityKey::decode(&body.src.pkey).scope != scope {
-            return None;
+            return Ok(None);
         }
         self.fact_view(edge_id)
     }
@@ -1254,13 +1307,19 @@ impl GraphStore {
     /// incumbent). `false` = no such edge in this scope, so the caller can answer
     /// 404 without guessing.
     pub fn withdraw(&mut self, scope: u64, edge_id: u64) -> Result<bool, IngestError> {
-        let Some(body) = self.facts().get_edge(edge_id) else {
+        let Some(body) = self
+            .facts()
+            .get_edge(edge_id)
+            .map_err(|e| IngestError::Storage(e.to_string()))?
+        else {
             return Ok(false);
         };
         if EntityKey::decode(&body.src.pkey).scope != scope {
             return Ok(false);
         }
-        self.facts().unlink(edge_id).map_err(IngestError::Storage)?;
+        self.facts()
+            .unlink(edge_id)
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
         Ok(true)
     }
 
@@ -1269,10 +1328,17 @@ impl GraphStore {
     /// and `in_edges`), so the cost follows the NODE's degree, never the scope's
     /// size. This is the entity-anchored entrance (PLAN 4b): a caller holding an
     /// entity id gets its facts without a query, an embedding, or a landing.
-    pub fn neighbours(&mut self, scope: u64, node_id: u64) -> Vec<FactView> {
+    pub fn neighbours(&mut self, scope: u64, node_id: u64) -> Result<Vec<FactView>, IngestError> {
         let node = self.node_ref(scope, node_id);
-        let mut ids = self.facts().out_edges(&node);
-        ids.extend(self.facts().in_edges(&node));
+        let mut ids = self
+            .facts()
+            .out_edges(&node)
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
+        ids.extend(
+            self.facts()
+                .in_edges(&node)
+                .map_err(|e| IngestError::Storage(e.to_string()))?,
+        );
         self.views_of(ids)
     }
 
@@ -1281,14 +1347,16 @@ impl GraphStore {
     /// renders, entered by IDENTITY instead of by similarity. A node with no
     /// community yet (a fresh row) answers its own neighbourhood and nothing
     /// else: `community_id == 0` means "not binned", not "community zero".
-    pub fn anchored(&mut self, scope: u64, node_id: u64) -> Option<Anchored> {
-        let row = self.entity(scope, node_id)?;
-        let own = self.neighbours(scope, node_id);
+    pub fn anchored(&mut self, scope: u64, node_id: u64) -> Result<Option<Anchored>, IngestError> {
+        let Some(row) = self.entity(scope, node_id)? else {
+            return Ok(None);
+        };
+        let own = self.neighbours(scope, node_id)?;
         let mut seen: HashSet<u64> = own.iter().map(|f| f.edge_id).collect();
         let mut facts = own;
         if row.community_id != 0 {
             let mut rest: Vec<FactView> = self
-                .community_facts(scope, row.community_id)
+                .community_facts(scope, row.community_id)?
                 .into_iter()
                 .filter(|view| seen.insert(view.edge_id))
                 .collect();
@@ -1300,11 +1368,11 @@ impl GraphStore {
             });
             facts.extend(rest);
         }
-        Some(Anchored {
+        Ok(Some(Anchored {
             node_id,
             community: row.community_id,
             facts,
-        })
+        }))
     }
 
     /// The scope's facts in the order they were LEARNED, newest first (PLAN 4b's
@@ -1320,21 +1388,23 @@ impl GraphStore {
     /// scope-prefixed time face (`by_scope_since`) would remove that, and it is
     /// the same declaration shape as `by_scope_weight` — worth it only when a
     /// scope carries enough facts for the skip to matter.
-    pub fn timeline(&mut self, scope: u64, limit: usize) -> Vec<FactView> {
+    pub fn timeline(&mut self, scope: u64, limit: usize) -> Result<Vec<FactView>, IngestError> {
         if limit == 0 {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let ids: Vec<u64> = {
             let facts = self.facts();
-            okm_core::model::index::scan_index::<_, BySince>(facts.store(), Facts::NS_PREFIX, &[])
-                .into_iter()
+            let keys =
+                okm_core::model::index::scan_index::<_, BySince>(facts.store(), Facts::NS_PREFIX, &[])
+                    .map_err(|e| IngestError::Storage(e.to_string()))?;
+            keys.into_iter()
                 .rev()
                 .map(|key| key.decoded.0)
                 .collect()
         };
         let mut out = Vec::new();
         for id in ids {
-            let Some(fact) = self.fact_view(id) else {
+            let Some(fact) = self.fact_view(id)? else {
                 continue;
             };
             if fact.edge.scope != scope {
@@ -1345,7 +1415,7 @@ impl GraphStore {
                 break;
             }
         }
-        out
+        Ok(out)
     }
 
     /// A causal chain (PLAN 4b): follow ONE predicate from `from`, hop by hop,
@@ -1353,7 +1423,13 @@ impl GraphStore {
     /// and no scoring — the order of the answer is the order of the walk, which is
     /// what makes "A leads to B leads to C" readable as a sequence rather than a
     /// pile of facts.
-    pub fn chain(&mut self, scope: u64, from: u64, kind: &str, max_hops: usize) -> Vec<ChainHop> {
+    pub fn chain(
+        &mut self,
+        scope: u64,
+        from: u64,
+        kind: &str,
+        max_hops: usize,
+    ) -> Result<Vec<ChainHop>, IngestError> {
         let mut out: Vec<ChainHop> = Vec::new();
         let mut visited: HashSet<u64> = HashSet::new();
         visited.insert(from);
@@ -1361,9 +1437,9 @@ impl GraphStore {
         for depth in 0..max_hops {
             let mut next: Vec<u64> = Vec::new();
             for node_id in frontier {
-                let ids = self.typed_out(scope, node_id, kind);
+                let ids = self.typed_out(scope, node_id, kind)?;
                 for edge_id in ids {
-                    let Some(view) = self.fact_view(edge_id) else {
+                    let Some(view) = self.fact_view(edge_id)? else {
                         continue;
                     };
                     out.push(ChainHop {
@@ -1384,25 +1460,31 @@ impl GraphStore {
             }
             frontier = next;
         }
-        out
+        Ok(out)
     }
 
     /// Deduplicate edge ids and order them weight-descending, ties by edge id —
     /// the ordering every read that shows facts uses (ADR-0005).
-    fn views_of(&mut self, ids: Vec<u64>) -> Vec<FactView> {
+    fn views_of(&mut self, ids: Vec<u64>) -> Result<Vec<FactView>, IngestError> {
         let mut seen = HashSet::new();
-        let mut facts: Vec<FactView> = ids
-            .into_iter()
-            .filter(|id| seen.insert(*id))
-            .filter_map(|id| self.fact_view(id))
-            .collect();
+        let mut facts: Vec<FactView> = Vec::with_capacity(ids.len());
+        for id in ids {
+            if !seen.insert(id) {
+                continue;
+            }
+            // An id that names no edge is absence (the face outlived its row);
+            // a store that cannot answer is not, and it propagates.
+            if let Some(fact) = self.fact_view(id)? {
+                facts.push(fact);
+            }
+        }
         facts.sort_by(|a, b| {
             b.edge
                 .weight
                 .cmp(&a.edge.weight)
                 .then_with(|| a.edge_id.cmp(&b.edge_id))
         });
-        facts
+        Ok(facts)
     }
 
     /// The heaviest facts of a scope, weight-descending, ties by edge id — the
@@ -1414,27 +1496,31 @@ impl GraphStore {
     /// O(scope rows). The keys belong to one scope by construction, which is why
     /// the scope is a denormalized field on the row: a face cannot be probed by
     /// something the index does not carry.
-    pub fn top_by_weight(&mut self, scope: u64, k: usize) -> Vec<FactView> {
+    pub fn top_by_weight(&mut self, scope: u64, k: usize) -> Result<Vec<FactView>, IngestError> {
         if k == 0 {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let ids: Vec<u64> = {
             let facts = self.facts();
-            okm_core::model::index::scan_index::<_, ByScopeWeight>(
+            let keys = okm_core::model::index::scan_index::<_, ByScopeWeight>(
                 facts.store(),
                 Facts::NS_PREFIX,
                 &scope.to_be_bytes(),
             )
-            .into_iter()
-            .rev()
-            .take(k)
-            .map(|key| key.decoded.0)
-            .collect()
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
+            keys.into_iter()
+                .rev()
+                .take(k)
+                .map(|key| key.decoded.0)
+                .collect()
         };
-        let mut facts: Vec<FactView> = ids
-            .into_iter()
-            .filter_map(|id| self.fact_view(id))
-            .collect();
+        let mut facts: Vec<FactView> = Vec::with_capacity(ids.len());
+        for id in ids {
+            // A face entry whose row is gone is absence, never a failure.
+            if let Some(fact) = self.fact_view(id)? {
+                facts.push(fact);
+            }
+        }
         // The face orders by (scope, weight, edge_id) ascending; reversed that is
         // weight-descending with the tie on edge id DESCENDING. The documented
         // order keeps ties ascending, so the k rows are put back in it here — k
@@ -1445,57 +1531,71 @@ impl GraphStore {
                 .cmp(&a.edge.weight)
                 .then_with(|| a.edge_id.cmp(&b.edge_id))
         });
-        facts
+        Ok(facts)
     }
 
     /// One node's outgoing facts, endpoints resolved — the one-hop
     /// traversal the read face serves. `out_edges` is the traversal
     /// currency (untyped, no dictionary involved); each id is then read
     /// back as a whole fact.
-    pub fn out_facts(&mut self, scope: u64, node_id: u64) -> Vec<FactView> {
-        self.out_edges(scope, node_id)
-            .into_iter()
-            .filter_map(|edge_id| self.fact_view(edge_id))
-            .collect()
+    pub fn out_facts(&mut self, scope: u64, node_id: u64) -> Result<Vec<FactView>, IngestError> {
+        let ids = self.out_edges(scope, node_id)?;
+        let mut facts = Vec::with_capacity(ids.len());
+        for edge_id in ids {
+            // An id that names no edge is absence, never a failure.
+            if let Some(fact) = self.fact_view(edge_id)? {
+                facts.push(fact);
+            }
+        }
+        Ok(facts)
     }
 
     /// Every node of one scope, key order — the whole-scope read a bulk
     /// consumer (the visualization door) serves. The scan is bounded by
     /// the primary-key prefix `[scope]`, so no other scope's rows are
     /// touched.
-    pub fn scope_entities(&mut self, scope: u64) -> Vec<(u64, EntityRow)> {
+    pub fn scope_entities(&mut self, scope: u64) -> Result<Vec<(u64, EntityRow)>, IngestError> {
         let mut prefix = Vec::with_capacity(3 + 8);
         prefix.extend_from_slice(<EntityRow as Document>::NS_PREFIX);
         write_slot(&mut prefix, PRIMARY_SLOT);
         prefix.extend_from_slice(&scope.to_be_bytes());
-        self.store
+        let suffixes = self
+            .store
             .scan_suffix(&prefix)
-            .iter()
-            .filter_map(|sfx| {
-                let mut full = prefix.clone();
-                full.extend_from_slice(sfx);
-                let key = EntityKey::decode(&full[3..]);
-                let row = self.entities.get(&key)?;
-                Some((key.node_id, row))
-            })
-            .collect()
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
+        let mut out = Vec::with_capacity(suffixes.len());
+        for sfx in &suffixes {
+            let mut full = prefix.clone();
+            full.extend_from_slice(sfx);
+            let key = EntityKey::decode(&full[3..]);
+            // A node that vanished between the scan and the read is absence; a
+            // store that cannot answer is not, and it propagates.
+            if let Some(row) = self
+                .entities
+                .get(&key)
+                .map_err(|e| IngestError::Storage(e.to_string()))?
+            {
+                out.push((key.node_id, row));
+            }
+        }
+        Ok(out)
     }
 
     /// Every fact of one scope: each node's outgoing facts, node order
     /// then edge order. Each edge is reached exactly once — `ingest`
     /// creates both endpoints in the scope it was called with, so an
     /// edge's source is always in this list.
-    pub fn scope_facts(&mut self, scope: u64) -> Vec<FactView> {
+    pub fn scope_facts(&mut self, scope: u64) -> Result<Vec<FactView>, IngestError> {
         let nodes: Vec<u64> = self
-            .scope_entities(scope)
+            .scope_entities(scope)?
             .into_iter()
             .map(|(node_id, _)| node_id)
             .collect();
         let mut facts = Vec::new();
         for node_id in nodes {
-            facts.extend(self.out_facts(scope, node_id));
+            facts.extend(self.out_facts(scope, node_id)?);
         }
-        facts
+        Ok(facts)
     }
 
     /// Vector landing (ADR-0003): embed the query, ask the scope's index for
@@ -1521,7 +1621,7 @@ impl GraphStore {
         let q = engine
             .embed(query)
             .map_err(|e| IngestError::Embedding(e.to_string()))?;
-        self.load_vector_table(scope);
+        self.load_vector_table(scope)?;
         let Some(table) = self.tables.get(scope) else {
             return Ok(Vec::new());
         };
@@ -1579,7 +1679,7 @@ impl GraphStore {
         let seeds = self.retrieve(scope, query, k)?;
         let mut communities: Vec<u64> = Vec::new();
         for seed in &seeds {
-            if let Some(row) = self.entity(scope, seed.node_id) {
+            if let Some(row) = self.entity(scope, seed.node_id)? {
                 if row.community_id != 0 && !communities.contains(&row.community_id) {
                     communities.push(row.community_id);
                 }
@@ -1591,9 +1691,9 @@ impl GraphStore {
         let mut seen = HashSet::new();
         let mut slices: Vec<CommunitySlice> = Vec::new();
         for &community in &communities {
-            let members = self.community_members(scope, community).len();
+            let members = self.community_members(scope, community)?.len();
             let mut facts: Vec<FactView> = self
-                .community_facts(scope, community)
+                .community_facts(scope, community)?
                 .into_iter()
                 .filter(|view| seen.insert(view.edge_id))
                 .collect();
@@ -1672,15 +1772,15 @@ impl GraphStore {
         let mut seen = HashSet::new();
         let mut facts = Vec::new();
         for seed in seeds {
-            let mut ids = self.out_edges(scope, seed.node_id);
-            ids.extend(self.in_edges(scope, seed.node_id));
+            let mut ids = self.out_edges(scope, seed.node_id)?;
+            ids.extend(self.in_edges(scope, seed.node_id)?);
             for edge_id in ids {
                 if !seen.insert(edge_id) {
                     continue;
                 }
                 let view = match ts_ms {
                     Some(now) => self.bump_view(edge_id, Touch::Read, now)?,
-                    None => self.fact_view(edge_id),
+                    None => self.fact_view(edge_id)?,
                 };
                 if let Some(view) = view {
                     facts.push(view);
@@ -1707,7 +1807,11 @@ impl GraphStore {
         kind: Touch,
         now: u64,
     ) -> Result<Option<FactView>, IngestError> {
-        let Some(body) = self.facts().get_edge(edge_id) else {
+        let Some(body) = self
+            .facts()
+            .get_edge(edge_id)
+            .map_err(|e| IngestError::Storage(e.to_string()))?
+        else {
             return Ok(None);
         };
         if EntityKey::decode(&body.src.pkey).scope != scope {
@@ -1728,10 +1832,16 @@ impl GraphStore {
         now: u64,
     ) -> Result<Option<FactView>, IngestError> {
         let mut facts = self.facts();
-        let Some(body) = facts.get_edge(edge_id) else {
+        let Some(body) = facts
+            .get_edge(edge_id)
+            .map_err(|e| IngestError::Storage(e.to_string()))?
+        else {
             return Ok(None);
         };
-        let Some(predicate) = facts.predicate_vocab_name(body.predicate_vocab_id) else {
+        let Some(predicate) = facts
+            .predicate_vocab_name(body.predicate_vocab_id)
+            .map_err(|e| IngestError::Storage(e.to_string()))?
+        else {
             return Ok(None);
         };
         let edge = Facts::decode_payload(&body.payload).touched(kind, now);
@@ -1743,24 +1853,24 @@ impl GraphStore {
         let mut batch = Batch::default();
         facts
             .unlink_into(&mut batch, edge_id)
-            .map_err(IngestError::Storage)?;
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
         facts
             .link_into(&mut batch, &head, &edge, edge_id)
-            .map_err(IngestError::Storage)?;
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
         self.store
             .commit_batch(batch)
             .map_err(|e| IngestError::Storage(e.to_string()))?;
         // The dynamic segment is untouched by a rewrite, so the reference links a
         // writer left are still the ones this row carries.
         let refs = self
-            .fact_props(edge_id)
+            .fact_props(edge_id)?
             .and_then(|props| props.get(REF_FIELD).map(refs_of))
             .unwrap_or_default();
         Ok(Some(FactView {
             edge_id,
             kind: predicate,
-            src: self.resolve_ref(&body.src),
-            dst: self.resolve_ref(&body.dst),
+            src: self.resolve_ref(&body.src)?,
+            dst: self.resolve_ref(&body.dst)?,
             edge,
             refs,
         }))
@@ -1768,12 +1878,12 @@ impl GraphStore {
 
     /// Build (or refresh the LRU position of) one scope's table. Rows written
     /// without an engine carry an EMPTY frame and are skipped by construction.
-    fn load_vector_table(&mut self, scope: u64) {
+    fn load_vector_table(&mut self, scope: u64) -> Result<(), IngestError> {
         if self.tables.contains(scope) {
             self.tables.touch(scope);
-            return;
+            return Ok(());
         }
-        let rows = self.scope_entities(scope);
+        let rows = self.scope_entities(scope)?;
         // One dimension per scope: the first row with an engine-written frame
         // sets it (an empty frame is a legal vectorless row, and a width that
         // is not this scope's width cannot be ranked against the query).
@@ -1807,35 +1917,37 @@ impl GraphStore {
                 bytes,
             },
         );
+        Ok(())
     }
 
     /// A `NodeRef` back to its node: the ref is `[ns 2B][len varint]
     /// [entity key]`, so the entity key decodes straight out of it and
     /// the scope rides along (nothing external is consulted).
-    pub fn resolve_ref(&mut self, node: &NodeRef) -> ResolvedNode {
+    pub fn resolve_ref(&mut self, node: &NodeRef) -> Result<ResolvedNode, IngestError> {
         if node.ns_id() == MEMBER_NS {
             let (channel, member) = member_from_pkey(&node.pkey).unwrap_or((0, 0));
-            let name = self
-                .members
-                .as_ref()
-                .and_then(|members| {
-                    members
-                        .get(&MemberKey {
-                            channel_id: channel,
-                            member_id: member,
-                        })
-                        .map(|row| row.display_name)
-                })
-                .unwrap_or_default();
-            return ResolvedNode {
+            // An unregistered member is absence (the ref still names the
+            // person); a store that cannot answer is not, and it propagates.
+            let name = match self.members.as_ref() {
+                Some(members) => members
+                    .get(&MemberKey {
+                        channel_id: channel,
+                        member_id: member,
+                    })
+                    .map_err(|e| IngestError::Storage(e.to_string()))?
+                    .map(|row| row.display_name),
+                None => None,
+            }
+            .unwrap_or_default();
+            return Ok(ResolvedNode {
                 id: NodeId::User { channel, member },
                 kind: USER_KIND.to_string(),
                 literal_num: 0,
                 name,
-            };
+            });
         }
         let key = EntityKey::decode(&node.pkey);
-        let row = self.entity(key.scope, key.node_id);
+        let row = self.entity(key.scope, key.node_id)?;
         let (kind, literal_num, name) = match row {
             Some(row) => (
                 row.kind.as_str().unwrap_or_default().to_string(),
@@ -1844,7 +1956,7 @@ impl GraphStore {
             ),
             None => (String::new(), 0, String::new()),
         };
-        ResolvedNode {
+        Ok(ResolvedNode {
             id: NodeId::Entity {
                 scope: key.scope,
                 node_id: key.node_id,
@@ -1852,29 +1964,37 @@ impl GraphStore {
             kind,
             literal_num,
             name,
-        }
+        })
     }
 
     /// Outgoing edge ids of one node (the traversal currency).
-    pub fn out_edges(&mut self, scope: u64, node_id: u64) -> Vec<u64> {
-        self.facts().out_edges(&self.node_ref(scope, node_id))
+    pub fn out_edges(&mut self, scope: u64, node_id: u64) -> Result<Vec<u64>, IngestError> {
+        self.facts()
+            .out_edges(&self.node_ref(scope, node_id))
+            .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
     /// Outgoing edge ids of ANY node reference — the form a user node needs:
     /// identity is not scoped to the corpus (ADR-0014).
-    pub fn out_edges_of(&mut self, node: &NodeRef) -> Vec<u64> {
-        self.facts().out_edges(node)
+    pub fn out_edges_of(&mut self, node: &NodeRef) -> Result<Vec<u64>, IngestError> {
+        self.facts()
+            .out_edges(node)
+            .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
     /// Incoming edge ids of any node reference; see
     /// [`out_edges_of`](Self::out_edges_of).
-    pub fn in_edges_of(&mut self, node: &NodeRef) -> Vec<u64> {
-        self.facts().in_edges(node)
+    pub fn in_edges_of(&mut self, node: &NodeRef) -> Result<Vec<u64>, IngestError> {
+        self.facts()
+            .in_edges(node)
+            .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
     /// Edge ids of one predicate out of any node reference (the 0x09 face).
-    pub fn typed_out_of(&mut self, node: &NodeRef, kind: &str) -> Vec<u64> {
-        self.facts().typed_out(kind, node)
+    pub fn typed_out_of(&mut self, node: &NodeRef, kind: &str) -> Result<Vec<u64>, IngestError> {
+        self.facts()
+            .typed_out(kind, node)
+            .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
     /// One member's node reference (`[42][channel][member]`) — the entry a
@@ -1893,14 +2013,23 @@ impl GraphStore {
     /// Incoming edge ids of one node — the in-direction mirror of
     /// [`out_edges`](Self::out_edges). Both directions matter to a landing:
     /// a seed is useful through the facts pointing AT it as well.
-    pub fn in_edges(&mut self, scope: u64, node_id: u64) -> Vec<u64> {
-        self.facts().in_edges(&self.node_ref(scope, node_id))
+    pub fn in_edges(&mut self, scope: u64, node_id: u64) -> Result<Vec<u64>, IngestError> {
+        self.facts()
+            .in_edges(&self.node_ref(scope, node_id))
+            .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
     /// Outgoing edge ids of one predicate out of one node — the 0x09 face,
     /// and the resolution path's incumbent scan.
-    pub fn typed_out(&mut self, scope: u64, node_id: u64, kind: &str) -> Vec<u64> {
-        self.facts().typed_out(kind, &self.node_ref(scope, node_id))
+    pub fn typed_out(
+        &mut self,
+        scope: u64,
+        node_id: u64,
+        kind: &str,
+    ) -> Result<Vec<u64>, IngestError> {
+        self.facts()
+            .typed_out(kind, &self.node_ref(scope, node_id))
+            .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
     /// Land one fact (ADR-0010 §1 steps 1–2): resolve both endpoints to
@@ -1951,12 +2080,15 @@ impl GraphStore {
 
         if functional {
             if let Some(&incumbent) = self
-                .typed_out_of(&src.to_ref(scope), &fact.rel.name)
+                .typed_out_of(&src.to_ref(scope), &fact.rel.name)?
                 .first()
             {
+                // The face named the incumbent, so a missing row is an
+                // inconsistency, not an absent fact.
                 let body = self
                     .facts()
                     .get_edge(incumbent)
+                    .map_err(|e| IngestError::Storage(e.to_string()))?
                     .ok_or_else(|| IngestError::Storage(format!("edge {incumbent} unreadable")))?;
                 let old = Facts::decode_payload(&body.payload);
                 if since > old.since || confidence >= old.confidence {
@@ -1978,7 +2110,7 @@ impl GraphStore {
                     let mut batch = Batch::default();
                     self.facts()
                         .unlink_into(&mut batch, incumbent)
-                        .map_err(IngestError::Storage)?;
+                        .map_err(|e| IngestError::Storage(e.to_string()))?;
                     self.write_edge_into(
                         &mut batch,
                         incumbent,
@@ -2031,18 +2163,17 @@ impl GraphStore {
                     term.value
                 ))
             })?;
-            let known = self
-                .members
-                .as_ref()
-                .ok_or_else(|| {
-                    IngestError::Refused(
-                        "a `user` endpoint needs the channel keyspace attached".to_string(),
-                    )
-                })?
+            let members = self.members.as_ref().ok_or_else(|| {
+                IngestError::Refused(
+                    "a `user` endpoint needs the channel keyspace attached".to_string(),
+                )
+            })?;
+            let known = members
                 .get(&MemberKey {
                     channel_id: channel,
                     member_id: member,
                 })
+                .map_err(|e| IngestError::Storage(e.to_string()))?
                 .is_some();
             if !known {
                 return Err(IngestError::Refused(format!(
@@ -2052,8 +2183,8 @@ impl GraphStore {
             }
             return Ok(Endpoint::User { channel, member });
         }
-        if let Some((node_id, _)) = self.entity_by_name(scope, &term.value) {
-            self.merge_props(scope, node_id, &term.props);
+        if let Some((node_id, _)) = self.entity_by_name(scope, &term.value)? {
+            self.merge_props(scope, node_id, &term.props)?;
             return Ok(Endpoint::Entity(node_id));
         }
         let node_id = self.next_node;
@@ -2070,7 +2201,7 @@ impl GraphStore {
             ),
             None => Vector::new(Vec::new()),
         };
-        let community_id = self.next_community_id(scope);
+        let community_id = self.next_community_id(scope)?;
         let row = EntityRow {
             kind: Vocab::of(term.type_label.clone()),
             literal_num: literal_num(term),
@@ -2079,30 +2210,41 @@ impl GraphStore {
             embedding,
         };
         let key = EntityKey { scope, node_id };
-        self.entities.put(&key, &row);
+        self.entities
+            .put(&key, &row)
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
         // The seeded id is durable before anything can read it back: one
         // small row, written through rather than batched.
-        self.persist_community_seq(scope);
+        self.persist_community_seq(scope)?;
         // The scope's in-memory vector table is derived state: drop it rather
         // than maintain it row by row (it reloads on the next retrieval).
         self.tables.forget(scope);
         if !term.props.is_empty() {
             // Non-declared names: `merge` writes the segment, the row stays as
             // written above.
-            self.entities.merge(&key, &term.props);
+            self.entities
+                .merge(&key, &term.props)
+                .map_err(|e| IngestError::Storage(e.to_string()))?;
         }
         Ok(Endpoint::Entity(node_id))
     }
 
     /// Merge props into an existing node's dynamic segment.
-    fn merge_props(&mut self, scope: u64, node_id: u64, props: &BTreeMap<String, DynamicValue>) {
+    fn merge_props(
+        &mut self,
+        scope: u64,
+        node_id: u64,
+        props: &BTreeMap<String, DynamicValue>,
+    ) -> Result<(), IngestError> {
         if props.is_empty() {
-            return;
+            return Ok(());
         }
         // `merge` IS the delta write: it reads the stored segment, overwrites
         // the names given and leaves the rest — so the read-modify-write that
         // used to live here is the verb's own work now.
-        self.entities.merge(&EntityKey { scope, node_id }, props);
+        self.entities
+            .merge(&EntityKey { scope, node_id }, props)
+            .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
     /// Write one edge and its open props in ONE engine batch (ADR-0002:
@@ -2149,19 +2291,26 @@ impl GraphStore {
         let mut facts = self.facts();
         facts
             .link_into(batch, &head, edge, edge_id)
-            .map_err(IngestError::Storage)?;
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
         // The edge's open attributes (okm ADR-0034 §4): the 0x01 segment is the
         // GRAPH's, written in the same batch as the row so one commit carries
         // both. It deletes the previous assertion's segment first — props belong
         // to the claim being written, never to the one it replaces.
-        facts.replace_into(batch, edge_id, props);
+        facts
+            .replace_into(batch, edge_id, props)
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
         Ok(())
     }
 
     /// The fact's open props (its dynamic segment), when it has one — the
     /// graph's own read (okm ADR-0034 §4), not a second decoder beside it.
-    pub fn fact_props(&self, edge_id: u64) -> Option<BTreeMap<String, DynamicValue>> {
-        self.facts().attrs(edge_id)
+    pub fn fact_props(
+        &self,
+        edge_id: u64,
+    ) -> Result<Option<BTreeMap<String, DynamicValue>>, IngestError> {
+        self.facts()
+            .attrs(edge_id)
+            .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
     /// One node as a graph endpoint: the ref carries the entity key's own
@@ -2203,7 +2352,7 @@ impl GraphStore {
     /// A corpus written before the sequence row existed is bootstrapped from
     /// the highest community id any of its nodes carries, so the first
     /// post-upgrade ingest cannot collide with a live bin.
-    fn next_community_id(&mut self, scope: u64) -> u64 {
+    fn next_community_id(&mut self, scope: u64) -> Result<u64, IngestError> {
         // Seed BEFORE taking the mutable borrow: the floor is a read of the
         // store, the slot is a write to the cache. `entry` then hands back
         // the slot whether it existed or was just created, so there is no
@@ -2214,9 +2363,10 @@ impl GraphStore {
                 let stored = self
                     .seq()
                     .get(&CommunitySeqKey { scope })
+                    .map_err(|e| IngestError::Storage(e.to_string()))?
                     .map_or(0, |row| row.high_water);
                 let live = self
-                    .scope_entities(scope)
+                    .scope_entities(scope)?
                     .into_iter()
                     .map(|(_, row)| row.community_id)
                     .max()
@@ -2230,21 +2380,23 @@ impl GraphStore {
         let next = self.next_community.entry(scope).or_insert(seed);
         let id = *next;
         *next = id.saturating_add(1);
-        id
+        Ok(id)
     }
 
     /// Flush the scope's issued high water on its own (the single-row write
     /// path: a node landing before any batch exists).
-    fn persist_community_seq(&self, scope: u64) {
+    fn persist_community_seq(&self, scope: u64) -> Result<(), IngestError> {
         let Some(next) = self.next_community.get(&scope) else {
-            return;
+            return Ok(());
         };
-        self.seq().put(
-            &CommunitySeqKey { scope },
-            &CommunitySeqRow {
-                high_water: next.saturating_sub(1),
-            },
-        );
+        self.seq()
+            .put(
+                &CommunitySeqKey { scope },
+                &CommunitySeqRow {
+                    high_water: next.saturating_sub(1),
+                },
+            )
+            .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
     /// The same flush into a caller-owned batch, so the ids and the rows
@@ -2324,14 +2476,20 @@ impl GraphStore {
         let members: HashSet<u64> = local.keys().copied().collect();
         let mut adjacency: HashMap<u64, Vec<(u64, f64)>> = HashMap::new();
         for &node in &members {
-            let mut ids = self.out_edges(scope, node);
-            ids.extend(self.in_edges(scope, node));
+            let mut ids = self.out_edges(scope, node)?;
+            ids.extend(self.in_edges(scope, node)?);
             let mut seen = HashSet::new();
             for edge_id in ids {
                 if !seen.insert(edge_id) {
                     continue;
                 }
-                let Some(body) = self.facts().get_edge(edge_id) else {
+                // An id whose edge is gone is absence (the ref list outlived
+                // its row), not a failure of the pass.
+                let Some(body) = self
+                    .facts()
+                    .get_edge(edge_id)
+                    .map_err(|e| IngestError::Storage(e.to_string()))?
+                else {
                     continue;
                 };
                 // A fact may name a user endpoint; only entity endpoints take
@@ -2361,7 +2519,7 @@ impl GraphStore {
         ids.sort_unstable();
         for id in &ids {
             if assign[id] == 0 {
-                let fresh = self.next_community_id(scope);
+                let fresh = self.next_community_id(scope)?;
                 assign.insert(*id, fresh);
             }
         }
@@ -2442,10 +2600,15 @@ impl GraphStore {
         for _ in 0..LPA_RADIUS {
             let mut next = Vec::new();
             for node in frontier.drain(..) {
-                let mut ids = self.out_edges(scope, node);
-                ids.extend(self.in_edges(scope, node));
+                let mut ids = self.out_edges(scope, node)?;
+                ids.extend(self.in_edges(scope, node)?);
                 for edge_id in ids {
-                    let Some(body) = self.facts().get_edge(edge_id) else {
+                    // An id whose edge is gone is absence, not a failure.
+                    let Some(body) = self
+                        .facts()
+                        .get_edge(edge_id)
+                        .map_err(|e| IngestError::Storage(e.to_string()))?
+                    else {
                         continue;
                     };
                     let src = EntityKey::decode(&body.src.pkey).node_id;
@@ -2463,7 +2626,7 @@ impl GraphStore {
         }
         let mut local = HashMap::new();
         for node in seen {
-            if let Some(row) = self.entity(scope, node) {
+            if let Some(row) = self.entity(scope, node)? {
                 local.insert(node, row);
             }
         }
@@ -2475,28 +2638,39 @@ impl GraphStore {
     /// `community_id` is re-checked: the face entry is derived, and a
     /// re-bin deletes the stale one, so this is a belt-and-braces compare,
     /// not a filter over a table scan.
-    pub fn community_members(&mut self, scope: u64, community: u64) -> Vec<(u64, EntityRow)> {
-        self.entities
+    pub fn community_members(
+        &mut self,
+        scope: u64,
+        community: u64,
+    ) -> Result<Vec<(u64, EntityRow)>, IngestError> {
+        let hits = self
+            .entities
             .scan::<ByCommunity>(&community.to_be_bytes())
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
+        Ok(hits
             .into_iter()
             .filter_map(|(key, row)| row.map(|row| (key.decoded, row)))
             .filter(|(key, row)| key.scope == scope && row.community_id == community)
             .map(|(key, row)| (key.node_id, row))
-            .collect()
+            .collect())
     }
 
     /// The facts INSIDE one community (both endpoints members), endpoints
     /// resolved, each edge once — the read side's bucket (ADR-0010 §5).
-    pub fn community_facts(&mut self, scope: u64, community: u64) -> Vec<FactView> {
+    pub fn community_facts(
+        &mut self,
+        scope: u64,
+        community: u64,
+    ) -> Result<Vec<FactView>, IngestError> {
         let in_community: HashSet<u64> = self
-            .community_members(scope, community)
+            .community_members(scope, community)?
             .into_iter()
             .map(|(node, _)| node)
             .collect();
         let mut seen = HashSet::new();
         let mut facts = Vec::new();
         for &node in &in_community {
-            for view in self.out_facts(scope, node) {
+            for view in self.out_facts(scope, node)? {
                 if view
                     .dst
                     .id
@@ -2508,6 +2682,6 @@ impl GraphStore {
                 }
             }
         }
-        facts
+        Ok(facts)
     }
 }

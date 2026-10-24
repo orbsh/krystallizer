@@ -72,12 +72,13 @@ impl CodeStore {
     /// process serving several groups uses `crate::service::open_service`
     /// (one database, one keyspace per group), or attaches both groups to
     /// a handle it opened with [`CodeStore::wrap`].
-    pub fn open(path: &std::path::Path) -> Result<Self, fjall::Error> {
-        Ok(Self::wrap(FjallStore::open(path, crate::KEYSPACE_MEMORY)?))
+    pub fn open(path: &std::path::Path) -> Result<Self, String> {
+        let store = FjallStore::open(path, crate::KEYSPACE_MEMORY).map_err(|e| e.to_string())?;
+        Self::wrap(store)
     }
 
     /// Attach the code table to an already-open store handle.
-    pub fn wrap(store: FjallStore) -> Self {
+    pub fn wrap(store: FjallStore) -> Result<Self, String> {
         // Surrogate ids are assigned here, so a fresh process must not hand out
         // an id that collides with (and silently overwrites) a stored row. The
         // watermark answers that in one point read: it is the highest `code_id`
@@ -87,12 +88,13 @@ impl CodeStore {
             &store,
             <CodeRow as Document>::NS_PREFIX,
         )
+        .map_err(|e| e.to_string())?
         .into_iter()
         .next()
         .map(|(_, acc)| acc);
         let table = <CodeRow as Document>::collection(store);
         let next_id = water.map_or(1, |w| w.saturating_add(1));
-        Self { table, next_id }
+        Ok(Self { table, next_id })
     }
 
     /// Store one piece of code; returns the assigned id. Every field is
@@ -104,26 +106,28 @@ impl CodeStore {
         description: &str,
         parameters: &str,
         source: &str,
-    ) -> u64 {
+    ) -> Result<u64, String> {
         let code_id = self.next_id;
         self.next_id += 1;
-        self.table.put(
-            &CodeKey { code_id },
-            &CodeRow {
-                language: language.to_string(),
-                description: description.to_string(),
-                parameters: parameters.to_string(),
-                source: source.to_string(),
-            },
-        );
-        code_id
+        self.table
+            .put(
+                &CodeKey { code_id },
+                &CodeRow {
+                    language: language.to_string(),
+                    description: description.to_string(),
+                    parameters: parameters.to_string(),
+                    source: source.to_string(),
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(code_id)
     }
 
     /// One piece of code by id — the read gravity makes at call time.
     /// Unknown id = absent, not an error (the caller's error value, its
     /// choice).
-    pub fn get(&self, code_id: u64) -> Option<CodeRow> {
-        self.table.get(&CodeKey { code_id })
+    pub fn get(&self, code_id: u64) -> Result<Option<CodeRow>, String> {
+        self.table.get(&CodeKey { code_id }).map_err(|e| e.to_string())
     }
 
     /// This store's table, `(name, ns)` — the name from the row declaration.
@@ -167,15 +171,17 @@ impl CodeStore {
 
     /// Recompute the id issuer from the store — the open path, reused after a
     /// restore wrote rows and a watermark underneath.
-    pub fn reseed(&mut self) {
+    pub fn reseed(&mut self) -> Result<(), String> {
         let water = okm_core::reduce::scan_reduces::<_, __OkmReduce_CodeRow_0>(
             self.table.store(),
             <CodeRow as Document>::NS_PREFIX,
         )
+        .map_err(|e| e.to_string())?
         .into_iter()
         .next()
         .map(|(_, acc)| acc);
         self.next_id = water.map_or(1, |w| w.saturating_add(1));
+        Ok(())
     }
 
     /// The id allocator's watermark as the derived reduce table (ADR-0034 §5):

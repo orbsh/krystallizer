@@ -161,12 +161,13 @@ impl LogStore {
     /// Open (or create) the keyspace at `path` and attach the log table — the
     /// standalone form. A service process assembles every group through
     /// `crate::service::open_service`.
-    pub fn open(path: &std::path::Path) -> Result<Self, fjall::Error> {
-        Ok(Self::wrap(FjallStore::open(path, crate::KEYSPACE_CHANNEL)?))
+    pub fn open(path: &std::path::Path) -> Result<Self, String> {
+        let store = FjallStore::open(path, crate::KEYSPACE_CHANNEL).map_err(|e| e.to_string())?;
+        Self::wrap(store)
     }
 
     /// Attach the log table to an already-open store handle.
-    pub fn wrap(store: FjallStore) -> Self {
+    pub fn wrap(store: FjallStore) -> Result<Self, String> {
         // The watermark answers "where did the counter stop" in one point read,
         // and it does not fall when the trim deletes the newest row — a scan of
         // the last key would hand out a number already used.
@@ -174,11 +175,12 @@ impl LogStore {
             &store,
             <LogRow as Document>::NS_PREFIX,
         )
+        .map_err(|e| e.to_string())?
         .into_iter()
         .next()
         .map(|(_, acc)| acc);
         let table = <LogRow as Document>::collection(store);
-        let keys = table.scan_keys();
+        let keys = table.scan_keys().map_err(|e| e.to_string())?;
         let seq = water.map_or(0, |w| w.saturating_add(1));
         let recent = keys
             .into_iter()
@@ -188,12 +190,12 @@ impl LogStore {
             .into_iter()
             .rev()
             .collect();
-        Self {
+        Ok(Self {
             table,
             seq,
             max_rows: DEFAULT_MAX_ROWS,
             recent,
-        }
+        })
     }
 
     /// Set the ceiling (the config's `logs { max-rows }`). The trim reads it
@@ -225,26 +227,30 @@ impl LogStore {
         source: &str,
         note: &str,
         fields: BTreeMap<String, DynamicValue>,
-    ) -> LogKey {
+    ) -> Result<LogKey, String> {
         let key = LogKey {
             ts_ms,
             seq: self.seq,
         };
         self.seq += 1;
-        self.table.put(
-            &key,
-            &LogRow {
-                level,
-                event: Vocab::of(event),
-                source: Vocab::of(source),
-                note: note.to_string(),
-            },
-        );
+        self.table
+            .put(
+                &key,
+                &LogRow {
+                    level,
+                    event: Vocab::of(event),
+                    source: Vocab::of(source),
+                    note: note.to_string(),
+                },
+            )
+            .map_err(|e| e.to_string())?;
         if !fields.is_empty() {
             // The vocabulary-resolving write: names allocate on first sight.
             // `merge` is the document write; these names are non-declared, so
             // they land in the segment and the row written above is untouched.
-            self.table.merge(&key, &fields);
+            self.table
+                .merge(&key, &fields)
+                .map_err(|e| e.to_string())?;
         }
         // Keep the trim index in KEY order, not arrival order: a clock step
         // backwards makes the two differ, and "oldest" must mean the smallest
@@ -253,8 +259,8 @@ impl LogStore {
         // one memmove inside a bounded vec.
         let pos = self.recent.partition_point(|k| k < &key);
         self.recent.insert(pos, key.clone());
-        self.trim();
-        key
+        self.trim()?;
+        Ok(key)
     }
 
     /// One diagnostic row for the compression verdict (ADR-0011's first
@@ -266,7 +272,7 @@ impl LogStore {
         now_ms: u64,
         channel_id: u64,
         verdict: &crate::compress::Verdict,
-    ) -> LogKey {
+    ) -> Result<LogKey, String> {
         let mut fields = BTreeMap::new();
         fields.insert(field::CHANNEL.to_string(), DynamicValue::UInt(channel_id));
         fields.insert(
@@ -306,18 +312,18 @@ impl LogStore {
 
     /// Every row at or after `ts_ms`, in key order — a window over the table,
     /// not a query language. `max_rows` bounds it, so this is never unbounded.
-    pub fn since(&mut self, ts_ms: u64) -> Vec<LogEntry> {
-        let mut rows = self.entries();
+    pub fn since(&mut self, ts_ms: u64) -> Result<Vec<LogEntry>, String> {
+        let mut rows = self.entries()?;
         rows.retain(|(key, _)| key.ts_ms >= ts_ms);
-        rows
+        Ok(rows)
     }
 
     /// The row's DECLARED fields, as stored (`event` and `source` resolve back to
     /// their labels here). `get` returns the dynamic segment; this returns what
     /// the row itself declares, which is what a test or an analysis reads when it
     /// wants the level or the event without going through the map.
-    pub fn row(&mut self, key: &LogKey) -> Option<LogRow> {
-        self.table.get(key)
+    pub fn row(&mut self, key: &LogKey) -> Result<Option<LogRow>, String> {
+        self.table.get(key).map_err(|e| e.to_string())
     }
 
     /// One row, fixed fields and dynamic ones together. `None` = absent.
@@ -325,18 +331,24 @@ impl LogStore {
     /// `&mut` because the document read resolves field names through the
     /// table's vocabulary (the same reason okm's own `fetch` is `&mut`-shaped
     /// behind a `&self` door).
-    pub fn get(&mut self, key: &LogKey) -> Option<BTreeMap<String, DynamicValue>> {
-        self.table.fetch(key)
+    pub fn get(&mut self, key: &LogKey) -> Result<Option<BTreeMap<String, DynamicValue>>, String> {
+        self.table.fetch(key).map_err(|e| e.to_string())
     }
 
     /// Rows in time order, oldest first — the whole table as it stands. The
     /// table is bounded, so this is the analysis read; a windowed read is a
     /// range scan over the same key order (not built yet: no consumer).
-    pub fn entries(&mut self) -> Vec<LogEntry> {
+    pub fn entries(&mut self) -> Result<Vec<LogEntry>, String> {
         let keys: Vec<LogKey> = self.recent.iter().cloned().collect();
-        keys.iter()
-            .filter_map(|key| self.table.fetch(key).map(|doc| (key.clone(), doc)))
-            .collect()
+        let mut out = Vec::with_capacity(keys.len());
+        for key in &keys {
+            // A row that vanished between the scan and the read is absence; a
+            // store that cannot answer is not, and it propagates.
+            if let Some(doc) = self.table.fetch(key).map_err(|e| e.to_string())? {
+                out.push((key.clone(), doc));
+            }
+        }
+        Ok(out)
     }
 
     /// This store's table, `(name, ns)` — the name from the row declaration.
@@ -382,16 +394,17 @@ impl LogStore {
     /// path, reused after a restore. The watermark is a point read and never a
     /// scan of the last key: the trim deletes the NEWEST row when the ceiling
     /// holds, so a scan would hand out a number already used.
-    pub fn reseed(&mut self) {
+    pub fn reseed(&mut self) -> Result<(), String> {
         let water = okm_core::reduce::scan_reduces::<_, __OkmReduce_LogRow_0>(
             self.table.store(),
             <LogRow as Document>::NS_PREFIX,
         )
+        .map_err(|e| e.to_string())?
         .into_iter()
         .next()
         .map(|(_, acc)| acc);
         self.seq = water.map_or(0, |w| w.saturating_add(1));
-        let keys = self.table.scan_keys();
+        let keys = self.table.scan_keys().map_err(|e| e.to_string())?;
         self.recent = keys
             .into_iter()
             .rev()
@@ -400,6 +413,7 @@ impl LogStore {
             .into_iter()
             .rev()
             .collect();
+        Ok(())
     }
 
     /// The `seq` watermark as the derived reduce table (ADR-0034 §5): the trim
@@ -415,15 +429,16 @@ impl LogStore {
     }
 
     /// Drop the oldest rows until the ceiling holds. Not logged, by design.
-    fn trim(&mut self) {
+    fn trim(&mut self) -> Result<(), String> {
         while self.recent.len() > self.max_rows {
             let Some(oldest) = self.recent.pop_front() else {
-                return;
+                return Ok(());
             };
             // `purge` derives the removal set from the STORED row, so the trim
             // no longer reads the row back first (ADR-0035: the caller cannot
             // hand it the wrong one). Absent = no-op, `false`.
-            self.table.purge(&oldest);
+            self.table.purge(&oldest).map_err(|e| e.to_string())?;
         }
+        Ok(())
     }
 }
