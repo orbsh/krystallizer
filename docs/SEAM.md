@@ -131,9 +131,9 @@ Every operation in this table rides a CORE door (§1a); the analysis class
 | Turn-end delta append (user + reply, one `ts_ms`, `sub` 0/1) | `MemorySurface::append_message` | `POST /channels/{c}/messages` | `ChannelStore::append` | landed |
 | Compression landing (summarize) | not wired | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::complete_checkpoint` | door landed, gravity side owed (Phase 2/2.6) |
 | Task progress (one task row per step; read with the turn-start projection, completion written at the call site) | ADR-0003 §3/§4 | read side rides `GET /channels/{c}/members/{m}/session`; the write face has no route yet | task vertices + `task_links` edges in the same graph as the facts | Declared — the third interface surface (ADR-0001; gravity Phase 2.6 |
-| `recall_memory` — long-term facts | tool face (not in code yet) | `POST /memories/{scope}/recall` (landing + the landed community, rendered)"
- beside `GET /memories/{scope}/entities/{name}` (the exact entrance) | `GraphStore::recall` / `entity_by_name` | graph doors landed (2026-10-20); the tool face is a FOLLOW-UP (gravity side) |
-| `commit_memory` — write facts | tool face | `POST /memories/{scope}` | `GraphStore::ingest(fact)` | door landed (2026-10-17); the tool itself is a FOLLOW-UP (gravity side) |
+| `recall_memory` — long-term facts | tool face (landed 2026-10-26, gravity ADR-0004) | `POST /memories/{scope}/recall` (landing + the landed community, rendered)"
+ beside `GET /memories/{scope}/entities/{name}` (the exact entrance) | `GraphStore::recall` / `entity_by_name` | graph doors landed (2026-10-20); the tool face landed 2026-10-26 (gravity ADR-0004) |
+| `commit_memory` — write facts | tool face | `POST /memories/{scope}` | `GraphStore::ingest(fact)` | door landed (2026-10-17); the tool landed 2026-10-26 (gravity ADR-0004) |
 | `resolve_skills` — the selectable skill list | tool face | — (no door: the bring-up pool read was withdrawn 2026-10-20 with zero clients) | — | the skill NODE (preconditions / steps / experience / verification) is Phase 5+ deferred; the list arrives with it, not before |
 | `invoke_skill` — plan step: fetch the code row | tool face | `GET /code/{id}` | `CodeStore::get` | landed |
 | `invoke_skill` — the call itself | plan step | **not k10r** (see §3) | — | gravity Phase 4.6 |
