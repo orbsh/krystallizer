@@ -514,6 +514,39 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   (with `level`) and the idempotence lesson.
 - [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), SKILL topological four-part nodes, Aura Actor nodes. (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.) ADR-0010 takes the incremental LOCAL form of community detection onto the write side and leaves OPEN whether that promotes a slice of Phase 5 ahead of Phase 3/4 — an open ruling, not settled.
 
+## Repo hygiene (maintenance, not phase work)
+
+- [x] Store error face LANDED 2026-10-24 — okm moved its storage and read
+  primitives to `Result` (okm ADR-0037/0038/0039), so every door mem-core puts in
+  front of it can say "the store could not answer" instead of folding that into an
+  empty page or an absent row: `LogStore` / `CodeStore` / `ChannelStore` /
+  `GraphStore` (open, wrap, reseed, read, append, trim, checkpoint and the scans)
+  and the session view answer `Result<_, String>`. The engine's error type stays
+  inside mem-core and is rendered to text at the door, which is what mem-server's
+  500 carries; the graph's faces map into `IngestError::Storage`, so a caller can
+  tell a refused write from a row that is not there; `export::finish_import` takes
+  a `reseed` that can fail and reports rows only once it has landed. Following the
+  call sites turned up FOUR doors that were dropping an okm `Result` —
+  `CodeStore::put`, `LogStore::append`, `record_verdict` and `trim`. The wire
+  changed nowhere, so gravity / prism / the booth's turn guest see nothing.
+  Gate: 154/0, clippy 0.
+- [x] Lint gate LANDED 2026-10-24: the workspace denies clippy::{unwrap_used,
+  expect_used, panic, unwrap_in_result, panic_in_result_fn} and every member
+  inherits it. Unit tests keep the vocabulary through one crate-root
+  `#![cfg_attr(test, allow(..))]`; the integration tests carry the same line at
+  their own root, because `[lints]` is per-package and covers every target. Two
+  sites lost an assumption the gate exposed instead of gaining an allow: the
+  community id's seed (the slot now comes from `entry(..).or_insert(seed)`, so
+  "the map must contain it now" no longer exists to be trusted) and mem-server's
+  broken `DEFAULT_ADDR` literal (falls back to the same loopback default instead
+  of panicking at boot).
+- [x] okm followed to `ba0fb72` and past it: `MemBatch` is `Batch` and the write
+  verbs take `&self` (okm ADR-0035 rule 10) — pure fallout of the rename, since
+  the graph's own verbs stay `&mut self` (its predicate vocabulary is a mutable
+  cache field). `Cargo.lock` is gitignored in this repo, so the pin is a local
+  resolution rather than a committed line: the working tree resolves okm `main`
+  at `a5a60af` (2026-10-25) and the gate above passes against it.
+
 Deferred gates:
 
 - Multi-consumer service shell: mem-server is the single cross-process
