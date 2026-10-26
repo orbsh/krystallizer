@@ -18,7 +18,7 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
 | 34  | Checkpoint（channel 的指针 → 摘要 + 人设快照）| 已实现（最小切片，2026-10-09） | ADR-0008 |
 | 35  | Code（交付的脚本） | 已实现（bring-up 切片，2026-10-15） | gravity ADR-0001/0003 |
 | —   | Tasks / task_links DAG | 已声明（ADR-0001——第三个接口面；与事实同图） | ADR-0001, ADR-0002 |
-| 36  | 实体（事实图）     | 已实现（2026-10-17）      | ADR-0010 |
+| 36  | 实体（事实图），含 skill（`kind = skill`） | 已实现（2026-10-17；skill 2026-10-26） | ADR-0010、ADR-0015 |
 | 37  | 事实（事实图边）   | 已实现（2026-10-17）      | ADR-0010 |
 | 38  | 社区序号（发号用，每 scope 一行） | 已实现（2026-10-20） | ADR-0010 |
 | 39  | 读游标（channel 的指针；仅多方） | 已实现（2026-10-20） | ADR-0008 §2 |
@@ -340,6 +340,38 @@ URL）。`name` 仍是**身份**：唯一，且是检索锚点——向量覆盖
 - **`community_id` 与它的 `by_community` 面** 属于 ADR-0010 的步骤 3–4
   （增量 LPA + 分箱），并随之落地（2026-10-19）：读侧把这个面当作社区的桶来
   消费。ADR-0010 §1 保留设计形态。
+
+### skill（ns 36，kind `skill`）——可被选中的那一行，ADR-0015
+
+skill 是事实图里的一个实体节点，不是自己的一张表：解析器要回答的问题（「这些里哪一个对得上
+眼前这件事」）本来就是图的检索问题，所以向量、landing 距离、社区桶和权重系统都是借用，不是
+重建。
+
+```
+kind   = "skill"                     // 词汇表标签，不占任何分配
+name   = skill 的把手                // by_name 面，与其他属性一样是属性
+title  = 短标签                      // 约定 prop（向量会读）
+content= 它做什么、什么时候用它       // 约定 prop（向量会读）
+preconditions = TEXT JSON 字符串数组
+steps         = TEXT JSON 对象数组 {"code_id": n, "note": "…"}，按执行顺序
+verification  = TEXT JSON 字符串数组
+experience    = 不是 prop：节点的关联事实（权重 + 衰减，ADR-0005）
+```
+
+- **三个步形部分都是 TEXT JSON**，理由与 `CodeRow::parameters` 相同（ADR-0012 §2）：store
+  承载它，形状归生产方。一个 store 要解析的 prop 就是第二份要迁移的 schema。
+- **声明按名字幂等**：已存在的名字**就是**同一个 skill，props 合并，所以一次只声明
+  `content` 的声明不会动 steps。`POST /skills/{scope}` 答 `{node_id, created}`。
+- **`steps` 按 id 指向 ns 35 的行**，所以 skill 永不复制 script 的语言或参数定义——ADR-0012
+  划的那条界线，这里用上了。
+- **读一个是查 kind 的**（`GET /skills/{scope}/{node_id}`）：未知 id 404，别的 kind 的节点
+  400 并说明它实际是什么。
+- **解析是检索后只留这个 kind**（`POST /skills/{scope}/resolve` `{query, limit}` →
+  `[{node_id, name, title, content, score}]`），什么都没落着时退回 `by_kind` 面扫描：没有
+  引擎也仍然「这是我都会什么」，而扫描报 `score: 0.0`，不编一个距离。这里**不计数**——没人
+  选的候选不是一次读（ADR-0005）。
+- **没有 planner、没有排序、没有回写。** 那些属于 gravity（Phase 4.6）与 consolidation 层
+  （Phase 5）：k10r 只回答「这是那一行」。
 
 ### 用户（ns 42）——身份集合，作为节点集合
 

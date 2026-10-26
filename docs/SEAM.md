@@ -134,7 +134,7 @@ Every operation in this table rides a CORE door (§1a); the analysis class
 | `recall_memory` — long-term facts | tool face (landed 2026-10-26, gravity ADR-0004) | `POST /memories/{scope}/recall` (landing + the landed community, rendered)"
  beside `GET /memories/{scope}/entities/{name}` (the exact entrance) | `GraphStore::recall` / `entity_by_name` | graph doors landed (2026-10-20); the tool face landed 2026-10-26 (gravity ADR-0004) |
 | `commit_memory` — write facts | tool face | `POST /memories/{scope}` | `GraphStore::ingest(fact)` | door landed (2026-10-17); the tool landed 2026-10-26 (gravity ADR-0004) |
-| `resolve_skills` — the selectable skill list | tool face | — (no door: the bring-up pool read was withdrawn 2026-10-20 with zero clients) | — | the skill NODE (preconditions / steps / experience / verification) is Phase 5+ deferred; the list arrives with it, not before |
+| `resolve_skills` — the selectable skill list | tool face (landed 2026-10-26, gravity ADR-0004) | `POST /skills/{scope}/resolve` (ADR-0015) | `GraphStore::resolve_skills` — retrieval filtered to the `skill` kind, the `by_kind` scan as the fallback | landed 2026-10-26; the node it lists is ADR-0015's, the walk over it is gravity's |
 | `invoke_skill` — plan step: fetch the code row | tool face | `GET /code/{id}` | `CodeStore::get` | landed |
 | `invoke_skill` — the call itself | plan step | **not k10r** (see §3) | — | gravity Phase 4.6 |
 | Initialization memory (persona / style) | — the caller performs no operation: it arrives inside the projection | — | assembly is k10r-internal (a traversal from the user node, injected at the head of the context) | Declared (ADR-0001 |

@@ -512,7 +512,26 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   not to be extended, and its title/summary heuristics are not a pattern to copy
   into the extraction path. What survives is the four-layer rendering contract
   (with `level`) and the idempotence lesson.
-- [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), SKILL topological four-part nodes, Aura Actor nodes. (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.) ADR-0010 takes the incremental LOCAL form of community detection onto the write side and leaves OPEN whether that promotes a slice of Phase 5 ahead of Phase 3/4 — an open ruling, not settled.
+- [x] Phase 5's SKILL slice LANDED 2026-10-26 (ADR-0015): the skill NODE and
+  its three doors — `POST /skills/{scope}` (declare, idempotent on the name),
+  `GET /skills/{scope}/{node_id}` (read one; 404 absent, 400 a wrong kind), and
+  `POST /skills/{scope}/resolve` (the selectable list `resolve_skills` answers).
+  A skill is an entity of kind `skill` in ns 36, same scope as the facts:
+  `preconditions` / `steps` / `verification` are TEXT JSON props (the store does
+  not parse what the producer owns, the `parameters` precedent), and `experience`
+  is NOT a prop — it is the skill node's incident facts, where the weight system
+  already counts a use and decays it. Resolution is retrieval over `title` +
+  `content` filtered to the kind, with the `by_kind` scan as the fallback: a
+  deployment with no embedding engine still knows what it can do, and reporting
+  `score: 0.0` from a scan is honest where a fake distance would not be. Nothing
+  is counted at resolve — a candidate nobody chose is not a read.
+  Gates: mem-core 6/0 (`tests/skills.rs` — idempotent declaration, parts merge,
+  absence vs wrong kind, the no-engine scan, the real-model landing, experience
+  as an ordinary fact), mem-server 3/0 (`tests/skills_surface.rs`), k10r 158/0.
+  This promotes ONE slice of Phase 5 ahead of Phase 3/4 — the row and its read,
+  which the tool list needs; the planner, the topological walk, the weight
+  write-back and the dreaming consolidation stay Phase 5, as ADR-0015 §5 says.
+- [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), the SKILL topological walk (ordering, retry, weight write-back — the slice above landed the row and the resolve), Aura Actor nodes. (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.) ADR-0010 takes the incremental LOCAL form of community detection onto the write side and leaves OPEN whether that promotes a slice of Phase 5 ahead of Phase 3/4 — an open ruling, not settled.
 
 ## Repo hygiene (maintenance, not phase work)
 

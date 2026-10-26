@@ -21,6 +21,7 @@ use axum::{
 use mem_core::channel::{ChannelStore, MessageKey};
 use mem_core::code::{CodeRow, CodeStore};
 use mem_core::graph::{FactTuple, GraphStore, IngestError, IngestOutcome};
+use mem_core::skills::{SkillDecl, SkillRead, DEFAULT_LIMIT};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -246,6 +247,11 @@ fn build(
             post(import_bundle).layer(axum::extract::DefaultBodyLimit::disable()),
         )
         .route("/code/{code_id}", get(fetch_code))
+        // The skill node's three doors (ADR-0015): declare, resolve (the list
+        // `resolve_skills` answers), read one (what a run walks).
+        .route("/skills/{scope}", post(put_skill))
+        .route("/skills/{scope}/resolve", post(resolve_skills))
+        .route("/skills/{scope}/{node_id}", get(fetch_skill))
         .route("/memories/{scope}", post(ingest_facts))
         .route("/graph/{scope}/search", post(search_facts))
         .route("/graph/{scope}/top", get(top_facts))
@@ -733,6 +739,149 @@ async fn put_code(
         )
         .map_err(FactError::internal)?;
     Ok(Json(CodeIdDto { code_id }))
+}
+
+/// Request body of `POST /skills/{scope}` (ADR-0015). The three step-shaped
+/// parts arrive as JSON documents in TEXT: the store carries them, it does not
+/// parse them — the producer owns the shape, exactly as `parameters` does for a
+/// code row (ADR-0012 §2).
+#[derive(Deserialize, Serialize)]
+struct PutSkill {
+    name: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    preconditions: String,
+    #[serde(default)]
+    steps: String,
+    #[serde(default)]
+    verification: String,
+}
+
+/// The declaration's answer: the node it landed on, and whether this call is
+/// what created it (a name that already exists IS the same skill).
+#[derive(Deserialize, Serialize)]
+struct SkillLandedDto {
+    node_id: u64,
+    created: bool,
+}
+
+/// One skill with all four parts — what an executor walks once the resolver's
+/// candidate has been chosen.
+#[derive(Deserialize, Serialize)]
+struct SkillDto {
+    node_id: u64,
+    name: String,
+    title: String,
+    content: String,
+    preconditions: String,
+    steps: String,
+    verification: String,
+}
+
+/// Request body of `POST /skills/{scope}/resolve`. `limit` absent means
+/// `DEFAULT_LIMIT`; the core clamps whatever it is.
+#[derive(Deserialize)]
+struct ResolveSkills {
+    query: String,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// One candidate: enough for a caller to decide, nothing more (the parts are
+/// read once a skill is chosen).
+#[derive(Deserialize, Serialize)]
+struct SkillCandidateDto {
+    node_id: u64,
+    name: String,
+    title: String,
+    content: String,
+    score: f32,
+}
+
+/// `POST /skills/{scope}` — declare a skill (idempotent on its name).
+async fn put_skill(
+    State(state): State<Arc<MemState>>,
+    Path(scope): Path<u64>,
+    Json(body): Json<PutSkill>,
+) -> Result<Json<SkillLandedDto>, FactError> {
+    let mut graph = state.graph.lock().await;
+    let landed = graph
+        .put_skill(
+            scope,
+            &SkillDecl {
+                name: body.name,
+                title: body.title,
+                content: body.content,
+                preconditions: body.preconditions,
+                steps: body.steps,
+                verification: body.verification,
+            },
+        )
+        .map_err(FactError::from)?;
+    Ok(Json(SkillLandedDto {
+        node_id: landed.node_id,
+        created: landed.created,
+    }))
+}
+
+/// `GET /skills/{scope}/{node_id}` — one skill. Unknown id is 404; a node that
+/// exists but is not a skill is 400, because the id is right and the request is
+/// wrong about what lives there.
+async fn fetch_skill(
+    State(state): State<Arc<MemState>>,
+    Path((scope, node_id)): Path<(u64, u64)>,
+) -> axum::response::Response {
+    let mut graph = state.graph.lock().await;
+    match graph.skill(scope, node_id) {
+        Ok(SkillRead::Found(skill)) => Json(SkillDto {
+            node_id: skill.node_id,
+            name: skill.name,
+            title: skill.title,
+            content: skill.content,
+            preconditions: skill.preconditions,
+            steps: skill.steps,
+            verification: skill.verification,
+        })
+        .into_response(),
+        Ok(SkillRead::Absent) => StatusCode::NOT_FOUND.into_response(),
+        Ok(SkillRead::NotASkill { kind }) => FactError {
+            error: format!("node {node_id} is a `{kind}`, not a skill"),
+            status: StatusCode::BAD_REQUEST,
+        }
+        .into_response(),
+        Err(e) => FactError::from(e).into_response(),
+    }
+}
+
+/// `POST /skills/{scope}/resolve` — the selectable list (ADR-0015 §4).
+///
+/// Retrieval first, the kind-face scan as the fallback: a deployment with no
+/// embedding engine still has skills, and "there are none" would be a wrong
+/// answer. Nothing is counted — a candidate nobody chose is not a read.
+async fn resolve_skills(
+    State(state): State<Arc<MemState>>,
+    Path(scope): Path<u64>,
+    Json(body): Json<ResolveSkills>,
+) -> Result<Json<Vec<SkillCandidateDto>>, FactError> {
+    let mut graph = state.graph.lock().await;
+    let limit = body.limit.unwrap_or(DEFAULT_LIMIT);
+    Ok(Json(
+        graph
+            .resolve_skills(scope, &body.query, limit)
+            .map_err(FactError::from)?
+            .into_iter()
+            .map(|candidate| SkillCandidateDto {
+                node_id: candidate.node_id,
+                name: candidate.name,
+                title: candidate.title,
+                content: candidate.content,
+                score: candidate.score,
+            })
+            .collect(),
+    ))
 }
 
 /// `GET /export` — the WHOLE store as one `tar.zst` bundle (ADR-0013).

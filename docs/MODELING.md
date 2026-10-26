@@ -19,7 +19,7 @@ One entity class = one ns (OKM rule). Current state:
 | 34  | Checkpoint (channel pointer → summary + persona snapshot) | Implemented (minimal slice, 2026-10-09) | ADR-0008 |
 | 35  | Code (delivered scripts) | Implemented (bring-up slice, 2026-10-15) | gravity ADR-0001/0003 |
 | —   | Tasks / task_links DAG | Declared (ADR-0001 — the third interface surface; same graph as the facts) | ADR-0001, ADR-0002 |
-| 36  | Entities (fact graph) | Implemented (2026-10-17) | ADR-0010 |
+| 36  | Entities (fact graph), including skills (`kind = skill`) | Implemented (2026-10-17; skills 2026-10-26) | ADR-0010, ADR-0015 |
 | 37  | Facts (fact graph edges) | Implemented (2026-10-17) | ADR-0010 |
 | 38  | Community sequence (the id issuer, one row per scope) | Implemented (2026-10-20) | ADR-0010 |
 | 39  | Read cursor (a channel pointer; multi-party only) | Implemented (2026-10-20) | ADR-0008 §2 |
@@ -408,6 +408,42 @@ graph is unchanged.
   3–4 (the incremental LPA + binning) and landed with them (2026-10-19): the
   read side consumes the face as the community bucket. ADR-0010 §1 keeps the
   design.
+
+### Skills (ns 36, kind `skill`) — the selectable row, ADR-0015
+
+A skill is an entity node in the fact graph, not a table of its own: the
+resolver's question ("which of these fits the task in front of me") is the
+graph's retrieval question, so the vector, the landing distance, the community
+bins and the weight system are borrowed instead of rebuilt.
+
+```
+kind   = "skill"                     // a vocabulary label, nothing allocated
+name   = the skill's handle          // the by_name face, an attribute like any other
+title  = the short label             // a conventional prop (the vector reads it)
+content= what it does, when to use it // a conventional prop (the vector reads it)
+preconditions = TEXT JSON array of strings
+steps         = TEXT JSON array of {"code_id": n, "note": "…"}, execution order
+verification  = TEXT JSON array of strings
+experience    = NOT a prop: the node's incident facts (weight + decay, ADR-0005)
+```
+
+- **The three step-shaped parts are TEXT JSON**, for the reason `CodeRow::parameters`
+  is (ADR-0012 §2): the store carries them, the producer owns the shape. A prop
+  the store parsed would be a second schema to migrate.
+- **Declaring is idempotent on the name**: an existing name IS the same skill and
+  the props merge, so a declaration that only says `content` leaves the steps
+  alone. `POST /skills/{scope}` answers `{node_id, created}`.
+- **`steps` point at ns 35 rows by id**, so a skill never duplicates a script's
+  language or parameter definition — the split ADR-0012 drew, used.
+- **Reading one is kind-checked** (`GET /skills/{scope}/{node_id}`): unknown id
+  404, a node of another kind 400 with what it actually is.
+- **Resolving is retrieval filtered to the kind** (`POST /skills/{scope}/resolve`
+  `{query, limit}` → `[{node_id, name, title, content, score}]`), with the
+  `by_kind` scan as the fallback when nothing lands: no engine still means "here
+  is what I can do", and a scan reports `score: 0.0` rather than a fake distance.
+  Nothing is counted here — a candidate nobody chose is not a read (ADR-0005).
+- **No planner, no ordering, no write-back.** Those stay gravity's (Phase 4.6) and
+  the consolidation layer's (Phase 5): k10r answers "here is the row".
 
 ### Users (ns 42) — the identity collection, as a node set
 

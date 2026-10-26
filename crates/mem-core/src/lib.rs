@@ -23,6 +23,7 @@ pub mod graph;
 pub mod log;
 pub mod render;
 pub mod service;
+pub mod skills;
 pub mod view;
 
 /// The service's two keyspaces — one Fjall database (one directory, one

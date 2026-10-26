@@ -2032,6 +2032,26 @@ impl GraphStore {
             .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
+    /// Declare one node directly — the write face for a node that is not an
+    /// endpoint of a fact (a skill, ADR-0015).
+    ///
+    /// Resolution is the rule `ingest` already follows: a name that exists in
+    /// the scope IS the same node and the props merge, so declaring twice is
+    /// declaring once. The bool answers whether this call CREATED the node —
+    /// the one thing a caller cannot work out from the id it got back.
+    pub fn put_entity(&mut self, scope: u64, term: &Term) -> Result<(u64, bool), IngestError> {
+        let existed = self.entity_by_name(scope, &term.value)?.is_some();
+        match self.resolve(scope, term)? {
+            Endpoint::Entity(node_id) => Ok((node_id, !existed)),
+            // A `user` term resolves into the identity collection (ADR-0014),
+            // never into a corpus node: there is no node id to hand back, and
+            // letting members through here would be a second identity path.
+            Endpoint::User { .. } => Err(IngestError::Refused(
+                "a `user` term is an identity, not a node to declare".to_string(),
+            )),
+        }
+    }
+
     /// Land one fact (ADR-0010 §1 steps 1–2): resolve both endpoints to
     /// nodes, then link the fact or adjudicate it against an incumbent.
     pub fn ingest(&mut self, scope: u64, fact: &FactTuple) -> Result<IngestOutcome, IngestError> {

@@ -114,7 +114,7 @@ in-process 不是第二道门：`InProcessSurface` 在调用方进程内链接�
 | 任务进度（一步一 task 行；读随轮首投影，完成在执行点写） | ADR-0003 §3/§4 | 读侧随 `GET /channels/{c}/members/{m}/session`；写侧尚无路由 | 任务顶点 + `task_links` 边，与事实同图 | 已声明——第三个接口面（ADR-0001）；gravity Phase 2.6 |
 | `recall_memory`——长期事实 | 工具面（2026-10-26 落地，gravity ADR-0004） | `POST /memories/{scope}/recall`（落点 + 着陆到的社区，已渲染）与 `GET /memories/{scope}/entities/{name}`（精确入口） | `GraphStore::recall` / `entity_by_name` | 图的门已落（2026-10-20）；工具面 2026-10-26 落地（gravity ADR-0004） |
 | `commit_memory`——写事实 | 工具面 | `POST /memories/{scope}` | `GraphStore::ingest(fact)` | 门已落（2026-10-17）；工具本身 2026-10-26 落地（gravity ADR-0004） |
-| `resolve_skills`——可选 skills 列表 | 工具面 | ——（无门：bring-up 的池读 2026-10-20 随零客户端一起撤除） | —— | skill 节点（前置 / 步骤 / 经验 / 后验）是 Phase 5+ deferred；列表跟它一起到，不提前 |
+| `resolve_skills`——可选 skills 列表 | 工具面（2026-10-26 落地，gravity ADR-0004） | `POST /skills/{scope}/resolve`（ADR-0015） | `GraphStore::resolve_skills`——检索后只留 `skill` 这个 kind，退回 `by_kind` 面扫描 | 2026-10-26 落地；它列出的节点是 ADR-0015 的，怎么走是 gravity 的 |
 | `invoke_skill`——计划里取码那一步 | 工具面 | `GET /code/{id}` | `CodeStore::get` | 已落 |
 | `invoke_skill`——调用本身 | 计划里的一步 | **不走 k10r**（见 §3） | — | gravity Phase 4.6 |
 | 初始化记忆（人设 / 风格） | 调用方无操作：它随投影到达 | — | 装配是 k10r 内部细节（从用户节点出发遍历，注入上下文头部） | 已声明（ADR-0001） |
