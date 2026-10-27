@@ -25,6 +25,7 @@ One entity class = one ns (OKM rule). Current state:
 | 39  | Read cursor (a channel pointer; multi-party only) | Implemented (2026-10-20) | ADR-0008 §2 |
 | 41  | Structured log (diagnostics; internal, no door) | Implemented (2026-10-20) | ADR-0011 |
 | 42  | Channel members (identity: display name + human/agent), and the graph's user node set | Implemented (2026-10-20; graph participation 2026-10-21) | ADR-0009 §1, ADR-0014 |
+| 43  | Node vectors (the embedding, in its own table; same `EntityKey`) | Declared (ADR-0019 — the row still carries the vector) | ADR-0019, ADR-0003 |
 | —   | Initialization memory (persona / style) | Declared (ADR-0001) | ADR-0001 |
 
 The graph's read side (LPA, binning, the rendered community) landed with it
@@ -335,8 +336,23 @@ pub struct EntityRow {
 **A vector declares no face.** An `#[ok_index]` face is a derived entry for
 key-ordered reads (prefix / range / covering scans); a vector has no key order,
 so there is no face to declare for it. Vector search runs on `okm-vector`'s
-`ExactIndex` — a DERIVED index rebuilt from the rows' `embedding` frames on
-first use and dropped on every write, not a declared face.
+`ExactIndex` — a DERIVED index rebuilt on first use and dropped on every write,
+not a declared face.
+
+**The vector is leaving this row (ADR-0019).** `embedding` shares the payload with
+the usage counters, and a prop write is a whole-document write: counting an
+invocation would re-encode a 1.5–2 KB vector that a count cannot change. The target
+is okm's side-table pattern —
+
+```rust
+#[ok_ref(EntityKey)] #[ok_ns(43)]
+pub struct NodeVector { pub embedding: Vector<f32> }   // presence = has a vector
+```
+
+— so the hot row has no large field and the vector's indexes rebuild from its own
+table (which also removes the need for field-level index surgery: a field change
+never has to work out which heavyweight index it feeds). Until the implementation
+lands, the row above is what runs, and `ExactIndex` still reads the row's frame.
 
 **Three conventional props a node carries (2026-10-23).** `title`, `content`
 and `source` live in the row's DYNAMIC segment, not as declared fields: props
@@ -349,6 +365,15 @@ anchor, with the vector computed over `name` + `title` + `content` (ADR-0003 as
 amended), so a reader can find a node by what it says instead of opening the
 document. `GET /graph/{scope}` carries the props on every node; the rest of the
 graph is unchanged.
+
+**The same segment carries a node's own bookkeeping.** A skill's `invoke_calls` /
+`invoke_ok` / `last_invoked` (ADR-0018) are props too — same carrier, different
+reader: not the vector but a review pass asking whether the thing is still alive.
+The three above are CONVENTIONAL (a view and the embedding read them); a counter is
+the node's own telemetry, and adding one costs a segment merge rather than a
+declared field, which is why counting did not need a schema change. A merge is a
+whole-document write, though — the reason the vector moves out of this row
+(ADR-0019): the cheap thing (a count) was paying for the expensive thing (a vector).
 
 - Key `[scope 8B BE][node_id 8B BE]` — `scope` leads because the corpus is
   per-user (ADR-0003). Ids are
@@ -374,7 +399,8 @@ graph is unchanged.
   on the node row's DYNAMIC segment (slot 1) — the entity's attributes,
   shared by every fact about it — and they MERGE: a same-named attribute
   takes the newer value, the rest survive.
-- **`embedding` is the node's vector (ADR-0003)**: the built-in engine's
+- **`embedding` is the node's vector (ADR-0003; moving to ns 43 in ADR-0019)**:
+  the built-in engine's
   output over the entity's NAME, computed in-process at ingest — the HTTP
   client never sends a vector. A cold frame of ANY length (its own count
   rides the frame, so a model swap changes the data, not the wire),
@@ -424,6 +450,9 @@ content= what it does, when to use it // a conventional prop (the vector reads i
 preconditions = TEXT JSON array of strings
 steps         = TEXT JSON array of {"code_id": n, "note": "…"}, execution order
 verification  = TEXT JSON array of strings
+invoke_calls  = prop, u64: how many times a call was STARTED (ADR-0018)
+invoke_ok     = prop, u64: how many of those came back  // calls - ok = failures
+last_invoked  = prop, u64: the caller's clock at the last record
 experience    = NOT a prop: the node's incident facts (weight + decay, ADR-0005)
 ```
 
@@ -442,6 +471,17 @@ experience    = NOT a prop: the node's incident facts (weight + decay, ADR-0005)
   `by_kind` scan as the fallback when nothing lands: no engine still means "here
   is what I can do", and a scan reports `score: 0.0` rather than a fake distance.
   Nothing is counted here — a candidate nobody chose is not a read (ADR-0005).
+  A call that WAS made is counted, and that is a different question (ADR-0018).
+- **Usage is counted at the call, on the node.** `POST /skills/{scope}/{node_id}/touch`
+  takes `{event, ts_ms}`: `attempt` when a caller dispatches, `success` when the
+  answer came back. Two records, because the caller does not know the outcome when
+  it starts — which is exactly how "tried and it broke" stays visible (`calls - ok`).
+  The three props are merged into the dynamic segment like any other — no declared
+  field, no new column, no re-label (and, once ADR-0019 lands, no vector re-encoded:
+  it will live in ns 43 rather than in this payload). A node counter and
+  an edge counter are not the same measurement — the node's says whether a thing is
+  alive (telemetry), the edge's says how strongly two things belong together
+  (ranking); see §"the three counters" below.
 - **No planner, no ordering, no write-back.** Those stay gravity's (Phase 4.6) and
   the consolidation layer's (Phase 5): k10r answers "here is the row".
 
@@ -472,8 +512,9 @@ pub struct MemberRow { pub display_name: String, pub role: u8 }
   the member-set enum and its ns list are generated from those tables.
 - **No faces, no vector.** The only readers are a point read (the key) and one
   channel's members (a primary-key prefix scan); a declared face would have no
-  scanner of its own. And with no `embedding` — in a different collection — a user
-  is never a landing seed: retrieval lands on knowledge, never on people.
+  scanner of its own. And with no vector at all — a different collection, and (once
+  ADR-0019 lands) no side row either — a user is never a landing seed: retrieval lands
+  on knowledge, never on people.
 - **The reference syntax is `member-{channel}-{member}`**, parsed by `ingest` when
   the tuple's type is the reserved token `user` (ADR-0004's open vocabulary, second
   reserved token after `literal`). The string is wire, never a stored name, so a
@@ -518,7 +559,10 @@ pub struct Facts { /* scope / since / confidence / weight / 3 counters / 2 clock
   home): `since` (the caller's clock, the adjudication input), `confidence`
   (write-side; 255 = absent, i.e. no penalty) and `weight` (the weight system's
   milli-units), plus the three counters and two access clocks the weight system
-  folds in.
+  folds in. **These count EDGES.** A node's usage counters (`invoke_calls` /
+  `invoke_ok`, ADR-0018) are a separate measurement that happens to share the word
+  "count": the edge's is an association strength fed to ranking and decay, the
+  node's is telemetry answering "is this still alive".
 - **The last 8 accesses live in a fixed-size ring at the row's tail**
   (`recent: Vector<u32>`, layout v3): each slot is a SECOND offset from
   `1_767_225_600` (2026-01-01T00:00:00Z), ascending, `0` = unused, shifted right
