@@ -52,6 +52,15 @@ it**, because storage stores and the reader interprets, and the caller that deli
 the code owns the shape. Neither field is an LLM search surface: what a skill IS lives
 in the graph.
 
+The store still owns the ONE thing a producer needs told: when `parameters` means to
+constrain anything, its shape is a JSON Schema subset — `required`, `properties.*.type`
+(a name or a list), `additionalProperties: false` — because that is what the reader on
+the other side checks (gravity's `invoke_skill`, gravity ADR-0004: the arguments are
+validated before a node runs). A document that declares none of those keys, or is not
+JSON at all, is prose: it constrains nothing and the reader checks nothing, which is an
+honest "no contract", not a silent pass of one. Today every row in the tree is `{}`, so
+the check has no producer to exercise it yet — that is the gap, not the design.
+
 ### 3. The language is data on the row, and it never defaults
 
 A script is data, and data has a language. Nothing here assumes one, picks a default,
