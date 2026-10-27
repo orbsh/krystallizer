@@ -86,6 +86,12 @@ landing distance — it falls back to the `by_kind` face in id order, cut at `li
 deployment has no engine is a wrong answer, and the corpus is small by
 construction, so the scan is cheap.
 
+The JSON list is the INTERIM shape, not the destination. Composing several steps
+into one is settled elsewhere (gravity ADR-0005): the body is a script in an
+existing language, and the step edges are derived from that body rather than
+maintained here as a parallel list. Until a body exists, `steps` is what a
+resolver reports and what `invoke_skill` walks.
+
 Each candidate carries its `steps`, because deciding needs them: the consumer is
 a model with a candidate list in front of it, and "what would this make me do" is
 part of choosing. `preconditions` and `verification` stay out — those are what the
