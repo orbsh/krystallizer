@@ -568,6 +568,17 @@ Phases reference ADRs; design content lives in the ADRs, never here.
 
 - [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), the SKILL topological walk (ordering, retry, weight write-back — the slice above landed the row and the resolve), Aura Actor nodes.
 
+  TAIL STAGE TWO SEAM LANDED 2026-10-26 (ADR-0017 §4 as amended): the operations
+  table now says WHICH cursor an entry reads from — `TailOp.stage` is `Mandatory`
+  (compression) or `Optional` (a review) — and `compress::tail_span(op, view,
+  verdict)` states each range: `(coverage, checkpoint]` for compression,
+  `(suggested, newest record]` for a review, falling back to coverage when no
+  compression named a better cut. An operation whose span does not advance is not
+  asked for, so the projection needs no second empty-span rule. Gates: mem-core
+  compress 13/0 (four new span cases: the compression's span, a review from the
+  suggested cut, the fallback, and nothing-to-read), workspace 184/0. Still owed:
+  the first second-stage OPERATION (its product needs a door — nothing lands a
+  review today) and, if wanted, a trigger that is not the compression read.
   PROPOSAL WRITE SIDE LANDED 2026-10-26 (ADR-0016, amended the same day): the loop's
   review half exists. `POST /skills/{scope}/propose` counts a composition a WALK
   reached (kind `skill_proposal`, in the same scope as the facts, count as a prop);

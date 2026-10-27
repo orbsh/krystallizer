@@ -4,8 +4,11 @@
 
 **Status:** Accepted (2026-10-26) — stage one landed the same day: the `tails`
 table, the two-product prompt, the `suggested_*` fields on the checkpoint row,
-and gravity's branch turn reading both products. Stage two (the review pass) is
-NOT built; the seam for it is.
+and gravity's branch turn reading both products. The stage-two SEAM landed with it
+(§4 as amended: `Stage` on the table entry, and `tail_span` computing each
+operation's own range). What is still owed is a second OPERATION — an analysis
+pass whose product has a door to land in — and, if it is ever wanted, a trigger
+that is not the compression read.
 **Date:** 2026-10-26
 
 ## Context
@@ -86,8 +89,24 @@ uselessness is not an error. So they advance separate cursors:
   not the range a byte budget chose.
 
 Because the second cursor is separate, a review pass that never runs costs
-nothing, and one that runs late still reads the right range. Stage one lands the
-first cursor's second product; the second cursor is the next record's business.
+nothing, and one that runs late still reads the right range.
+
+**As landed**, the split is one field and one function:
+
+- `TailOp.stage` is `Mandatory` (compression) or `Optional` (everything else). The
+  table says which cursor an entry reads from, so a new operation cannot quietly
+  pick up the compression's span.
+- `mem_core::compress::tail_span(op, view, verdict)` states each range: mandatory =
+  `(coverage, verified checkpoint]`; optional = `(suggested, newest record]`, and
+  `(coverage, …]` when no compression has named a better cut — silence from the
+  compressor is not a range, so the fallback is the older boundary, not a skip.
+- An operation with nothing to read (`from >= to`) is NOT asked for, which is how
+  the projection drops it without a second rule for empty spans.
+
+Stage two still rides the compression read: computing a range and choosing a
+TIMING are different questions, and only the first is settled. A standalone trigger
+would need its own clock (how stale is the review cursor? how much unrest? ) — and
+the table already allows one, because the caller dispatches on names it knows.
 
 **5. A reply that is not the shape is still a summary.**
 
@@ -108,6 +127,10 @@ runs before the data is collected has nothing to sample.
 - **Two operations can now be added without touching the wire**, in either
   direction: a table entry here, a landing arm there. What an operation still
   owes is its own cursor and its own door.
+- **The stage decides the range, not the trigger.** A second operation added today
+  fires on the compression read, which may be the wrong moment for what it looks
+  for; that is a trade the table makes cheap to revisit, not a claim that the
+  timing is right.
 - **The compression pass pays one extra field of output** and the projection one
   extra key. The alternative — asking the model a second question later — costs a
   whole second pass over the same span.
