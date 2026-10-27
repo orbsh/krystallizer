@@ -487,10 +487,17 @@ pub struct Facts { /* scope / since / confidence / weight / 三个计数 / 两�
 `ingest(scope, fact)` 解一条 8 元组并跑 ADR-0010 §1 的步骤 1–2：端点按它的类型槽解析
 ——普通类型走 `entity_by_name`（不存在则新建，并分配它的种类）；保留 token `user` 则是
 把 `member-{channel}-{member}` **解析**成 ns 42 的 `NodeRef`（ADR-0014：什么都不创建，
-未登记的成员让这条事实失败）。随后关系要么挂一条新
-边，要么——当事实声明了 `functional`——与该源上该种类的在册边裁决（`since >`
-或 `confidence >=` 胜出：同一 `edge_id` 就地改写；否则这条事实被丢弃）。返回
-`IngestOutcome::{Linked, Rewritten, Dropped}`。
+未登记的成员让这条事实失败）。随后关系要么挂一条新边，要么
+撞上一条已有的边。两条规则，按这个顺序（ADR-0020）：
+
+- **同一性**：`(head, kind, tail)` 是**一条**边——这一对就在图索引的键里，所以它是一次 seek
+  而不是扫描（okm ADR-0041）。再次断言、且 `since` 与 `confidence` 都相同时是 `Bumped`，
+  什么都不写；断言带来**严格更新**的 `since` 或更高的 `confidence` 时才就地改写那一行
+  （`Rewritten`，同一个 `edge_id`），因为那是同一个事实的新消息。
+- **函数性**：事实声明了 `functional` 时，与「该源上该种类的在册边」裁决（`since >` 或
+  `confidence >=` 胜出 → 就地改写，否则 `Dropped`）。
+
+返回 `IngestOutcome::{Linked, Rewritten, Dropped, Bumped}`。
 
 读：`entity(scope, node_id)`、`entity_by_name(scope, name)` → `(node_id, row)`、
 `entity_props` / `fact_props`（动态段）（kind 的标签随行返回——`row.kind.as_str()`）、

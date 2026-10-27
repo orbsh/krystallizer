@@ -47,9 +47,9 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   the mechanical one, stored as `CheckpointRow.suggested_ts`/`suggested_sub` (a
   LABEL: coverage never moves, and the value is validated against the span it
   closes). The model answers an INDEX over the numbered records and the caller
-  resolves it, because the store owns positions. NOT built: the second stage (a
-  review pass with its own cursor reading from `suggested_*`) — the seam is
-  there, the operation is not.
+  resolves it, because the store owns positions. The second stage is BUILT: see
+  the TAIL STAGE TWO entries below (the `Stage` seam, then the `review` operation,
+  which reads from `suggested_*` and writes facts through the memory door).
   (cache-clock, budget percentage, max-gap split — all from
   `krystallizer.kdl`, per-user override layer reserved); NO decision log
   (2.6d: the checkpoint row itself answers which span was compressed, and
@@ -280,7 +280,7 @@ Phases reference ADRs; design content lives in the ADRs, never here.
     isolation, the polygons of the resolution, the literal node, props
     merge, id recovery), clippy 0, fmt clean. The write door
     `POST /memories/{scope}` landed with it (the request body IS the 8-slot
-    tuple; the outcome comes back as linked / rewritten / dropped; a
+    tuple; the outcome comes back as linked / rewritten / dropped / bumped; a
     structural bug is a 400 carrying the core's own reason). The read
     face landed with it: `GET /memories/{scope}/entities/{name}` (the exact
     name/alias entrance, 404 when absent) and
@@ -584,6 +584,16 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   prose from compression is still a summary, prose from a review writes nothing.
   Still owed: a trigger that is not the compression read, and a second review whose
   product has a door of its own.
+  ASSERTION IDENTITY LANDED 2026-10-27 (ADR-0020, on okm ADR-0041): `ingest` checks
+  `(head, kind, tail)` before it writes anything, and the check is one seek — the pair
+  leads the graph index key now. A re-assertion with the same `since` and `confidence`
+  is `Bumped` (nothing written, the incumbent's id returned); a strictly newer `since`
+  or a higher `confidence` rewrites the row and counts the write. Functional relations
+  keep their own adjudication on top, with a different tail. This is what the review
+  pass needed: it reads from the suggested cut, which can sit behind the coverage
+  point, so the same material legitimately passes under it twice. Gates: mem-core graph
+  37/0 (`an_identical_assertion_lands_once` locks one triple → one edge), workspace
+  185/0, clippy clean.
   PROPOSAL WRITE SIDE LANDED 2026-10-26 (ADR-0016, amended the same day): the loop's
   review half exists. `POST /skills/{scope}/propose` counts a composition a WALK
   reached (kind `skill_proposal`, in the same scope as the facts, count as a prop);

@@ -592,11 +592,19 @@ pub struct Facts { /* scope / since / confidence / weight / 3 counters / 2 clock
 type (created when absent, allocating the kind), and for the reserved token
 `user` a PARSE of `member-{channel}-{member}` into a `NodeRef` at ns 42
 (ADR-0014: nothing is created, an unregistered member fails the fact). Then the
-relation either links a new edge or — when the
-fact declares `functional` — is adjudicated against the incumbent edge of
-that kind out of that source (`since >` or `confidence >=` wins: the row is
-rewritten in place with the same `edge_id`, otherwise the fact is dropped).
-It returns `IngestOutcome::{Linked, Rewritten, Dropped}`.
+relation either links a new edge or meets an existing one. Two rules, in
+this order (ADR-0020):
+
+- **Identity**: `(head, kind, tail)` is ONE edge — the pair is in the graph
+  index's key, so this is a seek, not a scan (okm ADR-0041). A re-assertion that
+  states the same `since` and `confidence` is `Bumped` and writes nothing; one
+  that states a strictly newer `since` or a higher `confidence` rewrites that row
+  (`Rewritten`, same `edge_id`), because it is news about the same fact.
+- **Functionality**: when the fact declares `functional`, the incumbent edge of
+  that kind out of that source is adjudicated against it (`since >` or
+  `confidence >=` wins → rewritten in place, otherwise `Dropped`).
+
+It returns `IngestOutcome::{Linked, Rewritten, Dropped, Bumped}`.
 
 Reads: `entity(scope, node_id)`, `entity_by_name(scope, name)` →
 `(node_id, row)` (the kind's label rides the row — `row.kind.as_str()`),
