@@ -1483,7 +1483,8 @@ async fn fetch_code(
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct IngestOutcomeDto {
     /// `linked` (a new edge) | `rewritten` (the incumbent's row, same
-    /// `edge_id`) | `dropped` (the incumbent won).
+    /// `edge_id`) | `dropped` (the incumbent won) | `bumped` (the assertion
+    /// already stood: same head, kind and tail — nothing was written).
     pub outcome: String,
     pub edge_id: u64,
 }
@@ -1494,6 +1495,7 @@ impl From<IngestOutcome> for IngestOutcomeDto {
             IngestOutcome::Linked { edge_id } => ("linked", edge_id),
             IngestOutcome::Rewritten { edge_id } => ("rewritten", edge_id),
             IngestOutcome::Dropped { edge_id } => ("dropped", edge_id),
+            IngestOutcome::Bumped { edge_id } => ("bumped", edge_id),
         };
         Self {
             outcome: outcome.to_string(),

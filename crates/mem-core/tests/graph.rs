@@ -1175,7 +1175,8 @@ fn the_three_entrances_need_no_query() {
         match graph.ingest(1, &tuple(&json)).unwrap() {
             IngestOutcome::Linked { edge_id }
             | IngestOutcome::Rewritten { edge_id }
-            | IngestOutcome::Dropped { edge_id } => edge_id,
+            | IngestOutcome::Dropped { edge_id }
+            | IngestOutcome::Bumped { edge_id } => edge_id,
         }
     };
 
@@ -1470,4 +1471,33 @@ fn the_vector_lives_beside_the_row_and_outlives_a_prop_merge() {
     );
     let landed = graph.retrieve(1, "alpha", 5).unwrap();
     assert_eq!(landed[0].name, "alpha", "and retrieval rebuilds from it");
+}
+
+/// Assertion identity (okm ADR-0041): the same head, kind and tail is ONE edge.
+/// The second ingest answers `Bumped` with the edge that already stands, and the
+/// graph holds one link — not two identical rows nothing can tell apart.
+///
+/// This is what makes a re-reading pass harmless: the review tail operation reads
+/// overlapping spans by design, so before this every pass wrote its facts again.
+#[test]
+fn an_identical_assertion_lands_once() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap();
+    let fact = tuple(PIVOT);
+    assert_eq!(
+        graph.ingest(1, &fact).unwrap(),
+        IngestOutcome::Linked { edge_id: 1 }
+    );
+    assert_eq!(
+        graph.ingest(1, &fact).unwrap(),
+        IngestOutcome::Bumped { edge_id: 1 },
+        "the same triple is the same edge"
+    );
+    // One edge out of the subject: a second row would be a second id here.
+    let (subject, _row) = graph.entity_by_name(1, "galaxy_repo").unwrap().unwrap();
+    assert_eq!(
+        graph.typed_out(1, subject, "PIVOTED_TO").unwrap(),
+        vec![1],
+        "one assertion, one edge"
+    );
 }

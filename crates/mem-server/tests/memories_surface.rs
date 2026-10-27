@@ -3,7 +3,7 @@
 //! database, driven by reqwest. The tuple is the request BODY, verbatim.
 //!
 //! The load-bearing assertions: the caller's three-way outcome comes back
-//! (linked / rewritten / dropped), a multi-valued relation accumulates
+//! (linked / rewritten / dropped / bumped), a multi-valued relation accumulates
 //! parallel edges while a functional one rewrites its incumbent IN PLACE
 //! (which proves the incumbent scan read the stored edge through the
 //! door), a structural bug is a 400 carrying the core's own reason, and

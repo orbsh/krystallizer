@@ -675,6 +675,12 @@ pub enum IngestOutcome {
     Rewritten { edge_id: u64 },
     /// Functional relation, incumbent kept: nothing was written.
     Dropped { edge_id: u64 },
+    /// The assertion already stands — same head, same kind, same tail — so the
+    /// edge is the incumbent and nothing was written. Not an error and not a
+    /// "drop": the fact is IN the graph, which is the answer the caller asked
+    /// for. A second row for one assertion would double it in every read while
+    /// adding no knowledge.
+    Bumped { edge_id: u64 },
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -2200,6 +2206,60 @@ impl GraphStore {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
+        // ASSERTION IDENTITY (okm ADR-0041): `(head, kind, tail)` is ONE edge.
+        // The pair lives in the index key, so this is a seek rather than a scan
+        // over a hub's out-degree — and it is what makes a re-read harmless: a
+        // review pass that reads an overlapping span re-posts facts, and they
+        // land on the edges that already stand.
+        //
+        // Only a STRICT improvement rewrites: a re-assertion that states a newer
+        // `since` or a higher `confidence` is news about the same fact and
+        // rewrites the row (the write is countable, as the weight system wants);
+        // one that states the same thing is `Bumped` and writes nothing, so a
+        // background pass reading the same material twice cannot inflate a
+        // weight by repeating itself.
+        if let Some(existing) = self
+            .facts()
+            .typed_out_to(&fact.rel.name, &src.to_ref(scope), &dst.to_ref(scope))
+            .map_err(|e| IngestError::Storage(e.to_string()))?
+            .first()
+            .copied()
+        {
+            let body = self
+                .facts()
+                .get_edge(existing)
+                .map_err(|e| IngestError::Storage(e.to_string()))?
+                .ok_or_else(|| IngestError::Storage(format!("edge {existing} unreadable")))?;
+            let old = Facts::decode_payload(&body.payload);
+            if since > old.since || confidence > old.confidence {
+                let next = Facts {
+                    since,
+                    confidence,
+                    ..old
+                }
+                .touched(Touch::Write, since);
+                let mut batch = Batch::default();
+                self.facts()
+                    .unlink_into(&mut batch, existing)
+                    .map_err(|e| IngestError::Storage(e.to_string()))?;
+                self.write_edge_into(
+                    &mut batch,
+                    existing,
+                    &next,
+                    scope,
+                    src,
+                    dst,
+                    &fact.rel.name,
+                    &props,
+                )?;
+                self.store
+                    .commit_batch(batch)
+                    .map_err(|e| IngestError::Storage(e.to_string()))?;
+                self.bin(scope, &[src, dst])?;
+                return Ok(IngestOutcome::Rewritten { edge_id: existing });
+            }
+            return Ok(IngestOutcome::Bumped { edge_id: existing });
+        }
         if functional {
             if let Some(&incumbent) = self
                 .typed_out_of(&src.to_ref(scope), &fact.rel.name)?
