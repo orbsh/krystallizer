@@ -568,9 +568,13 @@ Phases reference ADRs; design content lives in the ADRs, never here.
 
 - [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), the SKILL topological walk (ordering, retry, weight write-back — the slice above landed the row and the resolve), Aura Actor nodes.
 
-  PROPOSAL WRITE SIDE LANDED 2026-10-26 (ADR-0016): the loop's other half exists.
-  `POST /skills/{scope}/propose` counts a composition a turn walked (kind
-  `skill_proposal`, in the same scope as the facts, count as a prop),
+  PROPOSAL WRITE SIDE LANDED 2026-10-26 (ADR-0016, amended the same day): the loop's
+  review half exists. `POST /skills/{scope}/propose` counts a composition a WALK
+  reached (kind `skill_proposal`, in the same scope as the facts, count as a prop);
+  gravity files it the moment the walk grows to two different code rows, not at turn
+  end, so the record rides the step rather than the reply — and ADR-0018 demoted the
+  queue from "the write side" to "the walks the model let pass", because the model now
+  writes what it noticed (`create_skill`),
   `GET /skills/{scope}/proposals?min_count=N` is the review queue, and
   `POST /skills/{scope}/{node_id}/promote` is a HUMAN declaring the skill a
   proposal suggested — the steps are copied, the name is the human's, the row

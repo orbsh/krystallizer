@@ -2,11 +2,12 @@
 
 > **Languages:** [English](0016-skill-proposals.md) (primary) · [中文](0016-skill-proposals.zh-CN.md)
 
-**Status:** Accepted (2026-10-26) — landed the same day: `mem-core`
+**Status:** Accepted (2026-10-26), **amended the same day** — landed: `mem-core`
 (`proposals.rs`), three doors (`POST /skills/{scope}/propose`,
 `GET /skills/{scope}/proposals`, `POST /skills/{scope}/{node_id}/promote`), and
-gravity's half (the turn reports a composition when it walked two different code
-rows).
+gravity's half. The amendment moves the filing from the turn's END to the moment the
+walk reaches a composition, and says what a proposal is FOR now that the model can
+declare skills itself (ADR-0018).
 **Date:** 2026-10-26
 
 ## Context
@@ -36,9 +37,18 @@ candidate.
 **2. gravity is the only writer, because gravity is the only observer.**
 
 A turn is where an ordered run of code rows actually happens — gravity dispatched
-each step, so gravity knows the order. It reports the composition at finish time:
-`{key, steps, ts_ms}`, where `key` is the code ids in the order they ran (`4+7`)
-and `steps` is the same JSON document a skill's `steps` takes.
+each step, so gravity knows the order. It reports the composition WHERE THE WALK
+REACHES IT: the moment a step grows the run to two different code rows,
+`{key, steps, ts_ms}` goes out, where `key` is the code ids in the order they ran
+(`4+7`) and `steps` is the same JSON document a skill's `steps` takes.
+
+Filing at the turn's end was wrong by the argument that moved the counts
+(ADR-0018): a turn may never end, may die mid-way, or may spend minutes on rounds
+that have nothing to do with the walk — none of which is a reason for a composition
+that already happened to go unrecorded. What decides is the walk GROWING: a retried
+step leaves the run as it was and files nothing (one walk is not counted twice),
+while a three-step walk files `a+b` and then `a+b+c` — the prefix was walked too,
+and a queue ordered by count should see both.
 
 The key is the WALKER's spelling, not something k10r derives, because the store
 does not parse `steps` (ADR-0015 §3: the producer owns the shape). Making the
@@ -80,14 +90,36 @@ face: the queue is small by construction (one row per distinct composition),
 nothing on the model's path reads it, and repetition ordering is a sort, not a
 retrieval.
 
+**6. What a proposal is FOR, now that the model can declare.**
+
+ADR-0018 changed two things underneath this record: each skill node carries its own
+`invoke_calls` / `invoke_ok`, and the model has `create_skill` — it can write a
+procedure down the moment it notices one, without asking anyone. So:
+
+- repetition is visible WITHOUT this queue: a skill that runs often says so in its
+  own counters, and one that is tried and breaks says so in `calls - ok`;
+- the model is no longer dependent on a human to get a skill into the corpus.
+
+What neither covers is the case this record exists for: a run of two or more
+DIFFERENT code rows that the model did not turn into a skill — because it did not
+notice, or did not think the procedure worth naming. There the count is the only
+observation and a human is the only reader. A proposal is therefore not the write
+side of the loop any more; it is the REVIEW queue for the walks the model let pass.
+Its shape does not change: same node kind, invisible to the resolver, promoted by a
+human, `count` as a prop.
+
 ## Consequences
 
-- **The write half of the loop exists.** A turn that did something worth
-  repeating leaves a row; a human reads the queue and names the skill; the next
-  turn's `resolve_skills` can offer it. No step of that path needs a new tool
-  name — the fixed list is unchanged (gravity ADR-0004).
+- **The write half of the loop exists — in two paths.** The model writes what it
+  noticed (`create_skill`, ADR-0018); the queue collects what it did not. A human
+  reads the queue and names the skill; the next turn's `resolve_skills` can offer
+  it. Neither path needs a new tool name — the fixed list is what it was (gravity
+  ADR-0004).
 - **Nothing is auto-promoted, so a bad turn cannot poison the skill corpus.** A
   proposal is capped by review, not by cleverness.
+- **The record no longer rides the reply's fate.** A composition is filed when the
+  step succeeds, so a turn that dies before its terminal round still leaves the row —
+  and a retried step cannot file the same walk twice.
 - **A proposal carries the descriptions of the steps it names** (gravity records
   each code row's `description` as it walks), so a reviewer sees what each step
   does without opening every code row.
