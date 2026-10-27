@@ -163,10 +163,10 @@ only complex ones (PageRank, community detection) earn a dependency.
   carries — exact today, approximate whenever it grows one — is taken from
   there, its snapshot blobs living at okm's own faces. What stays on this side
   is the ACCOUNT, not the algorithm: when the derived table is rebuilt (a write
-  drops it), how much of it may sit in memory (byte budget + LRU), and the
-  landing floor. An index of any kind is DERIVED state rebuilt from the rows,
-  never a second source of truth, and arroy stays rejected for the LMDB reason
-  above — it would bring a second storage engine, which is exactly what the
+  to the vector table drops it), how much of it may sit in memory (byte budget +
+  LRU), and the landing floor. An index of any kind is DERIVED state rebuilt from
+  the rows, never a second source of truth, and arroy stays rejected for the LMDB
+  reason above — it would bring a second storage engine, which is exactly what the
   crate spares us.
 - There is no tokenizer to control, so "tokenization and scoring fully under
   our control" is no longer a trade-off claim this route makes.

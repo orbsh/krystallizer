@@ -343,8 +343,8 @@ pub struct NodeVector {
 **A vector declares no face.** An `#[ok_index]` face is a derived entry for
 key-ordered reads (prefix / range / covering scans); a vector has no key order,
 so there is no face to declare for it. Vector search runs on `okm-vector`'s
-`ExactIndex` — a DERIVED index rebuilt on first use and dropped on every write,
-not a declared face.
+`ExactIndex` — a DERIVED index rebuilt on first use and dropped when the vector
+table is written, not a declared face.
 
 **The vector is not in this row (ADR-0019).** It used to share the payload with the
 usage counters, and a prop write is a whole-document write: counting an invocation
@@ -416,10 +416,11 @@ whole-document write, though — the reason the vector moves out of this row
   (0.35 cosine), return the top `k` seeds `{node_id, score, name, kind}`. An
   empty result is legal (nothing landed — the caller injects no memory). The
   SEARCH is `okm-vector`'s, not k10r's: the index is its `ExactIndex` (one flat
-  vector block plus keys), rebuilt from the KV on first use and DROPPED on every
-  write, so it can never answer from a stale corpus, and byte-budgeted with LRU
-  eviction here because the budget is about k10r's memory, not the search. Whether
-  that index is exact or approximate is `okm-vector`'s own call — the same crate
+  vector block plus keys), rebuilt from the KV on first use and DROPPED when the
+  vector table is written, so it can never answer from a stale corpus, and
+  byte-budgeted with LRU eviction here because the budget is about k10r's memory,
+  not the search. Whether that index is exact or approximate is `okm-vector`'s own
+  call — the same crate
   already carries any such form — never a k10r phase, a threshold parameter, or
   a hand-rolled graph here (ADR-0003).
 - **`GraphStore::recall` (`GET /memories/{scope}/recall?q=&k=&budget=&ts_ms=` — the
