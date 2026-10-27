@@ -63,12 +63,17 @@ skill 就是一行、说它当前是什么；要历史的时候，历史是第�
 | --- | --- |
 | `POST /skills/{scope}` | `{name, title?, content?, preconditions?, steps?, verification?}` → `{node_id, created}` |
 | `GET /skills/{scope}/{node_id}` | 带四个部分的 skill；未知 id 404，节点不是 skill 400 |
-| `POST /skills/{scope}/resolve` | `{query, limit}` → `[{node_id, name, title, content, score}]`，最优在前 |
+| `POST /skills/{scope}/resolve` | `{query, limit}` → `[{node_id, name, title, content, steps, score}]`，最优在前 |
 
 `resolve` 走图的检索，只留 `skill` 这个 kind。检索什么都没落着时——没挂 embedding 引擎，
 或者没有东西落在 landing 距离之内——退回 `by_kind` 面的 id 顺序扫描，按 `limit` 截断
 （默认 5，上限 20）。因为部署没有引擎就答「没有 skill」是错误答案，而这样一份语料按构造
 就不大，扫一遍很便宜。
+
+每个候选都带着 `steps`，因为**选**就需要它：消费者是面前摆着一列候选的模型，而「这个会让
+我做什么」是挑选的一部分。`preconditions` 与 `verification` 不带——那两样是选定之后、走
+的时候才读的。替代方案是加一次调用（「读这个 skill」）或给 gravity 的固定清单加第五个名字；
+在 resolver 本来就要回答的那一行上加一个字段，比这两者都便宜。
 
 `resolve` **不收**调用方时钟、**不计数**。它返回的是候选，只有模型挑中的那一个才算一次
 使用，而使用是在 skill 真正被走的时候计数——没人选的候选不是一次读（ADR-0005 的规则：
@@ -78,8 +83,8 @@ skill 就是一行、说它当前是什么；要历史的时候，历史是第�
 
 没有 planner，没有拓扑排序，没有重试策略，没有从一次运行回写权重，没有 dreaming
 consolidation。本记录只定「解析器读的那一行、执行器走的那些步」。决定顺序、重试失败的步、
-把结果折回经验，仍然是 gravity 的（Phase 4.6）与 consolidation 层的（Phase 5）——k10r 没有
-理由知道一个 step 是什么意思。
+把结果折回经验，仍然是 gravity 的（ADR-0004 §3：一次调用走一步，顺序由模型驱动）与
+consolidation 层的（Phase 5）——k10r 没有理由知道一个 step 是什么意思。
 
 ## 否决项
 

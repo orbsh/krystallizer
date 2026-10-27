@@ -105,6 +105,10 @@ async fn a_skill_is_declared_resolved_and_read_back() {
     assert_eq!(resolved.len(), 1);
     assert_eq!(resolved[0]["name"], "github-issues");
     assert_eq!(
+        resolved[0]["steps"], r#"[{"code_id":1,"note":"run it"}]"#,
+        "the candidate carries its steps so the model can decide"
+    );
+    assert_eq!(
         resolved[0]["score"], 0.0,
         "no engine, no distance: the scan reports none rather than a fake one"
     );

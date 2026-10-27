@@ -367,7 +367,7 @@ experience    = 不是 prop：节点的关联事实（权重 + 衰减，ADR-0005
 - **读一个是查 kind 的**（`GET /skills/{scope}/{node_id}`）：未知 id 404，别的 kind 的节点
   400 并说明它实际是什么。
 - **解析是检索后只留这个 kind**（`POST /skills/{scope}/resolve` `{query, limit}` →
-  `[{node_id, name, title, content, score}]`），什么都没落着时退回 `by_kind` 面扫描：没有
+  `[{node_id, name, title, content, steps, score}]`），什么都没落着时退回 `by_kind` 面扫描：没有
   引擎也仍然「这是我都会什么」，而扫描报 `score: 0.0`，不编一个距离。这里**不计数**——没人
   选的候选不是一次读（ADR-0005）。
 - **没有 planner、没有排序、没有回写。** 那些属于 gravity（Phase 4.6）与 consolidation 层

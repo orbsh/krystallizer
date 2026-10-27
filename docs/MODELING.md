@@ -438,7 +438,7 @@ experience    = NOT a prop: the node's incident facts (weight + decay, ADR-0005)
 - **Reading one is kind-checked** (`GET /skills/{scope}/{node_id}`): unknown id
   404, a node of another kind 400 with what it actually is.
 - **Resolving is retrieval filtered to the kind** (`POST /skills/{scope}/resolve`
-  `{query, limit}` → `[{node_id, name, title, content, score}]`), with the
+  `{query, limit}` → `[{node_id, name, title, content, steps, score}]`), with the
   `by_kind` scan as the fallback when nothing lands: no engine still means "here
   is what I can do", and a scan reports `score: 0.0` rather than a fake distance.
   Nothing is counted here — a candidate nobody chose is not a read (ADR-0005).

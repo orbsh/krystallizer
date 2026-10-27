@@ -139,6 +139,10 @@ fn without_an_engine_the_resolver_scans_the_kind() {
         all.iter().all(|c| c.score == 0.0),
         "a scan measures no distance, so it reports none"
     );
+    assert!(
+        all.iter().all(|c| !c.steps.is_empty()),
+        "the steps ride along: deciding needs to see what the skill would do"
+    );
 
     let cut = graph.resolve_skills(1, "anything", 2).unwrap();
     assert_eq!(cut.len(), 2, "the limit is honoured");

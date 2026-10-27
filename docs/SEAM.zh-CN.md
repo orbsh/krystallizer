@@ -115,8 +115,9 @@ in-process 不是第二道门：`InProcessSurface` 在调用方进程内链接�
 | `recall_memory`——长期事实 | 工具面（2026-10-26 落地，gravity ADR-0004） | `POST /memories/{scope}/recall`（落点 + 着陆到的社区，已渲染）与 `GET /memories/{scope}/entities/{name}`（精确入口） | `GraphStore::recall` / `entity_by_name` | 图的门已落（2026-10-20）；工具面 2026-10-26 落地（gravity ADR-0004） |
 | `commit_memory`——写事实 | 工具面 | `POST /memories/{scope}` | `GraphStore::ingest(fact)` | 门已落（2026-10-17）；工具本身 2026-10-26 落地（gravity ADR-0004） |
 | `resolve_skills`——可选 skills 列表 | 工具面（2026-10-26 落地，gravity ADR-0004） | `POST /skills/{scope}/resolve`（ADR-0015） | `GraphStore::resolve_skills`——检索后只留 `skill` 这个 kind，退回 `by_kind` 面扫描 | 2026-10-26 落地；它列出的节点是 ADR-0015 的，怎么走是 gravity 的 |
-| `invoke_skill`——计划里取码那一步 | 工具面 | `GET /code/{id}` | `CodeStore::get` | 已落 |
-| `invoke_skill`——调用本身 | 计划里的一步 | **不走 k10r**（见 §3） | — | gravity Phase 4.6 |
+| `invoke_skill`——它要走的那一行 skill | 工具面 | `GET /skills/{scope}/{node_id}` | `GraphStore::skill` | 2026-10-26 落地 |
+| `invoke_skill`——那一步的 code 行 | 工具面 | `GET /code/{id}` | `CodeStore::get` | 已落 |
+| `invoke_skill`——调用本身 | 一步的脚本在 mount 上跑 | **不走 k10r**（见 §3） | — | 2026-10-26 落地（gravity `invoke_skill`：一次一步，`ctx.invoke` 打到该语言的 mount） |
 | 初始化记忆（人设 / 风格） | 调用方无操作：它随投影到达 | — | 装配是 k10r 内部细节（从用户节点出发遍历，注入上下文头部） | 已声明（ADR-0001） |
 
 ## 3. 不属于 k10r 门的部分

@@ -798,6 +798,10 @@ struct SkillCandidateDto {
     name: String,
     title: String,
     content: String,
+    /// The steps, as declared (JSON TEXT): a model deciding whether to choose
+    /// this skill has to see what it would make it do, and there is no second
+    /// call that would tell it (ADR-0015 §4).
+    steps: String,
     score: f32,
 }
 
@@ -878,6 +882,7 @@ async fn resolve_skills(
                 name: candidate.name,
                 title: candidate.title,
                 content: candidate.content,
+                steps: candidate.steps,
                 score: candidate.score,
             })
             .collect(),

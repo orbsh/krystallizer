@@ -83,13 +83,21 @@ impl Skill {
 }
 
 /// One candidate a resolver hands back: enough for a model to decide, and
-/// nothing more (the parts are read once a skill is chosen).
+/// nothing more.
+///
+/// `steps` rides along because DECIDING needs it: the model has to see what a
+/// skill would make it do before choosing it, and gravity's fixed list has no
+/// "read one skill" call (ADR-0004 — a fifth tool name is a bigger ruling than
+/// a field). `preconditions` / `verification` do NOT ride along: they are what
+/// the walk reads once a skill is chosen, and the walk is gravity's business.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SkillCandidate {
     pub node_id: u64,
     pub name: String,
     pub title: String,
     pub content: String,
+    /// The steps, in execution order — JSON text, as declared.
+    pub steps: String,
     /// Retrieval score, `0.0` for a candidate that came from the kind-face
     /// fallback (a scan has no distance to report — never a fake one).
     pub score: f32,
@@ -193,6 +201,7 @@ impl GraphStore {
                 name: skill.name,
                 title: skill.title,
                 content: skill.content,
+                steps: skill.steps,
                 score: seed.score,
             });
             if out.len() == limit {
@@ -216,6 +225,7 @@ impl GraphStore {
                 name: skill.name,
                 title: skill.title,
                 content: skill.content,
+                steps: skill.steps,
                 // A scan measures no distance, so it reports none.
                 score: 0.0,
             });

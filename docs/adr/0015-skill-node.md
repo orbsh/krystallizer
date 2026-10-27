@@ -77,7 +77,7 @@ resolver can only find by exact name.
 | --- | --- |
 | `POST /skills/{scope}` | `{name, title?, content?, preconditions?, steps?, verification?}` → `{node_id, created}` |
 | `GET /skills/{scope}/{node_id}` | the skill with all four parts; 404 for an unknown id, 400 when the node is not a skill |
-| `POST /skills/{scope}/resolve` | `{query, limit}` → `[{node_id, name, title, content, score}]`, best first |
+| `POST /skills/{scope}/resolve` | `{query, limit}` → `[{node_id, name, title, content, steps, score}]`, best first |
 
 `resolve` reads through the graph's retrieval and keeps the `skill` kind. When
 retrieval lands nothing — no embedding engine attached, or nothing inside the
@@ -85,6 +85,13 @@ landing distance — it falls back to the `by_kind` face in id order, cut at `li
 (default 5, max 20). A resolver that answers "there are no skills" because the
 deployment has no engine is a wrong answer, and the corpus is small by
 construction, so the scan is cheap.
+
+Each candidate carries its `steps`, because deciding needs them: the consumer is
+a model with a candidate list in front of it, and "what would this make me do" is
+part of choosing. `preconditions` and `verification` stay out — those are what the
+walk reads after the choice. The alternative would be a second call ("read this
+skill") or a fifth tool name on gravity's fixed list; a field on the row the
+resolver already answers is cheaper than either.
 
 `resolve` takes NO caller clock and counts nothing. It returns candidates; only the
 one the model picks is a use, and the use is counted when the skill is actually
@@ -96,7 +103,8 @@ read is not a read).
 No planner, no topological ordering, no retry policy, no weight write-back from a
 run, no dreaming consolidation. This record fixes the ROW a resolver reads and an
 executor walks. Deciding the order, retrying a failed step and folding outcomes back
-into experience stay gravity's (Phase 4.6) and the consolidation layer's (Phase 5) —
+into experience stay gravity's (ADR-0004 §3: one step per call, the model drives
+the sequence) and the consolidation layer's (Phase 5) —
 k10r has no business knowing what a step means.
 
 ## Why Not
