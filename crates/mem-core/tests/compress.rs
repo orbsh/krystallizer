@@ -11,7 +11,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use mem_core::channel::{MessageKey, MessageRow, SessionView};
-use mem_core::compress::{evaluate, Params, Trigger};
+use mem_core::compress::{evaluate, tail_span, Params, Stage, TailOp, Trigger, Verdict};
 
 const PARAMS: Params = Params {
     context_bytes: 1000,
@@ -143,4 +143,69 @@ fn the_verdict_carries_its_parameter_snapshot() {
     assert_eq!(verdict.context_bytes, 1000);
     assert_eq!(verdict.budget_percent, 50);
     assert_eq!(verdict.cache_ttl_ms, 60_000);
+}
+
+/// The verdict a read would carry, for the span cases below (ADR-0020 reads the
+/// span off the verdict, not off a second evaluation).
+fn verdict_at(checkpoint: (u64, u16)) -> Verdict {
+    Verdict {
+        checkpoint_ts: checkpoint.0,
+        checkpoint_sub: checkpoint.1,
+        trigger: Trigger::Budget,
+        assembled_bytes: 600,
+        context_bytes: PARAMS.context_bytes,
+        budget_percent: PARAMS.budget_percent,
+        cache_ttl_ms: PARAMS.cache_ttl_ms,
+        idle_ms: None,
+        max_gap_ms: None,
+    }
+}
+
+const REVIEW_OP: TailOp = TailOp {
+    name: "review",
+    prompt: "review the span",
+    stage: Stage::Optional,
+};
+
+/// The compression reads exactly the span the verdict asks to compress: from
+/// where the caller's summary already ends to the record the policy named.
+#[test]
+fn the_compression_reads_the_span_the_verdict_named() {
+    let mut v = view(&[100, 200, 300]);
+    v.coverage_ts = 100;
+    let span = tail_span(&mem_core::COMPRESS_OP, &v, &verdict_at((300, 1))).unwrap();
+    assert_eq!(span, ((100, 0), (300, 1)));
+}
+
+/// A review reads from the cut the last compression SUGGESTED — a model's
+/// boundary — to the newest record, not from the coverage point: that is the
+/// whole reason the suggestion is stored (ADR-0020).
+#[test]
+fn a_review_reads_from_the_suggested_cut_to_the_newest_record() {
+    let mut v = view(&[100, 200, 300, 400]);
+    v.coverage_ts = 100;
+    v.suggested_ts = 200;
+    let span = tail_span(&REVIEW_OP, &v, &verdict_at((300, 0))).unwrap();
+    assert_eq!(span, ((200, 0), (400, 0)));
+}
+
+/// A compression that named no better cut leaves the review reading from the
+/// coverage point: silence from the compressor is not a range.
+#[test]
+fn a_review_falls_back_to_coverage_when_no_cut_was_named() {
+    let mut v = view(&[100, 200, 300]);
+    v.coverage_ts = 100;
+    let span = tail_span(&REVIEW_OP, &v, &verdict_at((300, 0))).unwrap();
+    assert_eq!(span, ((100, 0), (300, 0)));
+}
+
+/// Nothing to read means the caller is not asked: a span that does not advance,
+/// and a review with no records to look at.
+#[test]
+fn an_operation_with_nothing_to_read_is_not_asked_for() {
+    let mut v = view(&[100, 200]);
+    v.coverage_ts = 200;
+    assert!(tail_span(&mem_core::COMPRESS_OP, &v, &verdict_at((200, 0))).is_none());
+    let empty = view(&[]);
+    assert!(tail_span(&REVIEW_OP, &empty, &verdict_at((200, 0))).is_none());
 }

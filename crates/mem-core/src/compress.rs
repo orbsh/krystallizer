@@ -19,7 +19,7 @@
 //! deferred until feedback labels exist, since fitting policy to
 //! unlabelled traces fits noise.
 
-use crate::channel::SessionView;
+use crate::channel::{SessionView, Span};
 
 /// Policy parameters — `config/krystallizer.kdl`'s `compression` node.
 #[derive(Clone, Debug, PartialEq)]
@@ -224,6 +224,22 @@ pub struct TailOp {
     pub name: &'static str,
     /// The prompt appended after the span.
     pub prompt: &'static str,
+    /// Which of the two cursors this operation reads from (ADR-0020).
+    pub stage: Stage,
+}
+
+/// The two stages of the tail (ADR-0020). Compression is MANDATORY — without it
+/// the context stops fitting — so it has its own cursor (the coverage point) and
+/// its own trigger (the budget). Everything else is a review: not needed for the
+/// answer, so it reads from the OTHER cursor, the cut the last compression said it
+/// would have chosen, and it can be skipped without breaking anything.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Stage {
+    /// Covers the span this read asks to compress: `(coverage, checkpoint]`.
+    Mandatory,
+    /// Reads from the suggested cut — or from coverage when no compression has
+    /// named one — to the newest record. A model's boundary, not a byte budget's.
+    Optional,
 }
 
 /// The compression pass: summarize the span, and name the cut it would have
@@ -231,8 +247,41 @@ pub struct TailOp {
 pub const COMPRESS_OP: TailOp = TailOp {
     name: "compress",
     prompt: TAIL_PROMPT,
+    stage: Stage::Mandatory,
 };
 
-/// Every operation the store may ask for. One today; the review pass joins it
-/// when its own cursor lands.
+/// Every operation the store may ask for. One today: a review operation joins the
+/// table once its product has a door to land in (ADR-0020 — the table is the
+/// extensible half, the landing arm belongs to each operation).
 pub const TAIL_OPS: &[TailOp] = &[COMPRESS_OP];
+
+/// The range one operation reads on this read (ADR-0020).
+///
+/// Mandatory: exactly the span the verdict asks to compress. Optional: from the
+/// suggested cut — the boundary a model saw the conversation break at instead of
+/// where a byte budget did — to the newest record, which is what an analysis pass
+/// wants to look at. Both are stated as `((ts, sub), (ts, sub))`: a position in
+/// the log is a RECORD, so a millisecond alone names several.
+///
+/// `None` = nothing to read, and the caller is not asked for that operation. The
+/// fallback is deliberate: a compression that named no better cut leaves the
+/// optional operations reading the span coverage already covers, rather than
+/// skipping them — silence from the compressor is not a range.
+pub fn tail_span(op: &TailOp, view: &SessionView, verdict: &Verdict) -> Option<Span> {
+    let span = match op.stage {
+        Stage::Mandatory => (
+            (view.coverage_ts, view.coverage_sub),
+            (verdict.checkpoint_ts, verdict.checkpoint_sub),
+        ),
+        Stage::Optional => {
+            let from = if (view.suggested_ts, view.suggested_sub) == (0, 0) {
+                (view.coverage_ts, view.coverage_sub)
+            } else {
+                (view.suggested_ts, view.suggested_sub)
+            };
+            let (last, _) = view.increment.last()?;
+            (from, (last.ts_ms, last.sub))
+        }
+    };
+    (span.0 < span.1).then_some(span)
+}

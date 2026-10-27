@@ -475,6 +475,31 @@ impl SessionDto {
         } else {
             HeadDto::Facts(p.head.into_iter().map(FactViewDto::from).collect())
         };
+        // Spans are computed BEFORE the literal: `increment` moves out of the
+        // projection, and the operations read the view's cursors (ADR-0020).
+        let tails: Vec<TailDto> = match compress {
+            // Every operation the store knows fires on the same read, and each
+            // states the span IT reads (ADR-0020): the compression covers the
+            // record the verdict named, starting where the caller's summary
+            // already ends; a review reads from the cut the last compression
+            // suggested, to the newest record. An operation with nothing to
+            // read is not asked for.
+            Some(v) => mem_core::TAIL_OPS
+                .iter()
+                .filter_map(|op| {
+                    let span = mem_core::tail_span(op, &p.view, &v)?;
+                    Some(TailDto {
+                        name: op.name,
+                        prompt: op.prompt,
+                        from_ts: span.0.0,
+                        from_sub: span.0.1,
+                        to_ts: span.1.0,
+                        to_sub: span.1.1,
+                    })
+                })
+                .collect(),
+            None => Vec::new(),
+        };
         Self {
             format: format.name(),
             head,
@@ -496,25 +521,7 @@ impl SessionDto {
                     content: row.content,
                 })
                 .collect(),
-            tails: match compress {
-                // Every operation the store knows fires on the same verdict, and
-                // each states the span IT needs: the compress pass covers the
-                // record the verdict named, starting where the caller's summary
-                // already ends. An operation with a narrower range (a review
-                // pass reading from `suggested_*`) computes its own here.
-                Some(v) => mem_core::TAIL_OPS
-                    .iter()
-                    .map(|op| TailDto {
-                        name: op.name,
-                        prompt: op.prompt,
-                        from_ts: p.view.coverage_ts,
-                        from_sub: p.view.coverage_sub,
-                        to_ts: v.checkpoint_ts,
-                        to_sub: v.checkpoint_sub,
-                    })
-                    .collect(),
-                None => Vec::new(),
-            },
+            tails,
         }
     }
 }

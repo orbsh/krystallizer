@@ -48,7 +48,7 @@ pub use channel::{
 pub use code::{CodeKey, CodeRow, CodeStore};
 pub use compress::{
     evaluate as evaluate_compression, Params as CompressionParams, TailOp, Trigger as CompressionTrigger,
-    Verdict as CompressionVerdict, COMPRESS_OP, TAIL_OPS, TAIL_PROMPT,
+    tail_span, Stage, Verdict as CompressionVerdict, COMPRESS_OP, TAIL_OPS, TAIL_PROMPT,
 };
 pub use config::{
     CompressionConfig, ConfigError, EmbeddingConfig, EmbeddingEngine, KrystallizerConfig,
