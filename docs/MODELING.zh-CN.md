@@ -288,7 +288,7 @@ pub struct EntityRow {
 }
 
 #[derive(DocumentEncode, ...)]
-#[ok_ref(EntityKey)]              // 同一个键类型：一次 batch、一次删除
+#[ok_ref(EntityKey)]              // 同一个键类型：一次 batch；删要成对
 #[ok_ns(43)]
 pub struct NodeVector {
     pub embedding: Vector<f32>,   // 有副行就是「有向量」
@@ -303,8 +303,9 @@ pub struct NodeVector {
 写入：数一次调用就要把一个 384 维 1.5 KB、512 维 2 KB 的向量重新编码一遍，而计数根本不可能
 改变它。现在它住在 ns 43，键类型仍是 `EntityKey`——okm 的副表模式，不是行 codec 内的字段级
 抽取。行的写从此完全不碰它，`ExactIndex` 只从那张表重建，于是索引更新保持整体进行：改一个
-字段不必先弄清它喂哪个重量级索引。节点与向量同一个 batch 写入、一起删除；拆分之前的 store
-（布局 v3）是重建而不是读——帧的位置整体挪了一格，容错解码只会静默读出损坏。
+字段不必先弄清它喂哪个重量级索引。节点与向量进同一个 batch，而删除路径（等到有那一天）必须
+成对删——这里没有级联；今天这个 store 里还没有删除节点的路径。拆分之前的 store（布局 v3）是
+重建而不是读——帧的位置整体挪了一格，容错解码只会静默读出损坏。
 
 **节点携带的三个约定 prop（2026-10-23）。** `title`、`content`、`source` 住行的
 **动态段**，不是声明字段：prop 本来就合并进节点，所以没有它们仍是合法节点，

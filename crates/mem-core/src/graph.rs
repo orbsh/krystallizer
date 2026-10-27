@@ -224,8 +224,9 @@ pub struct EntityRow {
 /// The node's vector, out of the entity row (ADR-0019, ns 43).
 ///
 /// Same KEY TYPE as the row it belongs to, which is what makes the side table
-/// cheap: the pair is written in one batch and deleted together, and the key
-/// payload is byte-identical, so no lookup table joins them.
+/// cheap: the key payload is byte-identical, so no lookup table joins them, and
+/// the pair goes into one batch. A delete has to take both — nothing cascades in
+/// this model, and nothing here deletes a node yet.
 ///
 /// Presence is the boolean: no `Option`, no zero-length sentinel. A node
 /// written without an engine attached has no row here, and retrieval skips it

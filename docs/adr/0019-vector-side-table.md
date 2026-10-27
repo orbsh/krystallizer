@@ -72,8 +72,10 @@ required to keep it honest.
   filters, then the vectors are fetched by id. That is the deliberate price of the
   split, and it is the one thing worth watching: a landed set of `k` nodes becomes
   `k` point reads (or one batched multi-get).
-- **Deletion is the caller's**, as everywhere in this model: nothing cascades, so the
-  pair is written together and deleted together.
+- **Deletion is the caller's**, as everywhere in this model: nothing cascades, so
+  whoever deletes a node has to delete its vector in the same breath. Nothing deletes
+  nodes today (a `purge` exists only for the log), so this is the contract a delete
+  path owes, not a path that runs.
 
 ## Why not a `Ref` field
 

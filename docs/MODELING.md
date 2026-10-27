@@ -333,7 +333,7 @@ pub struct EntityRow {
 }
 
 #[derive(DocumentEncode, ...)]
-#[ok_ref(EntityKey)]              // the SAME key type: one batch, one delete
+#[ok_ref(EntityKey)]              // the SAME key type: one batch; a delete takes both
 #[ok_ns(43)]
 pub struct NodeVector {
     pub embedding: Vector<f32>,   // presence IS "has a vector"
@@ -352,9 +352,10 @@ re-encoded a 1.5–2 KB embedding that a count cannot change. It now lives in ns
 keyed by the same `EntityKey` — okm's side-table pattern, not field-level extraction
 inside the row codec. The row's write never touches it, and `ExactIndex` rebuilds
 from that table alone, so an index update stays wholesale: a field change never has
-to work out which heavyweight index it feeds. A node and its vector are written in
-one batch and deleted together; a pre-split store (layout v3) is rebuilt rather than
-read, because the frames shifted by one field.
+to work out which heavyweight index it feeds. A node and its vector go into one
+batch, and a delete path — when one arrives — has to take both, because nothing
+cascades here; today nothing in this store deletes a node. A pre-split store
+(layout v3) is rebuilt rather than read, because the frames shifted by one field.
 
 **Three conventional props a node carries (2026-10-23).** `title`, `content`
 and `source` live in the row's DYNAMIC segment, not as declared fields: props
