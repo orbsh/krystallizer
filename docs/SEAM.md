@@ -138,6 +138,9 @@ Every operation in this table rides a CORE door (§1a); the analysis class
 | `invoke_skill` — the skill row it walks | tool face | `GET /skills/{scope}/{node_id}` | `GraphStore::skill` | landed 2026-10-26 |
 | `invoke_skill` — the step's code row | tool face | `GET /code/{id}` | `CodeStore::get` | landed |
 | `invoke_skill` — the call itself | the step's script on a mount | **not k10r** (see §3) | — | landed 2026-10-26 (gravity `invoke_skill`: one step per call, `ctx.invoke` on the language's mount) |
+| Skill proposal — count a composition a turn walked | gravity turn end (ADR-0016) | `POST /skills/{scope}/propose` | `GraphStore::propose` (kind `skill_proposal`, count as a prop) | landed 2026-10-26; the resolver never sees it — a draft is not a candidate |
+| Skill proposal — the review queue | not gravity's: a HUMAN's door (curl today) | `GET /skills/{scope}/proposals?min_count=N` | `GraphStore::proposals` | landed 2026-10-26; the human-facing verb is still owed (ADR-0016 §Consequences) |
+| Skill promotion — a human declares the skill a proposal suggested | nobody's but a human's | `POST /skills/{scope}/{node_id}/promote` | `GraphStore::promote` (copies `steps` into a real skill, records `promoted_to`) | landed 2026-10-26 |
 | Initialization memory (persona / style) | — the caller performs no operation: it arrives inside the projection | — | assembly is k10r-internal (a traversal from the user node, injected at the head of the context) | Declared (ADR-0001 |
 
 ## 3. What is not a k10r door

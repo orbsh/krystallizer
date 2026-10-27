@@ -21,6 +21,7 @@ use axum::{
 use mem_core::channel::{ChannelStore, MessageKey};
 use mem_core::code::{CodeRow, CodeStore};
 use mem_core::graph::{FactTuple, GraphStore, IngestError, IngestOutcome};
+use mem_core::proposals::ProposalDecl;
 use mem_core::skills::{SkillDecl, SkillRead, DEFAULT_LIMIT};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -251,6 +252,9 @@ fn build(
         // `resolve_skills` answers), read one (what a run walks).
         .route("/skills/{scope}", post(put_skill))
         .route("/skills/{scope}/resolve", post(resolve_skills))
+        .route("/skills/{scope}/propose", post(propose_skill))
+        .route("/skills/{scope}/proposals", get(list_proposals))
+        .route("/skills/{scope}/{node_id}/promote", post(promote_skill))
         .route("/skills/{scope}/{node_id}", get(fetch_skill))
         .route("/memories/{scope}", post(ingest_facts))
         .route("/graph/{scope}/search", post(search_facts))
@@ -803,6 +807,139 @@ struct SkillCandidateDto {
     /// call that would tell it (ADR-0015 §4).
     steps: String,
     score: f32,
+}
+
+/// Request body of `POST /skills/{scope}/propose` (ADR-0016). `key` is the
+/// composition as the WALKER spells it (the code ids in the order they ran):
+/// the store carries `steps` as text and never parses it, so whoever walked the
+/// run is who names it.
+#[derive(Deserialize, Serialize)]
+struct ProposeSkill {
+    key: String,
+    #[serde(default)]
+    steps: String,
+    ts_ms: u64,
+}
+
+/// The answer to "this composition ran": the row, its new count, and whether
+/// this call created it.
+#[derive(Deserialize, Serialize)]
+struct ProposalLandedDto {
+    node_id: u64,
+    count: u64,
+    created: bool,
+}
+
+/// One row of the review queue: what ran, how often, and (empty until a human
+/// acts) what it became.
+#[derive(Deserialize, Serialize)]
+struct ProposalDto {
+    node_id: u64,
+    key: String,
+    steps: String,
+    count: u64,
+    last_seen: u64,
+    promoted_to: String,
+}
+
+/// Request body of `GET /skills/{scope}/proposals`. `min_count` absent means 1
+/// (any composition a human has not looked at yet).
+#[derive(Deserialize)]
+struct ListProposals {
+    #[serde(default)]
+    min_count: Option<u64>,
+}
+
+/// Request body of `POST /skills/{scope}/{node_id}/promote`: the HUMAN's
+/// declaration. The steps are copied from the proposal, never invented here.
+#[derive(Deserialize, Serialize)]
+struct PromoteSkill {
+    name: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    content: String,
+}
+
+/// The promotion's answer: the skill that landed.
+#[derive(Deserialize, Serialize)]
+struct PromotedDto {
+    skill_node_id: u64,
+    name: String,
+    created: bool,
+}
+
+/// `POST /skills/{scope}/propose` — count one walk of one composition
+/// (ADR-0016). Idempotent on `key`: the same run again is the same row with a
+/// higher count, never a second proposal.
+async fn propose_skill(
+    State(state): State<Arc<MemState>>,
+    Path(scope): Path<u64>,
+    Json(body): Json<ProposeSkill>,
+) -> Result<Json<ProposalLandedDto>, FactError> {
+    let mut graph = state.graph.lock().await;
+    let landed = graph
+        .propose(
+            scope,
+            &ProposalDecl {
+                key: body.key,
+                steps: body.steps,
+                ts_ms: body.ts_ms,
+            },
+        )
+        .map_err(FactError::from)?;
+    Ok(Json(ProposalLandedDto {
+        node_id: landed.node_id,
+        count: landed.count,
+        created: landed.created,
+    }))
+}
+
+/// `GET /skills/{scope}/proposals` — the review queue (ADR-0016): most-walked
+/// first, promoted rows filtered out. This is a HUMAN's door: `resolve` keeps
+/// only the `skill` kind, so nothing here is visible to the model until it is
+/// promoted.
+async fn list_proposals(
+    State(state): State<Arc<MemState>>,
+    Path(scope): Path<u64>,
+    Query(params): Query<ListProposals>,
+) -> Result<Json<Vec<ProposalDto>>, FactError> {
+    let mut graph = state.graph.lock().await;
+    let proposals = graph
+        .proposals(scope, params.min_count.unwrap_or(1))
+        .map_err(FactError::from)?;
+    Ok(Json(
+        proposals
+            .into_iter()
+            .map(|proposal| ProposalDto {
+                node_id: proposal.node_id,
+                key: proposal.key,
+                steps: proposal.steps,
+                count: proposal.count,
+                last_seen: proposal.last_seen,
+                promoted_to: proposal.promoted_to,
+            })
+            .collect(),
+    ))
+}
+
+/// `POST /skills/{scope}/{node_id}/promote` — a human declares the skill a
+/// proposal suggested. Never a rename: the proposal keeps its row and records
+/// what it became, which is also what stops it from being promoted twice.
+async fn promote_skill(
+    State(state): State<Arc<MemState>>,
+    Path((scope, node_id)): Path<(u64, u64)>,
+    Json(body): Json<PromoteSkill>,
+) -> Result<Json<PromotedDto>, FactError> {
+    let mut graph = state.graph.lock().await;
+    let promoted = graph
+        .promote(scope, node_id, &body.name, &body.title, &body.content)
+        .map_err(FactError::from)?;
+    Ok(Json(PromotedDto {
+        skill_node_id: promoted.skill_node_id,
+        name: promoted.name,
+        created: promoted.created,
+    }))
 }
 
 /// `POST /skills/{scope}` — declare a skill (idempotent on its name).

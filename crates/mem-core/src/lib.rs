@@ -21,6 +21,7 @@ pub mod embedding;
 pub mod export;
 pub mod graph;
 pub mod log;
+pub mod proposals;
 pub mod render;
 pub mod service;
 pub mod skills;

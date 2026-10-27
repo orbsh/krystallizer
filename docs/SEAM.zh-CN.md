@@ -118,6 +118,9 @@ in-process 不是第二道门：`InProcessSurface` 在调用方进程内链接�
 | `invoke_skill`——它要走的那一行 skill | 工具面 | `GET /skills/{scope}/{node_id}` | `GraphStore::skill` | 2026-10-26 落地 |
 | `invoke_skill`——那一步的 code 行 | 工具面 | `GET /code/{id}` | `CodeStore::get` | 已落 |
 | `invoke_skill`——调用本身 | 一步的脚本在 mount 上跑 | **不走 k10r**（见 §3） | — | 2026-10-26 落地（gravity `invoke_skill`：一次一步，`ctx.invoke` 打到该语言的 mount） |
+| skill 提议——给一次 turn 走出的组合计数 | gravity 收尾时（ADR-0016） | `POST /skills/{scope}/propose` | `GraphStore::propose`（kind `skill_proposal`，计数是一个 prop） | 2026-10-26 落地；解析器永远看不到它——草稿不是候选 |
+| skill 提议——复审队列 | 不是 gravity 的：这是**人**的门（今天用 curl） | `GET /skills/{scope}/proposals?min_count=N` | `GraphStore::proposals` | 2026-10-26 落地；面向人的动词仍欠（ADR-0016 后果段） |
+| skill 晋升——人声明「提议所建议的那个 skill」 | 只有人 | `POST /skills/{scope}/{node_id}/promote` | `GraphStore::promote`（把 `steps` 拷进真 skill，并记录 `promoted_to`） | 2026-10-26 落地 |
 | 初始化记忆（人设 / 风格） | 调用方无操作：它随投影到达 | — | 装配是 k10r 内部细节（从用户节点出发遍历，注入上下文头部） | 已声明（ADR-0001） |
 
 ## 3. 不属于 k10r 门的部分

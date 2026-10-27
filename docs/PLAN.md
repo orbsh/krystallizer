@@ -531,7 +531,21 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   This promotes ONE slice of Phase 5 ahead of Phase 3/4 — the row and its read,
   which the tool list needs; the planner, the topological walk, the weight
   write-back and the dreaming consolidation stay Phase 5, as ADR-0015 §5 says.
-- [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), the SKILL topological walk (ordering, retry, weight write-back — the slice above landed the row and the resolve), Aura Actor nodes. (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.) ADR-0010 takes the incremental LOCAL form of community detection onto the write side and leaves OPEN whether that promotes a slice of Phase 5 ahead of Phase 3/4 — an open ruling, not settled.
+- [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), the SKILL topological walk (ordering, retry, weight write-back — the slice above landed the row and the resolve), Aura Actor nodes.
+
+  PROPOSAL WRITE SIDE LANDED 2026-10-26 (ADR-0016): the loop's other half exists.
+  `POST /skills/{scope}/propose` counts a composition a turn walked (kind
+  `skill_proposal`, in the same scope as the facts, count as a prop),
+  `GET /skills/{scope}/proposals?min_count=N` is the review queue, and
+  `POST /skills/{scope}/{node_id}/promote` is a HUMAN declaring the skill a
+  proposal suggested — the steps are copied, the name is the human's, the row
+  records `promoted_to` and leaves the queue. Nothing promotes itself and the
+  resolver keeps one kind, so a draft is never a candidate. Proven end to end by
+  prism's `tests/turn_invoke_skill.rs`: the turn walked two different code rows,
+  the proposal row appeared with key `<id>+<id>`, count 1, the code rows'
+  descriptions in its steps, and `resolve` still answered only the real skill.
+  STILL OWED on this path: a human-facing verb (the queue is read with curl), and
+  a decay for the count (the weight system's decay is edge-shaped). (mem-server left this list 2026-10-10 — it is the single cross-process form, ADR-0007 as revised.) ADR-0010 takes the incremental LOCAL form of community detection onto the write side and leaves OPEN whether that promotes a slice of Phase 5 ahead of Phase 3/4 — an open ruling, not settled.
 
 ## Repo hygiene (maintenance, not phase work)
 
