@@ -99,7 +99,7 @@ ingest 和每次落点各加一次往返。
   下检索的成本故事；背后没有等着接的近似索引，因为索引形态归 `okm-vector`，
   从不是本仓的 phase。
   **2026-10-19 落地：** `GraphStore::retrieve` + `GET /graph/{scope}/search`——
-  每 scope 的内存表（首次使用时从 KV 载入、每次写入即失效、带字节预算与 LRU 淘汰），
+  每 scope 的内存表（首次使用时从 KV 载入、写向量即失效、带字节预算与 LRU 淘汰），
   对单位长度向量做内积，`LANDING_FLOOR`（0.35）与"合法空落地"——以及读答案
   （`GraphStore::recall`、`GET /memories/{scope}/recall`）：种子、种子着陆到的社区、
   以及这些社区事实的**一种**表示——按事实预算渲染成带 id 的文本，或 `format=struct`

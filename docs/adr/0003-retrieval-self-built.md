@@ -135,8 +135,8 @@ only complex ones (PageRank, community detection) earn a dependency.
   approximate sits behind it waiting, because the index form is `okm-vector`'s
   call and never a phase of this repo.
   **Landed 2026-10-19:** `GraphStore::retrieve` + `GET /graph/{scope}/search`
-  — per-scope in-memory table (loaded from the KV on first use, dropped on
-  every write, byte-budgeted with LRU eviction), inner product over
+  — per-scope in-memory table (loaded from the KV on first use, dropped when
+  the vector table is written, byte-budgeted with LRU eviction), inner product over
   unit-length vectors, `LANDING_FLOOR` (0.35) and a legal empty landing —
   plus the read answer (`GraphStore::recall`, `GET /memories/{scope}/recall`):
   the seeds, the communities they landed in, and ONE representation of those
