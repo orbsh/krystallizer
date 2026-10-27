@@ -73,6 +73,9 @@ use std::sync::Arc;
 /// Entity node collection (ADR-0010 §1's ns 36 — allocated at landing,
 /// next free after the code store's 35).
 pub const ENTITY_NS: u16 = 36;
+/// The node vectors' own table (ADR-0019): same key type, one ns of its own.
+/// 38-42 are spoken for (community seq, read cursor, log, members).
+pub const NODE_VECTOR_NS: u16 = 43;
 /// The facts' edge collection (ns 37, one ns per graph).
 pub const FACT_NS: u16 = 37;
 /// The identity collection's ns — channel members, which are ALSO the graph's
@@ -178,7 +181,7 @@ pub struct EntityKey {
 #[ok_ref(EntityKey)]
 #[ok_ns(36)]
 #[ok_name("entities")]
-#[ok_layout(version = 3)]
+#[ok_layout(version = 4)]
 #[ok_index(
     // Payload fields only: the key tail appends the primary key, so the
     // entries land as `[kind][scope][node_id]`,
@@ -205,11 +208,42 @@ pub struct EntityRow {
     #[ok_default(0)]
     pub community_id: u64,
     pub name: String,
-    /// The node's vector (ADR-0003): the built-in engine's output over the
-    /// entity's name, a cold frame of ANY length, L2-normalized at the
-    /// source so the contract's `cosine` is an inner product. EMPTY is a
-    /// legal row (no engine attached when it was written) and the retrieval
-    /// side skips it — never a zero vector.
+    // Layout v4: the vector is NOT here (ADR-0019). It moved to `NodeVector`
+    // (ns 43) because this row is written WHOLE by every prop merge — the
+    // usage counters included — and re-encoding a 1.5-2 KB embedding that a
+    // count cannot change is the frequent writer paying for the rare field.
+    //
+    // A v3 row cannot be read back by this schema (the payload's frames shifted
+    // by one), so a store from before the split is REBUILT, not migrated in
+    // place. Nothing cascades and the corpus is regenerable: an empty `data/`
+    // is the expected upgrade path. If a store ever must be carried over, the
+    // surface is `scan_documents_raw` plus a legacy struct decoded into the two
+    // tables — not a tolerant decoder, which would read garbage silently.
+}
+
+/// The node's vector, out of the entity row (ADR-0019, ns 43).
+///
+/// Same KEY TYPE as the row it belongs to, which is what makes the side table
+/// cheap: the pair is written in one batch and deleted together, and the key
+/// payload is byte-identical, so no lookup table joins them.
+///
+/// Presence is the boolean: no `Option`, no zero-length sentinel. A node
+/// written without an engine attached has no row here, and retrieval skips it
+/// the same way it used to skip an EMPTY frame.
+///
+/// It declares no face — a vector has no key order. `okm-vector`'s
+/// `ExactIndex` rebuilds from THIS table, so the index's maintenance is its
+/// own: a change in the entity row never has to work out whether it feeds a
+/// heavyweight index.
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(EntityKey)]
+#[ok_ns(43)]
+#[ok_name("node_vectors")]
+pub struct NodeVector {
+    /// The engine's output over the entity's name, a cold frame of ANY length,
+    /// L2-normalized at the source so the contract's `cosine` is an inner
+    /// product. EMPTY is legal (a row written with no engine) and is treated
+    /// as absent, never as a zero vector.
     pub embedding: Vector<f32>,
 }
 
@@ -961,6 +995,10 @@ impl ScopeTables {
 /// same rule flat memory and the code store follow).
 pub struct GraphStore {
     entities: Collection<FjallStore, EntityKey, EntityRow>,
+    /// The vectors (ADR-0019): a side table on the SAME keyspace and the same
+    /// key type, so a node and its vector commit in one batch and no join is
+    /// needed to pair them.
+    vectors: Collection<FjallStore, EntityKey, NodeVector>,
     /// The identity collection (ns 42), on the CHANNEL keyspace — `None` when
     /// the caller attached only the memory side. Reads are point reads across
     /// handles; a fact's batch never spans the two keyspaces (okm's
@@ -1000,6 +1038,7 @@ impl GraphStore {
     /// attach point `crate::service::open_service` uses.
     pub fn wrap(store: FjallStore) -> Result<Self, String> {
         let entities = <EntityRow as Document>::collection(store.clone());
+        let vectors = <NodeVector as Document>::collection(store.clone());
         // Id recovery, both tables: scan the last key in table order.
         // Entity keys are `[scope][node_id]`, so the last key carries the
         // global max node id; the edge primary keys are `[edge_id]` under
@@ -1025,6 +1064,7 @@ impl GraphStore {
             .map_or(1, |id| id.saturating_add(1));
         Ok(Self {
             entities,
+            vectors,
             store,
             next_node,
             next_edge,
@@ -1550,6 +1590,23 @@ impl GraphStore {
         Ok(facts)
     }
 
+    /// One node's vector, or absence (ADR-0019): the side table's presence is
+    /// the boolean, so a node written without an engine answers `None` rather
+    /// than an empty frame.
+    pub fn node_vector(
+        &self,
+        scope: u64,
+        node_id: u64,
+    ) -> Result<Option<Vector<f32>>, IngestError> {
+        let key = EntityKey { scope, node_id };
+        Ok(self
+            .vectors
+            .get(&key)
+            .map_err(|e| IngestError::Storage(e.to_string()))?
+            .map(|row| row.embedding)
+            .filter(|embedding| !embedding.is_empty()))
+    }
+
     /// Every node of one scope, key order — the whole-scope read a bulk
     /// consumer (the visualization door) serves. The scan is bounded by
     /// the primary-key prefix `[scope]`, so no other scope's rows are
@@ -1886,38 +1943,72 @@ impl GraphStore {
         }))
     }
 
-    /// Build (or refresh the LRU position of) one scope's table. Rows written
-    /// without an engine carry an EMPTY frame and are skipped by construction.
+    /// One scope's vectors, read from their own table (ADR-0019): presence is
+    /// the boolean, so a node without a row is a node without a vector — the
+    /// `Option`/sentinel the row used to carry is carried by the table now.
+    fn scope_vectors(&self, scope: u64) -> Result<HashMap<u64, Vector<f32>>, IngestError> {
+        let mut prefix = Vec::with_capacity(3 + 8);
+        prefix.extend_from_slice(<NodeVector as Document>::NS_PREFIX);
+        write_slot(&mut prefix, PRIMARY_SLOT);
+        prefix.extend_from_slice(&scope.to_be_bytes());
+        let suffixes = self
+            .store
+            .scan_suffix(&prefix)
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
+        let mut out = HashMap::with_capacity(suffixes.len());
+        for sfx in &suffixes {
+            let mut full = prefix.clone();
+            full.extend_from_slice(sfx);
+            let key = EntityKey::decode(&full[3..]);
+            match self
+                .vectors
+                .get(&key)
+                .map_err(|e| IngestError::Storage(e.to_string()))?
+            {
+                Some(row) if !row.embedding.is_empty() => {
+                    out.insert(key.node_id, row.embedding);
+                }
+                // A row that vanished between the scan and the read is absence;
+                // an EMPTY one is a node written without an engine (v4 stores
+                // that as no row at all, so this is only older data).
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
+
+    /// Build (or refresh the LRU position of) one scope's table, from the
+    /// vectors' own table (ADR-0019). Nodes without a vector row are skipped by
+    /// construction — absence is the boolean.
     fn load_vector_table(&mut self, scope: u64) -> Result<(), IngestError> {
         if self.tables.contains(scope) {
             self.tables.touch(scope);
             return Ok(());
         }
         let rows = self.scope_entities(scope)?;
-        // One dimension per scope: the first row with an engine-written frame
-        // sets it (an empty frame is a legal vectorless row, and a width that
-        // is not this scope's width cannot be ranked against the query).
-        let dim = rows
-            .iter()
-            .find(|(_, row)| !row.embedding.is_empty())
-            .map_or(0, |(_, row)| row.embedding.len());
+        let vectors = self.scope_vectors(scope)?;
+        // One dimension per scope: the first vector sets it (a row of another
+        // width cannot be ranked against this query, and a node without a
+        // vector cannot be ranked at all).
+        let dim = vectors.values().next().map_or(0, Vector::len);
         let mut index = ExactIndex::new(dim);
         let mut named = HashMap::new();
         let mut bytes = 0usize;
-        if dim > 0 {
-            for (node_id, row) in rows {
-                if row.embedding.len() != dim {
-                    continue;
-                }
-                let name_len = row.name.len();
-                let key = node_id.to_be_bytes().to_vec();
-                index.add(key.clone(), &row.embedding.elems);
-                named.insert(
-                    key,
-                    (row.name, row.kind.as_str().unwrap_or_default().to_string()),
-                );
-                bytes += dim * std::mem::size_of::<f32>() + name_len;
+        for (node_id, row) in rows {
+            let Some(embedding) = vectors.get(&node_id) else {
+                continue;
+            };
+            if embedding.len() != dim {
+                continue;
             }
+            let name_len = row.name.len();
+            let key = node_id.to_be_bytes().to_vec();
+            index.add(key.clone(), &embedding.elems);
+            named.insert(
+                key,
+                (row.name, row.kind.as_str().unwrap_or_default().to_string()),
+            );
+            bytes += dim * std::mem::size_of::<f32>() + name_len;
         }
         self.tables.insert(
             scope,
@@ -2237,11 +2328,25 @@ impl GraphStore {
             literal_num: literal_num(term),
             community_id,
             name: term.value.clone(),
-            embedding,
         };
         let key = EntityKey { scope, node_id };
+        // One batch: the node and its vector land together or not at all
+        // (ADR-0019 — the side table's whole point is that the pair is one
+        // write, not two writes that can be torn apart by a crash).
+        let mut batch = Batch::default();
         self.entities
-            .put(&key, &row)
+            .save_with_prev_into(&mut batch, &key, &row, None)
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
+        // No engine = no vector row at all, rather than an EMPTY frame nothing
+        // reads (presence is the boolean).
+        if !embedding.is_empty() {
+            let vector = NodeVector { embedding };
+            self.vectors
+                .save_with_prev_into(&mut batch, &key, &vector, None)
+                .map_err(|e| IngestError::Storage(e.to_string()))?;
+        }
+        self.store
+            .commit_batch(batch)
             .map_err(|e| IngestError::Storage(e.to_string()))?;
         // The seeded id is durable before anything can read it back: one
         // small row, written through rather than batched.

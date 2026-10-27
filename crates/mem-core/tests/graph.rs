@@ -615,7 +615,8 @@ fn retrieval_without_an_engine_lands_nothing() {
         .unwrap();
     assert!(graph.retrieve(1, "alpha", 5).unwrap().is_empty());
     let (node_id, _) = graph.entity_by_name(1, "alpha").unwrap().unwrap();
-    assert!(graph.entity(1, node_id).unwrap().unwrap().embedding.is_empty());
+    // ADR-0019: vectorless is "no side row", not an empty frame in the row.
+    assert!(graph.node_vector(1, node_id).unwrap().is_none());
 }
 
 /// The read shape (ADR-0010 §5): the query lands, the answer is the landed
@@ -1420,4 +1421,53 @@ fn an_unregistered_user_reference_is_refused_and_creates_nothing() {
         graph.scope_facts(1).unwrap().is_empty(),
         "a refused fact lands nothing"
     );
+}
+
+/// The vector lives in its own table (ADR-0019): a prop merge rewrites the
+/// entity row whole — the usage counters do it on every call — and the vector
+/// must not be part of that payload. So the two tables stay in step, the merge
+/// leaves the vector exactly as it was, and a reopened store still rebuilds
+/// the retrieval table from ns 43.
+#[test]
+fn the_vector_lives_beside_the_row_and_outlives_a_prop_merge() {
+    let Some(engine) = local_embedder() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap().with_embedder(engine);
+    graph
+        .ingest(1, &tuple(r#"["alpha","thing",{},"IS",{},"beta","thing",{}]"#))
+        .unwrap();
+    let (node_id, _) = graph.entity_by_name(1, "alpha").unwrap().unwrap();
+    let before = graph
+        .node_vector(1, node_id)
+        .unwrap()
+        .expect("a node with an engine attached has a vector row");
+    assert!(!before.is_empty());
+
+    // A merge is the write a counter bump uses. It rewrites the entity row and
+    // must not disturb the vector's own row.
+    graph
+        .ingest(
+            1,
+            &tuple(r#"["alpha","thing",{"note":"the first"},"IS",{},"beta","thing",{}]"#),
+        )
+        .unwrap();
+    let after = graph
+        .node_vector(1, node_id)
+        .unwrap()
+        .expect("the merge kept the vector");
+    assert_eq!(after, before, "a prop merge does not rewrite the vector");
+
+    // And the pair survives a reopen: the table is rebuilt from ns 43, not from
+    // anything the process happened to hold.
+    drop(graph);
+    let mut graph = GraphStore::open(dir.path()).unwrap().with_embedder(local_embedder().unwrap());
+    assert_eq!(
+        graph.node_vector(1, node_id).unwrap().as_ref(),
+        Some(&before),
+        "the vector was persisted in its own table"
+    );
+    let landed = graph.retrieve(1, "alpha", 5).unwrap();
+    assert_eq!(landed[0].name, "alpha", "and retrieval rebuilds from it");
 }
