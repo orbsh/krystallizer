@@ -103,12 +103,39 @@ summary.
 
 （服务出去的是单行字符串；上面按本页宽度折行。）
 
+## 2b. 回顾尾提示词（k10r 那一侧）
+
+同一次判词要的第二个操作（ADR-0017 §4、裁决 7）。它从压缩建议的那个切点读起——模型看见
+对话断在哪里的边界——写下这场对话本该记下而没有记下的东西。产物用的是 `commit_memory` 收
+的**同一个**形状，因为它从同一道门落（`POST /memories/{scope}`）：没有第二套 schema、
+没有新门。
+
+```text
+Review the conversation span above and answer ONE JSON object and nothing else.
+
+{"facts": []}
+
+"facts" holds 8-slot tuples [head value, head type, head props, relation name,
+relation props, tail value, tail type, tail props] — the shape commit_memory takes.
+Save what a later turn would otherwise have to rediscover: durable facts about the
+user, their systems, their decisions and their preferences, with names and
+identifiers spelled exactly as they appear. Do not restate the summary, do not
+record what mattered only to this exchange, and do not invent anything that is not
+in the span. An empty array is the right answer when nothing stands out — and is
+cheaper than a bad fact.
+```
+
+散文**不会**被当成事实读：压缩的散文好歹还是一份摘要，而事实列表没有一个可用的散文版本，
+猜它的意思就等于把编出来的事实放进图里。（提示词本身只有英文一份：它是发给模型的服务端
+字符串，与 `TAIL_PROMPT` 同样处理。）
+
 ## 3. 这些块部署在哪
 
 | 块 | 归属 | 跑在哪 | 接线状态 |
 |---|---|---|---|
 | §1 工具定义 | gravity（调用方） | 插进轮内的 system prompt，与固定工具清单并列 | 未接线（工具清单本身还在 Phase 0：纯聊天、无工具） |
 | §2 压缩尾提示词 | k10r（随判词下发） | 调用方把它接在那段记录后面，作为与用户那一轮并行的分支轮跑 | 两侧都已落：k10r 的 `tails` 与 gravity 的分支轮（`compress` 一道）；切点随 checkpoint 落下 |
+| §2b 回顾尾提示词 | k10r（同一次判词下发） | 调用方作为第二条分支轮跑，范围从建议切点到最新记录 | 两侧都已落：`TAIL_OPS` 里的 `review`（`Stage::Optional`）与 gravity 的落地臂（POST 到记忆门） |
 
 ## 4. 来源与待核实清单
 

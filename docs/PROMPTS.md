@@ -124,12 +124,41 @@ summary.
 
 The wrapping above is this page's; the served string is one line.
 
+## 2b. Review tail prompt (k10r's side)
+
+The second operation the same verdict asks for (ADR-0017 §4, decision 7). It reads
+the span from the cut compression suggested — the boundary a model saw the
+conversation break at — and writes what the conversation should have written down
+and did not. Its product carries the SAME shape `commit_memory` takes, because it
+lands through the same door (`POST /memories/{scope}`): no second schema, no new
+gate.
+
+```text
+Review the conversation span above and answer ONE JSON object and nothing else.
+
+{"facts": []}
+
+"facts" holds 8-slot tuples [head value, head type, head props, relation name,
+relation props, tail value, tail type, tail props] — the shape commit_memory takes.
+Save what a later turn would otherwise have to rediscover: durable facts about the
+user, their systems, their decisions and their preferences, with names and
+identifiers spelled exactly as they appear. Do not restate the summary, do not
+record what mattered only to this exchange, and do not invent anything that is not
+in the span. An empty array is the right answer when nothing stands out — and is
+cheaper than a bad fact.
+```
+
+Prose is NOT read as facts: unlike a compression, whose prose still summarizes,
+there is no usable version of a fact list, and guessing what prose meant would put
+invented facts in the graph.
+
 ## 3. Where the blocks are deployed
 
 | Block | Owner | Where it runs | Wiring status |
 |---|---|---|---|
 | §1 tool definition | gravity (the caller) | inserted into the turn's system prompt alongside the fixed tool list | not wired (the tool list itself is still Phase 0: plain chat, no tools) |
 | §2 compression tail prompt | k10r (served with the verdict) | the caller appends it to the span's records and runs that as a branch turn beside the user's turn | landed on BOTH sides: k10r's `tails` and gravity's branch turn for `compress`; the cut lands with the checkpoint |
+| §2b review tail prompt | k10r (served with the same verdict) | the caller runs it as a second branch turn, from the suggested cut to the newest record | landed on BOTH sides: `review` in `TAIL_OPS` (`Stage::Optional`) and gravity's landing arm posting to the memory door |
 
 ## 4. Provenance and the to-verify list
 

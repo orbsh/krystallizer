@@ -122,11 +122,42 @@ contract.
 exports it yet — storing it is enough for the set to exist, and a sampler that
 runs before the data is collected has nothing to sample.
 
+**7. The first review operation writes FACTS, not skills.**
+
+`review` reads its span and answers `{"facts": […8-slot tuples…]}` — the same
+shape `commit_memory` takes — and lands through the same door
+(`POST /memories/{scope}`). No second schema, no new gate, no new verb.
+
+Three candidates were considered and two rejected:
+
+- **A skill proposal.** The queue keys on `code_id`s (ADR-0016), and the review reads
+  the conversation, not the walk: the records say what was said, not which code rows
+  ran. Filing a proposal would mean guessing keys the reviewer cannot see.
+- **A skill directly.** A skill is a procedure that RAN; a background pass reading
+  text can only guess at one, and writing it would route around the human-promoted
+  queue that keeps the corpus curated (§6 of ADR-0016, and the reason the model's own
+  `create_skill` is an in-turn decision about work it just did).
+- **A fact array.** What the conversation should have written down and did not: the
+  reviewer sees exactly that, the door exists, and the write is the same act
+  `commit_memory` performs, only later and without a user in the loop.
+
+The asymmetry with compression is deliberate: a compression that answers in prose is
+still a summary (decision 5), while a review that answers in prose writes NOTHING —
+there is no usable version of a fact list, and guessing what prose meant would put
+invented facts in the graph.
+
 ## Consequences
 
 - **Two operations can now be added without touching the wire**, in either
   direction: a table entry here, a landing arm there. What an operation still
   owes is its own cursor and its own door.
+- **A compression now costs two branch calls, not one.** The review rides the same
+  read, so every firing verdict opens two provider branches. That is the price of
+  reviewing what was just summarized; a cost that should stay invisible is a cost
+  nobody tunes.
+- **A review can only name what the records show.** It writes facts, not skills and
+  not compositions — see decision 7 for why the other two cannot be observed from a
+  transcript.
 - **The stage decides the range, not the trigger.** A second operation added today
   fires on the compression read, which may be the wrong moment for what it looks
   for; that is a trade the table makes cheap to revisit, not a claim that the
@@ -136,10 +167,10 @@ runs before the data is collected has nothing to sample.
   whole second pass over the same span.
 - **The suggestion is inert until someone reads it.** No ranking, no retrieval, no
   path-building consults it; it is a label on a node.
-- **Open:** the analysis cursor's home (a checkpoint field, a cursor row per
-  member, or a row per operation) is undecided — it lands with the review pass,
-  which is also when "what a review pass produces" stops being hypothetical. And
-  the count/decay question opened by ADR-0016 is untouched here.
+- **Settled:** the analysis cursor IS the checkpoint row's `suggested_*` — the cut
+  decision 2 already stores — so no separate ns, no per-member row and no per-op row
+  was needed; `Stage::Optional` reads it. The count/decay question opened by ADR-0016
+  is untouched here.
 
 ## Related records
 

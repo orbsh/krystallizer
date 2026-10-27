@@ -576,9 +576,14 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   compression named a better cut. An operation whose span does not advance is not
   asked for, so the projection needs no second empty-span rule. Gates: mem-core
   compress 13/0 (four new span cases: the compression's span, a review from the
-  suggested cut, the fallback, and nothing-to-read), workspace 184/0. Still owed:
-  the first second-stage OPERATION (its product needs a door — nothing lands a
-  review today) and, if wanted, a trigger that is not the compression read.
+  suggested cut, the fallback, and nothing-to-read), workspace 184/0.
+  Then the first second-stage OPERATION landed (ADR-0017 §7): `review`, whose product
+  is a fact array in `commit_memory`'s shape and lands through the same memory door —
+  no second schema, no new gate; it deliberately writes no skills (a skill is a
+  procedure that RAN, and a reviewer reads a transcript). The asymmetry is kept:
+  prose from compression is still a summary, prose from a review writes nothing.
+  Still owed: a trigger that is not the compression read, and a second review whose
+  product has a door of its own.
   PROPOSAL WRITE SIDE LANDED 2026-10-26 (ADR-0016, amended the same day): the loop's
   review half exists. `POST /skills/{scope}/propose` counts a composition a WALK
   reached (kind `skill_proposal`, in the same scope as the facts, count as a prop);
