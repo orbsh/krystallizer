@@ -22,7 +22,9 @@ use mem_core::channel::{ChannelStore, MessageKey};
 use mem_core::code::{CodeRow, CodeStore};
 use mem_core::graph::{FactTuple, GraphStore, IngestError, IngestOutcome};
 use mem_core::proposals::ProposalDecl;
-use mem_core::skills::{SkillDecl, SkillRead, DEFAULT_LIMIT};
+use mem_core::skills::{
+    SkillDecl, SkillRead, SkillTouchOutcome, TouchPhase, DEFAULT_LIMIT,
+};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -255,6 +257,7 @@ fn build(
         .route("/skills/{scope}/propose", post(propose_skill))
         .route("/skills/{scope}/proposals", get(list_proposals))
         .route("/skills/{scope}/{node_id}/promote", post(promote_skill))
+        .route("/skills/{scope}/{node_id}/touch", post(touch_skill))
         .route("/skills/{scope}/{node_id}", get(fetch_skill))
         .route("/memories/{scope}", post(ingest_facts))
         .route("/graph/{scope}/search", post(search_facts))
@@ -907,6 +910,68 @@ struct ProposalDto {
     count: u64,
     last_seen: u64,
     promoted_to: String,
+}
+
+/// Request body of `POST /skills/{scope}/{node_id}/touch` (ADR-0018): which
+/// record of an invocation this is, and the caller's clock.
+///
+/// `attempt` is what a caller sends BEFORE the call — it does not know yet
+/// whether it will succeed, and a call that never comes back must still be
+/// visible. `success` is the second record, after the answer. The store derives
+/// nothing: the counters are `calls` and `ok`, and their difference is failures.
+#[derive(Deserialize, Serialize)]
+pub struct TouchSkillBody {
+    pub event: String,
+    pub ts_ms: u64,
+}
+
+/// `POST /skills/{scope}/{node_id}/touch` — count one record of an invocation.
+///
+/// Best effort by CONTRACT, not by accident: the caller fires it beside the call
+/// it is counting, and an answer here is a receipt, never a precondition. 404 for
+/// an unknown id and 400 for a node that is not a skill, because a caller's wrong
+/// id and a wrong kind are different mistakes.
+async fn touch_skill(
+    State(state): State<Arc<MemState>>,
+    Path((scope, node_id)): Path<(u64, u64)>,
+    Json(body): Json<TouchSkillBody>,
+) -> Result<Json<SkillTouchDto>, FactError> {
+    let Some(phase) = TouchPhase::parse(&body.event) else {
+        return Err(FactError {
+            error: format!(
+                "unknown event `{}` — expected `attempt` (before the call) or `success` (after it)",
+                body.event
+            ),
+            status: StatusCode::BAD_REQUEST,
+        });
+    };
+    let mut store = state.graph.lock().await;
+    match store
+        .touch_skill(scope, node_id, phase, body.ts_ms)
+        .map_err(FactError::from)?
+    {
+        SkillTouchOutcome::Counted(touched) => Ok(Json(SkillTouchDto {
+            node_id: touched.node_id,
+            calls: touched.calls,
+            ok: touched.ok,
+        })),
+        SkillTouchOutcome::Absent => Err(FactError {
+            error: format!("no node {node_id} in scope {scope}"),
+            status: StatusCode::NOT_FOUND,
+        }),
+        SkillTouchOutcome::NotASkill { kind } => Err(FactError {
+            error: format!("node {node_id} is a `{kind}`, not a skill"),
+            status: StatusCode::BAD_REQUEST,
+        }),
+    }
+}
+
+/// What a touch answers: the counters as stored.
+#[derive(Serialize, Deserialize)]
+pub struct SkillTouchDto {
+    pub node_id: u64,
+    pub calls: u64,
+    pub ok: u64,
 }
 
 /// Request body of `GET /skills/{scope}/proposals`. `min_count` absent means 1

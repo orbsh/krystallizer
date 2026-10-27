@@ -1726,7 +1726,11 @@ impl GraphStore {
         if let Some(now) = ts_ms {
             for slice in &mut slices {
                 for view in &mut slice.facts {
-                    if let Some(served) = self.bump_view(view.edge_id, Touch::Read, now)? {
+                    // A counter that cannot be written is not a reason to fail
+                    // a read: the count is a by-product of serving, not part of
+                    // the answer (ADR-0018). The view below is still the one
+                    // built from the row as it was.
+                    if let Ok(Some(served)) = self.bump_view(view.edge_id, Touch::Read, now) {
                         *view = served;
                     }
                 }
@@ -1778,8 +1782,14 @@ impl GraphStore {
                 if !seen.insert(edge_id) {
                     continue;
                 }
+                // Same rule as the community path: counting is a by-product of
+                // serving, so a failed count answers the fact as it stands
+                // rather than failing the read (ADR-0018).
                 let view = match ts_ms {
-                    Some(now) => self.bump_view(edge_id, Touch::Read, now)?,
+                    Some(now) => match self.bump_view(edge_id, Touch::Read, now) {
+                        Ok(served) => served,
+                        Err(_) => self.fact_view(edge_id)?,
+                    },
                     None => self.fact_view(edge_id)?,
                 };
                 if let Some(view) = view {
@@ -2249,8 +2259,9 @@ impl GraphStore {
         Ok(Endpoint::Entity(node_id))
     }
 
-    /// Merge props into an existing node's dynamic segment.
-    fn merge_props(
+    /// Merge props into an existing node's dynamic segment — the write a
+    /// counter bump uses: no re-embed, no row rewrite, just the segment.
+    pub(crate) fn merge_props(
         &mut self,
         scope: u64,
         node_id: u64,

@@ -209,3 +209,118 @@ async fn the_resolver_answers_skills_and_only_skills() {
         .unwrap();
     assert!(empty.is_empty(), "scope 2 has declared nothing: {empty:?}");
 }
+
+/// Counting an invocation over the wire (ADR-0018): two records per call
+/// (`attempt` before, `success` after), the counters read back, and the two
+/// refusals — an unknown event and an id that is not a skill's.
+#[tokio::test]
+async fn the_touch_door_counts_an_invocation_and_keeps_its_refusals() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    let landed: Value = client
+        .post(format!("{base}/skills/1"))
+        .json(&json!({
+            "name": "github-issues",
+            "title": "list issues",
+            "content": "List the open issues of a repository.",
+            "steps": r#"[{"code_id": 1, "note": "list"}]"#,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let node_id = landed["node_id"].as_u64().unwrap();
+
+    let attempt: Value = client
+        .post(format!("{base}/skills/1/{node_id}/touch"))
+        .json(&json!({ "event": "attempt", "ts_ms": 1_000 }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!((attempt["calls"].as_u64(), attempt["ok"].as_u64()), (Some(1), Some(0)));
+
+    let success: Value = client
+        .post(format!("{base}/skills/1/{node_id}/touch"))
+        .json(&json!({ "event": "success", "ts_ms": 1_200 }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        (success["calls"].as_u64(), success["ok"].as_u64()),
+        (Some(1), Some(1)),
+        "one call, one success — the counters are records, not guesses"
+    );
+
+    // An event the store does not know is a refused body: the counter it would
+    // otherwise move is not something a caller gets to invent.
+    let unknown = client
+        .post(format!("{base}/skills/1/{node_id}/touch"))
+        .json(&json!({ "event": "maybe", "ts_ms": 1 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    // An unknown id is absent (404), and a node that is not a skill is a
+    // different mistake (400) — the same split the read door keeps.
+    let absent = client
+        .post(format!("{base}/skills/1/9999/touch"))
+        .json(&json!({ "event": "attempt", "ts_ms": 1 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(absent.status(), reqwest::StatusCode::NOT_FOUND);
+
+    client
+        .post(format!("{base}/memories/1"))
+        .json(&json!([[
+            "acme",
+            "repository",
+            {},
+            "OWNS",
+            {},
+            "issues-api",
+            "repository",
+            {}
+        ]]))
+        .send()
+        .await
+        .unwrap();
+    let graph: Value = client
+        .get(format!("{base}/graph/1"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let acme = graph["nodes"]
+        .as_array()
+        .and_then(|nodes| {
+            nodes
+                .iter()
+                .find(|node| node["name"] == "acme")
+                .and_then(|node| node["id"].as_u64())
+        })
+        .expect("the fact created the acme node");
+    let wrong_kind = client
+        .post(format!("{base}/skills/1/{acme}/touch"))
+        .json(&json!({ "event": "attempt", "ts_ms": 1 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        wrong_kind.status(),
+        reqwest::StatusCode::BAD_REQUEST,
+        "a repository is not a skill"
+    );
+}

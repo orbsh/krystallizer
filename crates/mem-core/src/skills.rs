@@ -34,6 +34,52 @@ pub const STEPS_FIELD: &str = "steps";
 /// What to check after a step — JSON array of strings.
 pub const VERIFICATION_FIELD: &str = "verification";
 
+/// How often this skill was STARTED (`invoke_calls`) and how often it finished
+/// (`invoke_ok`). Usage telemetry on the node, not the weight system's counters,
+/// which ride EDGE rows and rank retrieval (ADR-0005/ADR-0018). A failed attempt
+/// still counts as a call: "tried and broke" is the state a reader is looking for.
+pub const CALLS_FIELD: &str = "invoke_calls";
+pub const OK_FIELD: &str = "invoke_ok";
+/// The caller's clock at the last count, so "hot" and "abandoned" differ.
+pub const LAST_INVOKED_FIELD: &str = "last_invoked";
+
+/// Which record of an invocation this is. Two events, because a caller records
+/// the attempt BEFORE it knows the outcome: the store never has to infer one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TouchPhase {
+    /// The call was dispatched, outcome unknown.
+    Attempt,
+    /// The call finished; the answer came back.
+    Success,
+}
+
+impl TouchPhase {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "attempt" => Some(Self::Attempt),
+            "success" => Some(Self::Success),
+            _ => None,
+        }
+    }
+}
+
+/// The counters after one record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SkillTouch {
+    pub node_id: u64,
+    pub calls: u64,
+    pub ok: u64,
+}
+
+/// Recording an invocation: three outcomes, because the door reports them as
+/// three (absent → 404, another kind → 400, counted → the counters).
+#[derive(Clone, Debug, PartialEq)]
+pub enum SkillTouchOutcome {
+    Counted(SkillTouch),
+    Absent,
+    NotASkill { kind: String },
+}
+
 /// A resolver's answer without a query: `limit` is what the door applies when
 /// the caller names none, and `MAX_LIMIT` is where a caller stops being
 /// answered a list and starts being answered a dump.
@@ -171,6 +217,47 @@ impl GraphStore {
         Ok(SkillRead::Found(Box::new(Skill::from_row(
             node_id, row.name, props,
         ))))
+    }
+
+    /// Count one record of an invocation (ADR-0018): `Attempt` when the caller
+    /// dispatches, `Success` when the answer came back. A failed call therefore
+    /// leaves `calls > ok`, which is the whole point of recording the attempt
+    /// first — the store never has to guess an outcome.
+    ///
+    /// The counters are PROPS on the node rather than a new column: they are
+    /// application telemetry, they arrive one at a time, and `merge` writes the
+    /// segment without touching the row (no re-embed, no re-label).
+    pub fn touch_skill(
+        &mut self,
+        scope: u64,
+        node_id: u64,
+        phase: TouchPhase,
+        now: u64,
+    ) -> Result<SkillTouchOutcome, IngestError> {
+        let Some(row) = self.entity(scope, node_id)? else {
+            return Ok(SkillTouchOutcome::Absent);
+        };
+        let kind = row.kind.as_str().unwrap_or_default().to_string();
+        if kind != SKILL_KIND {
+            return Ok(SkillTouchOutcome::NotASkill { kind });
+        }
+        let props = self.entity_props(scope, node_id)?.unwrap_or_default();
+        let count = |field: &str| match props.get(field) {
+            Some(DynamicValue::UInt(value)) => *value,
+            _ => 0,
+        };
+        let calls = count(CALLS_FIELD) + u64::from(phase == TouchPhase::Attempt);
+        let ok = count(OK_FIELD) + u64::from(phase == TouchPhase::Success);
+        let mut write: BTreeMap<String, DynamicValue> = BTreeMap::new();
+        write.insert(CALLS_FIELD.to_string(), DynamicValue::UInt(calls));
+        write.insert(OK_FIELD.to_string(), DynamicValue::UInt(ok));
+        write.insert(LAST_INVOKED_FIELD.to_string(), DynamicValue::UInt(now));
+        self.merge_props(scope, node_id, &write)?;
+        Ok(SkillTouchOutcome::Counted(SkillTouch {
+            node_id,
+            calls,
+            ok,
+        }))
     }
 
     /// The selectable list (ADR-0015 §4): retrieval over the skill kind, and —

@@ -12,7 +12,8 @@
 
 use mem_core::graph::{FactTuple, GraphStore};
 use mem_core::skills::{
-    SkillDecl, SkillRead, DEFAULT_LIMIT, MAX_LIMIT, PRECONDITIONS_FIELD, SKILL_KIND, STEPS_FIELD,
+    SkillDecl, SkillRead, SkillTouchOutcome, TouchPhase, CALLS_FIELD, DEFAULT_LIMIT, MAX_LIMIT,
+    OK_FIELD, PRECONDITIONS_FIELD, SKILL_KIND, STEPS_FIELD,
 };
 
 fn decl(name: &str, content: &str) -> SkillDecl {
@@ -212,4 +213,79 @@ fn experience_is_an_ordinary_fact_about_the_skill() {
     assert!(props.contains_key(PRECONDITIONS_FIELD));
     let row = graph.entity(1, landed.node_id).unwrap().unwrap();
     assert_eq!(row.kind.as_str(), Some(SKILL_KIND));
+}
+
+/// Counting an invocation (ADR-0018): the attempt is recorded BEFORE the outcome
+/// is known, so a call that never comes back is still visible; the success is a
+/// second record. `calls - ok` is therefore the failure count, and nothing here
+/// has to guess an outcome.
+#[test]
+fn an_invocation_counts_its_attempt_and_its_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap();
+    let landed = graph.put_skill(1, &decl("github-issues", "list issues")).unwrap();
+
+    let touched = graph
+        .touch_skill(1, landed.node_id, TouchPhase::Attempt, 1_000)
+        .unwrap();
+    let SkillTouchOutcome::Counted(touched) = touched else {
+        panic!("a declared skill counts: {touched:?}");
+    };
+    assert_eq!((touched.calls, touched.ok), (1, 0), "dispatched, outcome unknown");
+
+    let touched = graph
+        .touch_skill(1, landed.node_id, TouchPhase::Success, 1_200)
+        .unwrap();
+    let SkillTouchOutcome::Counted(touched) = touched else {
+        panic!("the success counts too: {touched:?}");
+    };
+    assert_eq!((touched.calls, touched.ok), (1, 1), "one call, one success");
+
+    // A second attempt that never succeeds leaves the gap visible.
+    graph
+        .touch_skill(1, landed.node_id, TouchPhase::Attempt, 2_000)
+        .unwrap();
+    let props = graph.entity_props(1, landed.node_id).unwrap().unwrap();
+    assert!(props.contains_key(CALLS_FIELD), "the counters are props");
+    assert!(props.contains_key(OK_FIELD));
+
+    // The counters did not cost the node its declaration: `merge` writes the
+    // segment and leaves the row alone.
+    match graph.skill(1, landed.node_id).unwrap() {
+        SkillRead::Found(skill) => {
+            assert_eq!(skill.name, "github-issues");
+            assert_eq!(skill.content, "list issues");
+            assert_eq!(skill.steps, decl("x", "y").steps, "the steps survive the counting");
+        }
+        other => panic!("the skill still reads back: {other:?}"),
+    }
+    let row = graph.entity(1, landed.node_id).unwrap().unwrap();
+    assert_eq!(row.kind.as_str(), Some(SKILL_KIND), "and it is still a skill");
+}
+
+/// Only a skill counts: a fact node in the same space is told apart from an
+/// absent id, because a caller's wrong kind and a wrong id are different bugs.
+#[test]
+fn only_skills_carry_invocation_counters() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap();
+    graph
+        .ingest(
+            1,
+            &FactTuple::from_json(
+                r#"["acme","repository",{},"OWNS",{},"issues-api","repository",{}]"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let (node, _) = graph.entity_by_name(1, "acme").unwrap().unwrap();
+
+    match graph.touch_skill(1, node, TouchPhase::Attempt, 1).unwrap() {
+        SkillTouchOutcome::NotASkill { kind } => assert_eq!(kind, "repository"),
+        other => panic!("a person does not count invocations: {other:?}"),
+    }
+    match graph.touch_skill(1, 9_999, TouchPhase::Attempt, 1).unwrap() {
+        SkillTouchOutcome::Absent => {}
+        other => panic!("an unknown id is absent: {other:?}"),
+    }
 }
