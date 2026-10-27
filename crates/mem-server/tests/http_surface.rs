@@ -219,9 +219,14 @@ async fn member_checkpoints_are_independent() {
         .json()
         .await
         .unwrap();
+    // The verdict asks for BOTH operations (ADR-0017 §4): the compression that
+    // covers the span, and the review that reads it from the cut a model saw the
+    // conversation break at.
     assert_eq!(
-        read["tails"].as_array().map(Vec::len),
-        Some(1),
+        read["tails"]
+            .as_array()
+            .map(|tails| tails.iter().filter_map(|t| t["name"].as_str()).collect::<Vec<_>>()),
+        Some(vec!["compress", "review"]),
         "member 1 has a verdict"
     );
     let status = client

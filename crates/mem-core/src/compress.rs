@@ -250,10 +250,34 @@ pub const COMPRESS_OP: TailOp = TailOp {
     stage: Stage::Mandatory,
 };
 
-/// Every operation the store may ask for. One today: a review operation joins the
-/// table once its product has a door to land in (ADR-0020 — the table is the
-/// extensible half, the landing arm belongs to each operation).
-pub const TAIL_OPS: &[TailOp] = &[COMPRESS_OP];
+/// The review pass's prompt. `docs/PROMPTS.md` §2b is its documented home; this
+/// copy is the one the door serves, so the two are kept word-identical.
+pub const REVIEW_PROMPT: &str = "Review the conversation span above and answer ONE JSON object and nothing else.\n\n\
+{\"facts\": []}\n\n\
+\"facts\" holds 8-slot tuples [head value, head type, head props, relation name, relation props, \
+tail value, tail type, tail props] — the shape commit_memory takes. Save what a later turn would \
+otherwise have to rediscover: durable facts about the user, their systems, their decisions and \
+their preferences, with names and identifiers spelled exactly as they appear. Do not restate the \
+summary, do not record what mattered only to this exchange, and do not invent anything that is \
+not in the span. An empty array is the right answer when nothing stands out — and is cheaper \
+than a bad fact.";
+
+/// The review pass: what the conversation should have written down and did not.
+///
+/// Its product is a fact array in the shape `commit_memory` already takes, so it
+/// lands through the door that tool uses — no second schema, and no new gate. It
+/// deliberately does NOT create skills: what the model let pass belongs in the
+/// review queue a human promotes (ADR-0016 §6), and an operation that wrote
+/// skills directly would make that queue pointless.
+pub const REVIEW_OP: TailOp = TailOp {
+    name: "review",
+    prompt: REVIEW_PROMPT,
+    stage: Stage::Optional,
+};
+
+/// Every operation the store may ask for: compression (mandatory, its own cursor)
+/// and the review (optional, reads from the cut compression suggested).
+pub const TAIL_OPS: &[TailOp] = &[COMPRESS_OP, REVIEW_OP];
 
 /// The range one operation reads on this read (ADR-0020).
 ///
