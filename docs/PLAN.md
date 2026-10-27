@@ -556,13 +556,14 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   (its turn-end filing is now redundant as the only writer) and any decay for these
   totals — the weight system's decay is edge-shaped.
 
-- [ ] VECTOR SIDE TABLE (ADR-0019, accepted 2026-10-26, NOT implemented): the node's
-  embedding leaves `EntityRow` for its own ns (43, keyed by `EntityKey`), because a
-  prop write is a whole-document write and counting an invocation was re-encoding a
-  1.5-2 KB vector it cannot change. Not a new mechanism — okm's side-table pattern;
-  `#[ok_offrow]` stays rejected. To do: drop the field, write vectors beside the row in
-  one batch, fetch them by id after landing, rebuild `ExactIndex` from ns 43, and
-  migrate (or rebuild) existing stores. The vector's indexes become independent, so no
+- [x] VECTOR SIDE TABLE LANDED 2026-10-26 (ADR-0019): the node's embedding left
+  `EntityRow` for ns 43 (`NodeVector`, keyed by the same `EntityKey`), because a prop
+  write is a whole-document write and counting an invocation was re-encoding a 1.5-2 KB
+  vector it cannot change. Not a new mechanism — okm's side-table pattern; `#[ok_offrow]`
+  stays rejected. Landed: field dropped (row layout v4), row + vector written in ONE
+  batch, `node_vector()` answers presence, `ExactIndex` rebuilds from ns 43's scan.
+  A pre-split store is rebuilt rather than migrated (the frames shifted by one field;
+  no tolerant decoder, by design). The vector's indexes are now independent, so no
   field-level index surgery is needed.
 
 - [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), the SKILL topological walk (ordering, retry, weight write-back — the slice above landed the row and the resolve), Aura Actor nodes.

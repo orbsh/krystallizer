@@ -2,8 +2,8 @@
 
 > **Languages:** [English](0019-vector-side-table.md) (primary) · [中文](0019-vector-side-table.zh-CN.md)
 
-**Status:** Accepted (2026-10-26). **Not yet implemented** — the row still carries
-`embedding: Vector<f32>`; the list of what changes is at the end.
+**Status:** Accepted and LANDED (2026-10-26) — `EntityRow` carries no vector, the
+side table is `NodeVector` (ns 43), and the pair commits in one batch.
 **Date:** 2026-10-26
 
 ## Context
@@ -75,6 +75,38 @@ required to keep it honest.
 - **Deletion is the caller's**, as everywhere in this model: nothing cascades, so the
   pair is written together and deleted together.
 
+## Why not a `Ref` field
+
+The side table is keyed by the entity's key; there is no field-level reference between
+the two tables. The other shape that looks natural is an entity row carrying
+`Ref<NodeVector, EntityKey>`; four costs reject it.
+
+- **Read amplification comes back.** `Collection::get` dereferences, so every read of an
+  entity row also point-reads ns 43 — 2 KB per read, growing with the model's width.
+  Half the point of the split is that a read which does not need the vector does not
+  pay for it (a skill read, a name lookup, a viz card); with a `Ref` it always does.
+- **`Ref::own` gives the write coupling back.** The parent's `put` writes the child, so
+  a counter bump re-writes the vector — exactly what this ADR removes. `Ref::ref_key`
+  stores the key alone and touches nothing, but the row then carries an extra
+  hot-segment field, and a key change still triggers a release.
+- **There is no cascade delete, and what does exist points the wrong way.** `purge`
+  deletes the primary entry, the faces and the reduce ledgers; it never touches the
+  child. Delete the row and the side row stays behind as an orphan — which the ns 43
+  rebuild then indexes, landing on ids that no longer exist, so "presence is the side
+  row" fails on the spot. The release that does exist (a changed key deletes the old
+  child) runs the opposite direction from "delete the parent, delete the child".
+- **That release does not distinguish sharing.** The derive pushes a key for both the
+  `own` and the `ref_key` form, so a parent that overwrites and drops a key deletes a
+  child another parent still references (it reads back as `None`). okm MODELING says a
+  shared child survives; the code does not back that sentence.
+
+One criterion decides it: `Ref` says "the child belongs to the parent" — identity,
+lifetime and dereference bound together; a side table says "two parts of one identity,
+each with its own writer". The vector's key IS the entity key; it needs no second
+identity, and the two things it does need — write isolation and read-on-demand — are
+precisely what `Ref`'s two semantics break. Neither existence nor deletion has a
+foreign key behind it: the caller writes the pair together and deletes it together.
+
 ## Consequences
 
 - **A count costs a small row write.** ADR-0018's counters become cheap to bump for
@@ -82,24 +114,30 @@ required to keep it honest.
 - **A re-embedding pass writes one table.** Changing the model's width touches ns 43
   only, not every entity row.
 - **"Derived data stays off the graph" becomes "beside the graph, in its own table".**
-  okm's MODELING gains the write-frequency asymmetry as a second split trigger
-  alongside "large AND accessed on its own": a large column that shares a row with a
-  frequent small writer is split even though every read wants both.
-- **Not implemented yet.** `/graph/{scope}` currently reads the vector off the row;
-  the retrieval path, the embedding write, and the existing stores' migration have to
-  follow. Until they do, this record describes the target, and the code is one
-  ADR behind — recorded rather than silent.
+  The split has a second trigger, recorded here: **write-frequency asymmetry** — a
+  large column that shares a row with a frequent small writer is split even though
+  every read wants both. It sits alongside "large AND accessed on its own"; neither
+  replaces the other.
+- **A pre-split store is rebuilt, not migrated.** The row's layout went to v4 and
+  `embedding` left the middle of the payload, so a v3 row decodes as garbage under
+  the new schema; there is no tolerant decoder, by design — a decoder that shrugs at
+  a shifted layout reads corruption silently. `data/` was empty when this landed, so
+  the upgrade path is a fresh directory. If a store ever has to be carried over, the
+  surface is `scan_documents_raw` plus a legacy struct decoded into the two tables.
 
-## What implementation must touch
+## What landed
 
-1. `EntityRow` loses `embedding`; `NodeVector` is declared at ns 43 with `EntityKey`.
-2. Every write of a vector becomes a side-table put, committed in the same batch as
-   the row (okm ADR-0003: one WriteBatch = one transaction).
-3. `retrieve` (and the resolver that rides it) fetches vectors by id after landing.
-4. `ExactIndex` is built from ns 43.
-5. An existing store's rows keep their vectors in the old frame until a one-shot
-   migration rewrite; until then both shapes must be readable, or the store is
-   rebuilt (acceptable now: the corpus is small and regenerable).
+1. `EntityRow` lost `embedding` (layout v4); `NodeVector { embedding }` is declared at
+   ns 43 with `#[ok_ref(EntityKey)]` and no face.
+2. A new node's row and vector are written into ONE batch (`save_with_prev_into` for
+   both, one `commit_batch`), so the pair cannot be torn apart by a crash. No engine =
+   no side row at all, rather than an EMPTY frame nothing reads.
+3. `GraphStore::node_vector(scope, node_id)` answers `Option<Vector<f32>>`: presence is
+   the boolean.
+4. `load_vector_table` reads `scope_vectors` (one scan of ns 43) and joins it to the
+   entity rows it already scanned; `ExactIndex` is therefore built from this table.
+5. Tested: a prop merge leaves the vector byte-identical, the pair survives a reopen,
+   and retrieval rebuilds from ns 43 (`mem-core/tests/graph.rs`).
 
 ## Related records
 

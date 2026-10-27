@@ -25,7 +25,7 @@ One entity class = one ns (OKM rule). Current state:
 | 39  | Read cursor (a channel pointer; multi-party only) | Implemented (2026-10-20) | ADR-0008 §2 |
 | 41  | Structured log (diagnostics; internal, no door) | Implemented (2026-10-20) | ADR-0011 |
 | 42  | Channel members (identity: display name + human/agent), and the graph's user node set | Implemented (2026-10-20; graph participation 2026-10-21) | ADR-0009 §1, ADR-0014 |
-| 43  | Node vectors (the embedding, in its own table; same `EntityKey`) | Declared (ADR-0019 — the row still carries the vector) | ADR-0019, ADR-0003 |
+| 43  | Node vectors (the embedding, in its own table; same `EntityKey`) | Implemented (2026-10-26) | ADR-0019, ADR-0003 |
 | —   | Initialization memory (persona / style) | Declared (ADR-0001) | ADR-0001 |
 
 The graph's read side (LPA, binning, the rendered community) landed with it
@@ -329,7 +329,14 @@ pub struct EntityRow {
     pub kind: Vocab<u16>,            // a categorical field: interned on write
     pub literal_num: i64,
     pub name: String,
-    pub embedding: Vector<f32>, // NO #[ok_index]: a vector has no key order, see below
+    // layout v4: no vector here — it is `NodeVector` at ns 43 (ADR-0019)
+}
+
+#[derive(DocumentEncode, ...)]
+#[ok_ref(EntityKey)]              // the SAME key type: one batch, one delete
+#[ok_ns(43)]
+pub struct NodeVector {
+    pub embedding: Vector<f32>,   // presence IS "has a vector"
 }
 ```
 
@@ -339,20 +346,15 @@ so there is no face to declare for it. Vector search runs on `okm-vector`'s
 `ExactIndex` — a DERIVED index rebuilt on first use and dropped on every write,
 not a declared face.
 
-**The vector is leaving this row (ADR-0019).** `embedding` shares the payload with
-the usage counters, and a prop write is a whole-document write: counting an
-invocation would re-encode a 1.5–2 KB vector that a count cannot change. The target
-is okm's side-table pattern —
-
-```rust
-#[ok_ref(EntityKey)] #[ok_ns(43)]
-pub struct NodeVector { pub embedding: Vector<f32> }   // presence = has a vector
-```
-
-— so the hot row has no large field and the vector's indexes rebuild from its own
-table (which also removes the need for field-level index surgery: a field change
-never has to work out which heavyweight index it feeds). Until the implementation
-lands, the row above is what runs, and `ExactIndex` still reads the row's frame.
+**The vector is not in this row (ADR-0019).** It used to share the payload with the
+usage counters, and a prop write is a whole-document write: counting an invocation
+re-encoded a 1.5–2 KB embedding that a count cannot change. It now lives in ns 43,
+keyed by the same `EntityKey` — okm's side-table pattern, not field-level extraction
+inside the row codec. The row's write never touches it, and `ExactIndex` rebuilds
+from that table alone, so an index update stays wholesale: a field change never has
+to work out which heavyweight index it feeds. A node and its vector are written in
+one batch and deleted together; a pre-split store (layout v3) is rebuilt rather than
+read, because the frames shifted by one field.
 
 **Three conventional props a node carries (2026-10-23).** `title`, `content`
 and `source` live in the row's DYNAMIC segment, not as declared fields: props
@@ -399,14 +401,13 @@ whole-document write, though — the reason the vector moves out of this row
   on the node row's DYNAMIC segment (slot 1) — the entity's attributes,
   shared by every fact about it — and they MERGE: a same-named attribute
   takes the newer value, the rest survive.
-- **`embedding` is the node's vector (ADR-0003; moving to ns 43 in ADR-0019)**:
-  the built-in engine's
-  output over the entity's NAME, computed in-process at ingest — the HTTP
-  client never sends a vector. A cold frame of ANY length (its own count
-  rides the frame, so a model swap changes the data, not the wire),
-  L2-normalized at the source so `cosine` is an inner product. EMPTY is a
-  legal row (written with no engine attached) and retrieval skips it — never
-  a zero vector.
+- **The node's vector is `NodeVector.embedding` (ADR-0003, moved to ns 43 by
+  ADR-0019)**: the built-in engine's output over the entity's NAME, computed
+  in-process at ingest — the HTTP client never sends a vector. A cold frame of ANY
+  length (its own count rides the frame, so a model swap changes the data, not the
+  wire), L2-normalized at the source so `cosine` is an inner product. **No engine =
+  no row**: absence is the boolean, so retrieval skips the node — never a zero
+  vector.
 - **Retrieval (`GraphStore::retrieve`, `GET /graph/{scope}/search?q=&k=` — the
   ANALYSIS class: the landing alone, for inspection; the core answer is
   `recall`, below)**
