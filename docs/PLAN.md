@@ -541,6 +541,30 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   This promotes ONE slice of Phase 5 ahead of Phase 3/4 — the row and its read,
   which the tool list needs; the planner, the topological walk, the weight
   write-back and the dreaming consolidation stay Phase 5, as ADR-0015 §5 says.
+- [x] COUNTS AT THE CALL LANDED 2026-10-26 (ADR-0018): a skill invocation is counted
+  where it happens rather than at the end of a turn. `POST /skills/{scope}/{node_id}/touch`
+  takes `{event, ts_ms}` — `attempt` before the call, `success` after it — and
+  `GraphStore::touch_skill` keeps `invoke_calls` / `invoke_ok` / `last_invoked` as props
+  merged into the node's dynamic segment (no row rewrite, no re-embed). The attempt is
+  first because a call that never returns must still be visible: `calls - ok` is the
+  failure count. Recall's own bump stopped being able to fail the read (`bump_view` errors
+  now answer the fact as it stands) — a by-product of serving was holding the answer
+  hostage. The same day's other half is gravity's fifth tool `create_skill` (k10r
+  ADR-0015's declaration door): the model writes a procedure down mid-turn, symmetric
+  with `commit_memory`. Proven end to end by prism's `turn_invoke_skill` (two steps walked
+  → `invoke_calls` = 2, `invoke_ok` = 2 on the real node). NOT done: re-cutting ADR-0016
+  (its turn-end filing is now redundant as the only writer) and any decay for these
+  totals — the weight system's decay is edge-shaped.
+
+- [ ] VECTOR SIDE TABLE (ADR-0019, accepted 2026-10-26, NOT implemented): the node's
+  embedding leaves `EntityRow` for its own ns (43, keyed by `EntityKey`), because a
+  prop write is a whole-document write and counting an invocation was re-encoding a
+  1.5-2 KB vector it cannot change. Not a new mechanism — okm's side-table pattern;
+  `#[ok_offrow]` stays rejected. To do: drop the field, write vectors beside the row in
+  one batch, fetch them by id after landing, rebuild `ExactIndex` from ns 43, and
+  migrate (or rebuild) existing stores. The vector's indexes become independent, so no
+  field-level index surgery is needed.
+
 - [ ] Phase 5+ — Deferred (do not start early): dreaming consolidation (petgraph community detection + human-reviewed op set), the SKILL topological walk (ordering, retry, weight write-back — the slice above landed the row and the resolve), Aura Actor nodes.
 
   PROPOSAL WRITE SIDE LANDED 2026-10-26 (ADR-0016): the loop's other half exists.
