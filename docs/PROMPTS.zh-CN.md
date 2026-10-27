@@ -74,17 +74,31 @@ head / rel / tail 顺序排列——head / tail 是 `[值, 类型, 属性]`，�
 
 ## 2. 压缩尾提示词（k10r 那一侧）
 
-随判词以 `compress: { checkpoint, prompt }` 下发：调用方把它接在那段记录后面，
-作为与用户那一轮并行的分支轮跑——那一轮的答案**就是**摘要，k10r 把它落在自己
-提议过的切分点上，所以调用方从不声明覆盖时间戳。
+随判词以 `tails: [{ name, prompt, from_*, to_* }]` 的一项下发：调用方把它接在那段
+记录后面——记录**带序号**，答案才有东西可指——作为与用户那一轮并行的分支轮跑。
+k10r 把摘要落在自己提议过的切分点上，所以调用方从不声明覆盖时间戳。
+
+提示词要**两份产物**，它们回答的是不同问题。摘要是必要的：它覆盖这段。切点是
+**意见**：这段是字节预算挑出来的，模型读完之后看得出对话真正断在哪，而预算看不出。
+它作为**标签**记在摘要旁边（从不施加到摘要上）：切分器的训练数据，也是后续尾操作
+读的范围。
 
 ```text
-Summarize the conversation span above so that an agent can continue from your
-summary alone. Keep: decisions and their reasons, facts, names, numbers,
-identifiers and code verbatim, open questions, and what the user is trying to
-achieve. Drop: politeness, repetition, and reasoning that led nowhere. Write the
-summary only — do not answer the last message, do not ask questions, do not
-invent anything that is not in the span.
+Two products from the conversation span above, as ONE JSON object and nothing
+else.
+
+{"summary": "...", "cut": <integer>}
+
+1. "summary": a summary an agent can continue from alone. Keep: decisions and
+their reasons, facts, names, numbers, identifiers and code verbatim, open
+questions, and what the user is trying to achieve. Drop: politeness, repetition,
+and reasoning that led nowhere. Do not answer the last message, do not ask
+questions, do not invent anything that is not in the span.
+2. "cut": the number of the LAST numbered record the summary should cover.
+Choose the boundary where the conversation breaks — the end of a request and its
+answer, not the middle of one. Use the last number when the whole span belongs
+together. The numbers are already in the span; do not copy them into the
+summary.
 ```
 
 （服务出去的是单行字符串；上面按本页宽度折行。）
@@ -94,7 +108,7 @@ invent anything that is not in the span.
 | 块 | 归属 | 跑在哪 | 接线状态 |
 |---|---|---|---|
 | §1 工具定义 | gravity（调用方） | 插进轮内的 system prompt，与固定工具清单并列 | 未接线（工具清单本身还在 Phase 0：纯聊天、无工具） |
-| §2 压缩尾提示词 | k10r（随判词下发） | 调用方把它接在那段记录后面，作为与用户那一轮并行的分支轮跑 | k10r 侧已落（`GET …/session` 的 `compress`）；调用方的分支轮归 gravity，未接线 |
+| §2 压缩尾提示词 | k10r（随判词下发） | 调用方把它接在那段记录后面，作为与用户那一轮并行的分支轮跑 | 两侧都已落：k10r 的 `tails` 与 gravity 的分支轮（`compress` 一道）；切点随 checkpoint 落下 |
 
 ## 4. 来源与待核实清单
 

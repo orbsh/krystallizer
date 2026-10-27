@@ -49,8 +49,9 @@ async fn a_summary_lands_on_the_served_split() {
     append_three(&base, &client, 7).await;
 
     let read = session(&base, &client, 7, None).await;
-    let verdict = read.get("compress").expect("the window was exceeded");
-    assert_eq!(verdict["checkpoint"], 2_000);
+    let verdict = &read["tails"][0];
+    assert_eq!(verdict["name"], "compress", "the operation table's one entry");
+    assert_eq!(verdict["to_ts"], 2_000, "the span's last record");
 
     let status = client
         .post(format!("{base}/channels/7/members/1/checkpoint"))
@@ -125,8 +126,9 @@ async fn an_unstamped_read_never_fires_the_cache_clock() {
 
     for _ in 0..3 {
         let body = session(&base, &client, 7, None).await;
-        assert!(
-            body.get("compress").is_none(),
+        assert_eq!(
+            body["tails"].as_array().map(Vec::len),
+            Some(0),
             "an unstamped read must not produce a verdict"
         );
     }
@@ -147,14 +149,17 @@ async fn the_cache_clock_fires_after_the_ttl() {
     append_three(&base, &client, 8).await;
 
     let first = session(&base, &client, 7, Some(10_000)).await;
-    assert!(
-        first.get("compress").is_none(),
+    assert_eq!(
+        first["tails"].as_array().map(Vec::len),
+        Some(0),
         "the first stamped read has no previous cursor to measure against"
     );
 
     let fired = session(&base, &client, 7, Some(10_000 + 60_000)).await;
-    let compress = fired.get("compress").expect("the TTL was reached");
-    assert_eq!(compress["checkpoint"], 2_000, "the span's last record");
+    let compress = &fired["tails"][0];
+    assert_eq!(compress["name"], "compress");
+    assert_eq!(compress["to_ts"], 2_000, "the span's last record");
+    assert_eq!(compress["from_ts"], 0, "no summary yet, so the span starts at the log's head");
     assert_eq!(
         compress["prompt"].as_str(),
         Some(TAIL_PROMPT),
@@ -162,9 +167,9 @@ async fn the_cache_clock_fires_after_the_ttl() {
     );
 
     let short = session(&base, &client, 8, Some(10_000)).await;
-    assert!(short.get("compress").is_none());
+    assert_eq!(short["tails"].as_array().map(Vec::len), Some(0));
     let under = session(&base, &client, 8, Some(10_000 + 59_999)).await;
-    assert!(under.get("compress").is_none(), "just under the TTL");
+    assert_eq!(under["tails"].as_array().map(Vec::len), Some(0), "just under the TTL");
 }
 
 /// The budget needs no clock at all: the same read answers a verdict with
@@ -176,8 +181,9 @@ async fn the_budget_fires_without_a_clock() {
     append_three(&base, &client, 7).await;
 
     let body = session(&base, &client, 7, None).await;
-    let compress = body.get("compress").expect("the window was exceeded");
-    assert_eq!(compress["checkpoint"], 2_000);
+    let compress = &body["tails"][0];
+    assert_eq!(compress["name"], "compress");
+    assert_eq!(compress["to_ts"], 2_000);
     assert_eq!(body["increment"].as_array().map(Vec::len), Some(3));
 
     // The floor is the last word: nothing fires on a view too small to be
@@ -190,5 +196,9 @@ async fn the_budget_fires_without_a_clock() {
     let client = reqwest::Client::new();
     append_three(&base, &client, 7).await;
     let silenced = session(&base, &client, 7, None).await;
-    assert!(silenced.get("compress").is_none(), "the floor outranks it");
+    assert_eq!(
+        silenced["tails"].as_array().map(Vec::len),
+        Some(0),
+        "the floor outranks it"
+    );
 }

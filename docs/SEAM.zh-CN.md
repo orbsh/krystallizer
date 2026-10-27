@@ -54,8 +54,8 @@ community id），但**维护**那个结构从来不是消费方的活儿。所�
 |---|---|---|---|
 | `POST /channels/{c}/messages` | `ChannelStore::append` | messages (33) | 已落 |
 | `GET /channels/{c}/messages` | `ChannelStore::history`——**人的视图**（ADR-0009 §4）：按日志序给每一条，带归属名，没有 checkpoint、没有摘要、没有合并 | messages (33) + members (42) | 已落（2026-10-20） |
-| `GET /channels/{c}/members/{m}/session?format=&ts_ms=` | `channel::fetch_full` + `view::assemble`（头部 → 压缩点 → 增量）+ `render::render_head`；读取时跑 `compress::evaluate`，判词随 `compress: {checkpoint, prompt}` 出行——引擎先在那个切分点上开出「正在压」的节点（空摘要 = 标记，DTO 的 `compressing` 据此为真）；`note_read` 盖的是**这个成员**的游标（缓存钟量它；单人+agent 没有行时就是日志最后一条） | messages (33) + checkpoints (34) + cursors (39，多方) + 头部的那些事实 (36/37) | 已落（视图形状 2026-10-20；压缩判词 2026-10-20） |
-| `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::complete_checkpoint`（正文只有摘要；填进 k10r 开出的那一行；没有开着的行 = 400） | checkpoints (34) | 已落（2026-10-20） |
+| `GET /channels/{c}/members/{m}/session?format=&ts_ms=` | `channel::fetch_full` + `view::assemble`（头部 → 压缩点 → 增量）+ `render::render_head`；读取时跑 `compress::evaluate`，判词随 `tails: [{name, prompt, from_*, to_*}]` 出行（ADR-0017 的操作表）——引擎先在那个切分点上开出「正在压」的节点（空摘要 = 标记，DTO 的 `compressing` 据此为真）；该节点的 `suggested_*`（那一趟本会选择的切点）也随同一个 DTO 出行；`note_read` 盖的是**这个成员**的游标（缓存钟量它；单人+agent 没有行时就是日志最后一条） | messages (33) + checkpoints (34) + cursors (39，多方) + 头部的那些事实 (36/37) | 已落（视图形状 2026-10-20；压缩判词 2026-10-20） |
+| `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::complete_checkpoint`——正文是摘要，外加可选的那一趟本会选择的切点（`suggested_ts` + `suggested_sub`）；填进 k10r 开出的那一行，切点对这一段的校验在门里（没有开着的行 = 400；切点落在段外 = 400） | checkpoints (34) | 已落（2026-10-20；两份产物 2026-10-26） |
 | `POST /memories/{scope}` | 对数组的**每个元素**调 `GraphStore::ingest`（元素就是 8 元组；`scope` 走路径）。2026-10-22 改多条：畸形元素答 `refused` 并带核心自己的原因，同批其他条目照常落地；只有 body 不是数组才是 400 | 实体（36）+ 事实（37） | 已落（2026-10-17），多条（2026-10-22） |
 | `POST /memories/{scope}/recall`（body：`{q, k, ts_ms, format}` 的数组） | 逐查询调 `GraphStore::recall`（落点 → 着陆到的**社区**的桶 → 一种表示：渲染好的带 id 文本，或 `format=struct` 时只给数据；按权重排序、受 `budget` 封顶；无 engine = 空答案） | 实体（36）+ 事实（37） | 已落（2026-10-20） |
 | `GET /memories/{scope}/entities/{name}` | `GraphStore::entity_by_name`（名/别名精确入口；未知名字 404） | 实体（36） | 已落（2026-10-17） |
@@ -110,7 +110,7 @@ in-process 不是第二道门：`InProcessSurface` 在调用方进程内链接�
 |---|---|---|---|---|
 | 轮首取投影（头部是 k10r 渲染的文本，格式由 gravity 配置给出；`struct` 被拒） | `MemorySurface::fetch_session` | `GET /channels/{c}/members/{m}/session?format=` | `ChannelStore::fetch_full` + `render::render_head` | 已落；签名不随指针裁决变动——读取是**那个成员**发出的动作（盖它的游标，答案也是它的投影） |
 | 轮末追加 delta（用户消息 + 回复，同一个 `ts_ms`，`sub` 0/1） | `MemorySurface::append_message` | `POST /channels/{c}/messages` | `ChannelStore::append` | 已落 |
-| 压缩落地（summarize） | 未接 | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::complete_checkpoint` | 门已落，gravity 侧欠（Phase 2/2.6） |
+| 压缩落地（摘要 + 它本会选择的切点） | gravity 的尾分支（`compress`） | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::complete_checkpoint` | 2026-10-26 两侧都落（ADR-0017） |
 | 任务进度（一步一 task 行；读随轮首投影，完成在执行点写） | ADR-0003 §3/§4 | 读侧随 `GET /channels/{c}/members/{m}/session`；写侧尚无路由 | 任务顶点 + `task_links` 边，与事实同图 | 已声明——第三个接口面（ADR-0001）；gravity Phase 2.6 |
 | `recall_memory`——长期事实 | 工具面（2026-10-26 落地，gravity ADR-0004） | `POST /memories/{scope}/recall`（落点 + 着陆到的社区，已渲染）与 `GET /memories/{scope}/entities/{name}`（精确入口） | `GraphStore::recall` / `entity_by_name` | 图的门已落（2026-10-20）；工具面 2026-10-26 落地（gravity ADR-0004） |
 | `commit_memory`——写事实 | 工具面 | `POST /memories/{scope}` | `GraphStore::ingest(fact)` | 门已落（2026-10-17）；工具本身 2026-10-26 落地（gravity ADR-0004） |

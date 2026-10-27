@@ -43,12 +43,12 @@ pub const KEYSPACE_MEMORY: &str = "memory";
 
 pub use channel::{
     kind, member_node, member_role, role, ChannelStore, CheckpointKey, CheckpointRow, CursorKey,
-    CursorRow, MemberKey, MemberRow, MessageKey, MessageRow, SessionView, DEFAULT_MEMBER,
+    CursorRow, MemberKey, MemberRow, MessageKey, MessageRow, SessionView, Span, DEFAULT_MEMBER,
 };
 pub use code::{CodeKey, CodeRow, CodeStore};
 pub use compress::{
-    evaluate as evaluate_compression, Params as CompressionParams, Trigger as CompressionTrigger,
-    Verdict as CompressionVerdict, TAIL_PROMPT,
+    evaluate as evaluate_compression, Params as CompressionParams, TailOp, Trigger as CompressionTrigger,
+    Verdict as CompressionVerdict, COMPRESS_OP, TAIL_OPS, TAIL_PROMPT,
 };
 pub use config::{
     CompressionConfig, ConfigError, EmbeddingConfig, EmbeddingEngine, KrystallizerConfig,

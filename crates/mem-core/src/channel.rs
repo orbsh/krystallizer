@@ -86,7 +86,30 @@ pub struct CheckpointRow {
     /// Empty = the compression is in flight (a second pass treats the span as
     /// taken); otherwise the summary of everything up to this pointer.
     pub summary: String,
+    /// The cut the compression pass reported as BETTER than the mechanical one,
+    /// as a pointer into the same layer (`(0, 0)` = none reported).
+    ///
+    /// It changes NOTHING about this node's coverage: the summary still covers
+    /// up to this node's key and the increment is still cut there. It is a
+    /// LABEL, and it answers two later questions — (a) training data, a
+    /// mechanical cut beside the cut a model would choose over the same span;
+    /// (b) the range a tail operation reads, so an analysis pass starts where a
+    /// model saw the conversation break rather than where a byte budget did.
+    ///
+    /// Two segments because a position in the log is a RECORD, not a
+    /// millisecond — the same fault `coverage_sub` exists to prevent: with a ts
+    /// alone, two records sharing that millisecond are one suggestion.
+    #[ok_default(0)]
+    pub suggested_ts: u64,
+    #[ok_default(0)]
+    pub suggested_sub: u16,
 }
+
+/// A span of the log, as the checkpoint layer states it: `(start, end)` where
+/// `start` is EXCLUSIVE (what the previous summary already covers) and `end` is
+/// INCLUSIVE (the record the node closes at). Two pointers, because a position in
+/// the log is a record — see [`CheckpointRow::suggested_ts`].
+pub type Span = ((u64, u16), (u64, u16));
 
 /// The member's read cursor `(channel, member) → last-read ts`
 /// (ADR-0008 §2). It is the cache clock's only observable: the prompt
@@ -159,6 +182,12 @@ pub struct SessionView {
     pub coverage_ts: u64,
     pub coverage_sub: u16,
     pub summary: Option<String>,
+    /// The cut that compression considered better than the mechanical one
+    /// (`(0, 0)` = none). A LABEL, not a coverage point: the increment is still
+    /// cut at `coverage_*`. A tail operation reads from here so its range
+    /// follows a model's view of the conversation's structure.
+    pub suggested_ts: u64,
+    pub suggested_sub: u16,
     /// The FROZEN initialization memory of that compression: the edge ids the
     /// head was built from (ADR-0008 §2). Frozen as a SET and rendered per
     /// request, so the head's bytes stay stable while `?format=` still picks
@@ -379,6 +408,9 @@ impl ChannelStore {
         let complete = nodes.iter().rfind(|(_, row)| !row.summary.is_empty());
         let coverage = complete.map_or((0, 0), |(key, _)| (key.ts_ms, key.sub));
         let summary = complete.map(|(_, row)| row.summary.clone());
+        let (suggested_ts, suggested_sub) = complete
+            .map(|(_, row)| (row.suggested_ts, row.suggested_sub))
+            .unwrap_or((0, 0));
         let head = match complete {
             Some((key, _)) => self.checkpoint_head(key)?,
             None => None,
@@ -390,6 +422,8 @@ impl ChannelStore {
             coverage_ts: coverage.0,
             coverage_sub: coverage.1,
             summary,
+            suggested_ts,
+            suggested_sub,
             head,
             compressing,
             increment: self.messages_after(channel_id, coverage)?,
@@ -486,32 +520,86 @@ impl ChannelStore {
             &key,
             &CheckpointRow {
                 summary: String::new(),
+                suggested_ts: 0,
+                suggested_sub: 0,
             },
         )
         .map_err(|e| e.to_string())?;
         self.write_head(&key, head)
     }
 
+    /// The span the newest OPEN node closes: `(start, end)` where `start` is
+    /// the pointer of the node BELOW it (exclusive — that is what the caller's
+    /// summary already covers) and `end` is the open node's own pointer
+    /// (inclusive). `None` = nothing is open.
+    ///
+    /// It exists so the door can answer a caller's bad suggestion with a 400
+    /// that names the range, instead of the store's own invariant firing as a
+    /// 500 later.
+    pub fn open_span(&mut self, channel_id: u64) -> Result<Option<Span>, String> {
+        let nodes = self.checkpoints_of(channel_id)?;
+        let Some(open_at) = nodes.iter().rposition(|(_, row)| row.summary.is_empty()) else {
+            return Ok(None);
+        };
+        let end = (nodes[open_at].0.ts_ms, nodes[open_at].0.sub);
+        let start = if open_at == 0 {
+            (0, 0)
+        } else {
+            (nodes[open_at - 1].0.ts_ms, nodes[open_at - 1].0.sub)
+        };
+        Ok(Some((start, end)))
+    }
+
     /// Land a summary on the newest OPEN node — its pointer is the one k10r
     /// derived, never a caller's number (ADR-0008 §4). `None` when nothing is
     /// open: there is no position to land on, so the door answers 400 rather
     /// than inventing one.
+    ///
+    /// `suggested` is the cut the compression pass considered better than the
+    /// mechanical one. It is VALIDATED against the span this node closes —
+    /// strictly above the previous node's pointer (the summary it replaces) and
+    /// at or below this node's own — because a suggestion outside the span it
+    /// was made over is a caller's mistake, and storing it would make a later
+    /// analysis pass read a range that never existed. A suggestion equal to the
+    /// node's own pointer is the mechanical cut restated: stored as none.
     pub fn complete_checkpoint(
         &mut self,
         channel_id: u64,
         summary: &str,
+        suggested: Option<(u64, u16)>,
     ) -> Result<Option<(u64, u16)>, String> {
         let nodes = self.checkpoints_of(channel_id)?;
-        let Some((key, _)) = nodes.iter().rfind(|(_, row)| row.summary.is_empty()) else {
+        let Some(open_at) = nodes.iter().rposition(|(_, row)| row.summary.is_empty()) else {
             return Ok(None);
         };
-        let key = key.clone();
+        let key = nodes[open_at].0.clone();
+        let span_start = if open_at == 0 {
+            (0, 0)
+        } else {
+            (nodes[open_at - 1].0.ts_ms, nodes[open_at - 1].0.sub)
+        };
+        let span_end = (key.ts_ms, key.sub);
+        let suggested = match suggested {
+            None => None,
+            Some(point) if point == span_end => None,
+            Some(point) if point > span_start && point < span_end => Some(point),
+            Some(point) => {
+                return Err(format!(
+                    "the suggested cut {}:{} is outside the span this checkpoint closes \
+                     ({}:{} exclusive .. {}:{} inclusive)",
+                    point.0, point.1, span_start.0, span_start.1, span_end.0, span_end.1
+                ))
+            }
+        };
+        let (suggested_ts, suggested_sub) = suggested.unwrap_or((0, 0));
         let head = self.checkpoint_head(&key)?.unwrap_or_default();
         self.checkpoints
             .put(
                 &key,
                 &CheckpointRow {
                     summary: summary.to_string(),
+                    suggested_ts,
+                    suggested_sub,
                 },
             )
             .map_err(|e| e.to_string())?;
@@ -540,6 +628,8 @@ impl ChannelStore {
                 &key,
                 &CheckpointRow {
                     summary: summary.to_string(),
+                    suggested_ts: 0,
+                    suggested_sub: 0,
                 },
             )
             .map_err(|e| e.to_string())?;

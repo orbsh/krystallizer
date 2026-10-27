@@ -179,7 +179,7 @@ fn the_head_is_frozen_at_the_compression() {
     ).unwrap();
     stores
         .channels
-        .complete_checkpoint(7, "the summary")
+        .complete_checkpoint(7, "the summary", None)
         .expect("the node is open")
         .expect("a node is open");
 

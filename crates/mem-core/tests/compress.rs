@@ -42,6 +42,8 @@ fn view(ts_list: &[u64]) -> SessionView {
         coverage_ts: 0,
         coverage_sub: 0,
         summary: None,
+        suggested_ts: 0,
+        suggested_sub: 0,
         head: None,
         compressing: false,
         increment: ts_list.iter().map(|ts| entry(*ts, "x")).collect(),

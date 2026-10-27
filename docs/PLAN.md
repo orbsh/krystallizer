@@ -40,6 +40,16 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   compression point → the messages after it, and it stays a k10r internal
   detail (ADR-0008. (ADR-0006, ADR-0008)
 - [x] Phase 2.6 — Compression policy engine: parameterized triggers
+  TAIL OPERATIONS LANDED 2026-10-26 (ADR-0017): the single tail prompt became a
+  TABLE (`TAIL_OPS`), served as `tails: [{name, prompt, from_*, to_*}]` so a
+  second operation costs an entry, not a wire change; and the compress pass now
+  answers with TWO products — the summary, plus the cut it would have chosen over
+  the mechanical one, stored as `CheckpointRow.suggested_ts`/`suggested_sub` (a
+  LABEL: coverage never moves, and the value is validated against the span it
+  closes). The model answers an INDEX over the numbered records and the caller
+  resolves it, because the store owns positions. NOT built: the second stage (a
+  review pass with its own cursor reading from `suggested_*`) — the seam is
+  there, the operation is not.
   (cache-clock, budget percentage, max-gap split — all from
   `krystallizer.kdl`, per-user override layer reserved); NO decision log
   (2.6d: the checkpoint row itself answers which span was compressed, and

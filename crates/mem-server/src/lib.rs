@@ -403,17 +403,25 @@ pub enum HeadDto {
     Facts(Vec<FactViewDto>),
 }
 
-/// The compression verdict as the caller receives it (ADR-0008 §4): the
-/// record to summarize UP TO, and the tail prompt to append to that span.
-/// It rides the projection as a CONTROL FIELD beside the records — never
-/// as a marker written into a log row.
+/// One OPERATION to run as a branch beside the user's turn (ADR-0008 §4): the
+/// prompt to append, and the span it applies to.
+///
+/// The list is what makes a second operation cheap: the store names an
+/// operation and gives it a span, and a caller that knows the name does it. A
+/// caller that does NOT know the name skips it — deployment skew is expected
+/// here, because the store's list can grow before every guest is upgraded.
 #[derive(Serialize)]
-pub struct CompressDto {
-    /// The span's last record. The summary that comes back covers
-    /// everything at or before it: k10r derives the checkpoint's
-    /// coverage point from that, so the caller never states one.
-    pub checkpoint: u64,
+pub struct TailDto {
+    /// `compress` today; the name is the dispatch key.
+    pub name: &'static str,
+    /// Appended after the span's records. The branch's answer is the product.
     pub prompt: &'static str,
+    /// Span start, EXCLUSIVE: what the caller's summary already covers.
+    pub from_ts: u64,
+    pub from_sub: u16,
+    /// Span end, INCLUSIVE: the record the operation's product must cover.
+    pub to_ts: u64,
+    pub to_sub: u16,
 }
 
 /// Wire shape of the assembled projection (ADR-0008 §2): head first, then
@@ -442,10 +450,14 @@ pub struct SessionDto {
     /// user bursts merged, every line `[name(id=N)]`. The raw `increment` stays
     /// beside it for callers that want the records themselves.
     pub turns: Vec<TurnDto>,
-    /// The policy's verdict when one fired (ADR-0008 §4). Absent = the
-    /// caller builds its context from the records alone.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub compress: Option<CompressDto>,
+    /// The cut the last compression considered better than the mechanical one
+    /// (`(0, 0)` = none reported). A LABEL: the increment is still cut at
+    /// `coverage_*`. A later tail operation reads from here.
+    pub suggested_ts: u64,
+    pub suggested_sub: u16,
+    /// The operations the policy asks for on this read (ADR-0008 §4). Empty =
+    /// the caller builds its context from the records alone.
+    pub tails: Vec<TailDto>,
 }
 
 impl SessionDto {
@@ -467,6 +479,8 @@ impl SessionDto {
             coverage_sub: p.view.coverage_sub,
             summary: p.view.summary,
             compressing: p.view.compressing,
+            suggested_ts: p.view.suggested_ts,
+            suggested_sub: p.view.suggested_sub,
             turns,
             increment: p
                 .view
@@ -479,10 +493,25 @@ impl SessionDto {
                     content: row.content,
                 })
                 .collect(),
-            compress: compress.map(|v| CompressDto {
-                checkpoint: v.checkpoint_ts,
-                prompt: mem_core::TAIL_PROMPT,
-            }),
+            tails: match compress {
+                // Every operation the store knows fires on the same verdict, and
+                // each states the span IT needs: the compress pass covers the
+                // record the verdict named, starting where the caller's summary
+                // already ends. An operation with a narrower range (a review
+                // pass reading from `suggested_*`) computes its own here.
+                Some(v) => mem_core::TAIL_OPS
+                    .iter()
+                    .map(|op| TailDto {
+                        name: op.name,
+                        prompt: op.prompt,
+                        from_ts: p.view.coverage_ts,
+                        from_sub: p.view.coverage_sub,
+                        to_ts: v.checkpoint_ts,
+                        to_sub: v.checkpoint_sub,
+                    })
+                    .collect(),
+                None => Vec::new(),
+            },
         }
     }
 }
@@ -646,14 +675,21 @@ fn assembled_bytes(p: &mem_core::view::Projection) -> usize {
             .sum::<usize>()
 }
 
-/// Request body of `POST .../checkpoint` — the summary itself.
+/// Request body of `POST .../checkpoint` — the summary, and optionally the cut
+/// the compression pass thought better than the mechanical one.
 ///
 /// No coverage timestamp: ADR-0008 §4 has k10r derive it from the split it
-/// served, so the caller never computes or states one. The store's
-/// `append_checkpoint_from_verdict` is the only path that lands a summary.
+/// served, so the caller never states where THIS node ends. The suggestion is
+/// the opposite direction — a caller's observation about where the span WOULD
+/// break better — so it is stated, and validated against the span being closed.
 #[derive(Deserialize, Serialize)]
 pub struct AppendCheckpoint {
     pub summary: String,
+    /// The last record the summary should really have covered, as a pointer
+    /// (`suggested_ts` + `suggested_sub`). Omitted = the mechanical cut was
+    /// right, which is the common case.
+    pub suggested_ts: Option<u64>,
+    pub suggested_sub: Option<u16>,
 }
 
 /// `POST /channels/{id}/members/{member}/checkpoint` — land the summary for
@@ -669,8 +705,39 @@ async fn append_checkpoint(
     Json(body): Json<AppendCheckpoint>,
 ) -> Result<StatusCode, FactError> {
     let mut store = state.store.lock().await;
+    let open = store.open_span(channel_id).map_err(FactError::internal)?;
+    let Some((start, end)) = open else {
+        return Err(FactError {
+            error: "no open compression node for this channel: the pointer comes from the \
+                    verdict k10r served, so read the session first"
+                .into(),
+            status: StatusCode::BAD_REQUEST,
+        });
+    };
+    // A suggestion is validated BEFORE it is stored: everything downstream reads
+    // it as the start of a range that existed, so an out-of-span value would
+    // make a later pass read a range that never did. Equal to the node's own
+    // pointer = the mechanical cut restated, which is "no suggestion".
+    let suggested = match (body.suggested_ts, body.suggested_sub) {
+        (Some(ts), sub) if ts != 0 => {
+            let point = (ts, sub.unwrap_or(0));
+            if point > start && point <= end {
+                Some(point).filter(|p| *p != end)
+            } else {
+                return Err(FactError {
+                    error: format!(
+                        "the suggested cut {ts}:{} is outside the span this checkpoint closes \
+                         ({}:{} exclusive .. {}:{} inclusive)",
+                        point.1, start.0, start.1, end.0, end.1
+                    ),
+                    status: StatusCode::BAD_REQUEST,
+                });
+            }
+        }
+        _ => None,
+    };
     store
-        .complete_checkpoint(channel_id, &body.summary)
+        .complete_checkpoint(channel_id, &body.summary, suggested)
         .map_err(FactError::internal)?
         .map(|_pointer| StatusCode::NO_CONTENT)
         .ok_or_else(|| FactError {

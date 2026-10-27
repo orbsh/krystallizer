@@ -128,6 +128,8 @@ async fn append_fetch_checkpoint_flow() {
         .post(format!("{base}/channels/7/members/1/checkpoint"))
         .json(&AppendCheckpoint {
             summary: "greeting done".into(),
+            suggested_ts: None,
+            suggested_sub: None,
         })
         .send()
         .await
@@ -217,11 +219,17 @@ async fn member_checkpoints_are_independent() {
         .json()
         .await
         .unwrap();
-    assert!(read.get("compress").is_some(), "member 1 has a verdict");
+    assert_eq!(
+        read["tails"].as_array().map(Vec::len),
+        Some(1),
+        "member 1 has a verdict"
+    );
     let status = client
         .post(format!("{base}/channels/9/members/1/checkpoint"))
         .json(&AppendCheckpoint {
             summary: "m1".into(),
+            suggested_ts: None,
+            suggested_sub: None,
         })
         .send()
         .await

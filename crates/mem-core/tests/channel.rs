@@ -245,7 +245,7 @@ fn a_compression_opens_a_node_and_completes_it() {
     );
     assert_eq!(open.increment.len(), 3, "the whole log is still raw");
 
-    assert_eq!(store.complete_checkpoint(CH, "m1 and m2").unwrap(), Some((200, 0)));
+    assert_eq!(store.complete_checkpoint(CH, "m1 and m2", None).unwrap(), Some((200, 0)));
     let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
     assert_eq!((view.coverage_ts, view.coverage_sub), (200, 0));
     assert_eq!(view.summary.as_deref(), Some("m1 and m2"));
@@ -275,7 +275,7 @@ fn nodes_accumulate_and_the_read_follows_the_newest_complete_one() {
     assert_eq!(v.increment.len(), 1, "m3 is still raw");
 
     assert_eq!(
-        store.complete_checkpoint(CH, "second summary").unwrap(),
+        store.complete_checkpoint(CH, "second summary", None).unwrap(),
         Some((900, 0))
     );
     let v = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
@@ -295,10 +295,67 @@ fn re_opening_the_same_pointer_is_the_same_node() {
     store.append(CH, 100, 0, role::USER, 0, "m1").unwrap();
     store.open_checkpoint(CH, (100, 0), &[5]).unwrap();
     store.open_checkpoint(CH, (100, 0), &[5]).unwrap();
-    assert_eq!(store.complete_checkpoint(CH, "once").unwrap(), Some((100, 0)));
+    assert_eq!(store.complete_checkpoint(CH, "once", None).unwrap(), Some((100, 0)));
     let v = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
     assert_eq!(v.summary.as_deref(), Some("once"));
     assert!(!v.compressing, "one node, completed once");
+}
+
+/// The compression's SECOND product: the cut it would have chosen. It is
+/// stored beside the summary and changes nothing about the coverage point — the
+/// increment is still cut where the mechanical verdict put it.
+#[test]
+fn a_compression_records_the_cut_it_would_have_chosen() {
+    let (_d, mut store) = open();
+    const CH: u64 = 1;
+    for (ts, text) in [(100, "m1"), (200, "m2"), (300, "m3"), (900, "m4")] {
+        store.append(CH, ts, 0, role::USER, 0, text).unwrap();
+    }
+
+    // The verdict split at 900 but the conversation really breaks after m2.
+    store.open_checkpoint(CH, (900, 0), &[]).unwrap();
+    assert_eq!(
+        store.complete_checkpoint(CH, "m1..m3", Some((200, 0))).unwrap(),
+        Some((900, 0)),
+        "the node still closes where the verdict said"
+    );
+
+    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
+    assert_eq!((view.coverage_ts, view.coverage_sub), (900, 0), "coverage unchanged");
+    assert_eq!(
+        (view.suggested_ts, view.suggested_sub),
+        (200, 0),
+        "the opinion is recorded as a label, not a position"
+    );
+    assert!(view.increment.is_empty(), "the range is NOT re-opened for reading");
+
+    // A suggestion outside the span it was made over is a caller's mistake:
+    // every later pass reads it as the start of a range, so it cannot be stored.
+    let (_d, mut store) = open();
+    for ts in [100, 200, 900] {
+        store.append(CH, ts, 0, role::USER, 0, "x").unwrap();
+    }
+    store.open_checkpoint(CH, (200, 0), &[]).unwrap();
+    let past_end = store.complete_checkpoint(CH, "s", Some((900, 0)));
+    assert!(past_end.is_err(), "beyond the node: {past_end:?}");
+    assert_eq!(store.open_span(CH).unwrap(), Some(((0, 0), (200, 0))));
+    store.complete_checkpoint(CH, "s", None).unwrap();
+
+    // The NEXT node's span starts where the previous one closed, so a
+    // suggestion reaching back into text the summary already covers is refused
+    // just as one reaching past the node is.
+    store.open_checkpoint(CH, (900, 0), &[]).unwrap();
+    assert_eq!(store.open_span(CH).unwrap(), Some(((200, 0), (900, 0))));
+    let before_start = store.complete_checkpoint(CH, "t", Some((200, 0)));
+    assert!(before_start.is_err(), "at the span's own start: {before_start:?}");
+    let rewind = store.complete_checkpoint(CH, "t", Some((100, 0)));
+    assert!(rewind.is_err(), "into the previous summary: {rewind:?}");
+
+    // A suggestion equal to the node's own pointer is the mechanical cut
+    // restated — stored as none, so nothing downstream reads a range of zero.
+    store.complete_checkpoint(CH, "t", Some((900, 0))).unwrap();
+    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
+    assert_eq!((view.suggested_ts, view.suggested_sub), (0, 0));
 }
 
 /// A summary with nothing open has no position to land on: the store refuses
@@ -308,7 +365,7 @@ fn a_summary_without_an_open_node_is_refused() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
     store.append(CH, 100, 0, role::USER, 0, "m1").unwrap();
-    assert_eq!(store.complete_checkpoint(CH, "orphan").unwrap(), None);
+    assert_eq!(store.complete_checkpoint(CH, "orphan", None).unwrap(), None);
     let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
     assert_eq!(view.coverage_ts, 0);
     assert!(view.summary.is_none());

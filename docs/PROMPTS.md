@@ -91,18 +91,35 @@ Notes that keep this prompt honest:
 
 ## 2. Compression tail prompt (k10r's side)
 
-Served with a verdict as `compress: { checkpoint, prompt }`: the caller
-appends this to the span's records and runs that as a branch turn beside the
-user's turn — that turn's answer IS the summary, and k10r lands it on the split
-it proposed, so the caller never states a coverage timestamp.
+Served with a verdict as one entry of `tails: [{ name, prompt, from_*, to_* }]`:
+the caller appends this to the span's records — NUMBERED, so an answer can point
+at one — and runs that as a branch turn beside the user's turn. k10r lands the
+summary on the split it proposed, so the caller never states a coverage
+timestamp.
+
+The prompt asks for TWO products, and they answer different questions. The
+summary is necessary: it covers the span. The CUT is an opinion about the span
+the byte budget chose — a model that read the whole thing can see where the
+conversation actually breaks, which the budget cannot. It is recorded beside the
+summary as a LABEL (never applied to it): training data for the cutter, and the
+range a later tail operation reads.
 
 ```text
-Summarize the conversation span above so that an agent can continue from your
-summary alone. Keep: decisions and their reasons, facts, names, numbers,
-identifiers and code verbatim, open questions, and what the user is trying to
-achieve. Drop: politeness, repetition, and reasoning that led nowhere. Write the
-summary only — do not answer the last message, do not ask questions, do not
-invent anything that is not in the span.
+Two products from the conversation span above, as ONE JSON object and nothing
+else.
+
+{"summary": "...", "cut": <integer>}
+
+1. "summary": a summary an agent can continue from alone. Keep: decisions and
+their reasons, facts, names, numbers, identifiers and code verbatim, open
+questions, and what the user is trying to achieve. Drop: politeness, repetition,
+and reasoning that led nowhere. Do not answer the last message, do not ask
+questions, do not invent anything that is not in the span.
+2. "cut": the number of the LAST numbered record the summary should cover.
+Choose the boundary where the conversation breaks — the end of a request and its
+answer, not the middle of one. Use the last number when the whole span belongs
+together. The numbers are already in the span; do not copy them into the
+summary.
 ```
 
 The wrapping above is this page's; the served string is one line.
@@ -112,7 +129,7 @@ The wrapping above is this page's; the served string is one line.
 | Block | Owner | Where it runs | Wiring status |
 |---|---|---|---|
 | §1 tool definition | gravity (the caller) | inserted into the turn's system prompt alongside the fixed tool list | not wired (the tool list itself is still Phase 0: plain chat, no tools) |
-| §2 compression tail prompt | k10r (served with the verdict) | the caller appends it to the span's records and runs that as a branch turn beside the user's turn | landed on k10r's side (`compress` on `GET …/session`); the caller-side branch turn is gravity's, not yet wired |
+| §2 compression tail prompt | k10r (served with the verdict) | the caller appends it to the span's records and runs that as a branch turn beside the user's turn | landed on BOTH sides: k10r's `tails` and gravity's branch turn for `compress`; the cut lands with the checkpoint |
 
 ## 4. Provenance and the to-verify list
 

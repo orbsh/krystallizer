@@ -197,8 +197,42 @@ fn split(view: &SessionView) -> Option<((u64, u16), Option<u64>)> {
 ///
 /// `docs/PROMPTS.md` §3 is this text's documented home; this copy is the
 /// one the door serves, so the two are kept word-identical.
-pub const TAIL_PROMPT: &str = "Summarize the conversation span above so that an agent can continue from your \
-summary alone. Keep: decisions and their reasons, facts, names, numbers, identifiers and code verbatim, \
-open questions, and what the user is trying to achieve. Drop: politeness, repetition, and reasoning that \
-led nowhere. Write the summary only — do not answer the last message, do not ask questions, do not invent \
-anything that is not in the span.";
+pub const TAIL_PROMPT: &str = "Two products from the conversation span above, as ONE JSON object and nothing else.\n\n\
+{\"summary\": \"...\", \"cut\": <integer>}\n\n\
+1. \"summary\": a summary an agent can continue from alone. Keep: decisions and their reasons, facts, \
+names, numbers, identifiers and code verbatim, open questions, and what the user is trying to achieve. \
+Drop: politeness, repetition, and reasoning that led nowhere. Do not answer the last message, do not \
+ask questions, do not invent anything that is not in the span.\n\
+2. \"cut\": the number of the LAST numbered record the summary should cover. Choose the boundary where \
+the conversation breaks — the end of a request and its answer, not the middle of one. Use the last \
+number when the whole span belongs together. The numbers are already in the span; do not copy them into \
+the summary.";
+
+/// One TAIL OPERATION: an instruction appended after the span and run as a
+/// branch beside the user's turn. The caller appends `prompt` to the records it
+/// read, and the model's answer is that operation's product (ADR-0008 §4).
+///
+/// The list is a TABLE because these operations differ in what they PRODUCE, not
+/// in how they are driven: adding one is a new entry here plus its landing arm in
+/// the caller — no shape change on the caller's side, no config knob. Today there
+/// is one; the review pass (reading from the suggested cut) is why the table
+/// exists rather than a single field.
+pub struct TailOp {
+    /// The name the caller dispatches on. It is also the key the projection
+    /// carries, so a caller that does not know an operation SKIPS it instead of
+    /// failing — deployment skew: the store may know more than the guest does.
+    pub name: &'static str,
+    /// The prompt appended after the span.
+    pub prompt: &'static str,
+}
+
+/// The compression pass: summarize the span, and name the cut it would have
+/// chosen over the mechanical one.
+pub const COMPRESS_OP: TailOp = TailOp {
+    name: "compress",
+    prompt: TAIL_PROMPT,
+};
+
+/// Every operation the store may ask for. One today; the review pass joins it
+/// when its own cursor lands.
+pub const TAIL_OPS: &[TailOp] = &[COMPRESS_OP];
