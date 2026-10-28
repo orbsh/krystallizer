@@ -67,12 +67,64 @@ fn opening_the_same_name_twice_is_one_task() {
     assert_eq!(first.node_id, again.node_id);
     assert!(!again.created, "the name is the identity");
     assert_eq!(graph.list_tasks(1, None).unwrap().len(), 1);
-    // Re-opening restates the sheet rather than adding a second one: the
-    // created_at is the new statement's clock, which is the caller's to keep.
+    // Re-opening RESTATES the task, it does not move it: the clock stays the one
+    // the work was opened with. A retried tool call must not be able to reset a
+    // task's birthday.
     let TaskRead::Found(task) = graph.task(1, first.node_id).unwrap() else {
         panic!("the task reads back");
     };
-    assert_eq!(task.created_at, 2_000);
+    assert_eq!(task.created_at, 1_000);
+}
+
+#[test]
+fn reopening_a_task_does_not_drag_it_back_to_open() {
+    let (_dir, mut graph) = open_store();
+    let landed = graph.open_task(1, &decl("ship the face change"), 1_000).unwrap();
+    graph
+        .set_task_state(1, landed.node_id, Some("doing"), Some("read the diff"), 2_000)
+        .unwrap();
+
+    // The model retries the same open (or a second turn says "this work exists"
+    // again). Nothing about the sheet may move.
+    let again = graph
+        .open_task(
+            1,
+            &TaskDecl {
+                name: "ship the face change".to_string(),
+                next: None,
+                state: None,
+            },
+            3_000,
+        )
+        .unwrap();
+    assert!(!again.created);
+    let TaskRead::Found(task) = graph.task(1, landed.node_id).unwrap() else {
+        panic!("the task reads back");
+    };
+    assert_eq!(task.state, "doing", "the work in progress stays in progress");
+    assert_eq!(task.next, "read the diff", "and keeps its next action");
+    assert_eq!(task.updated_at, 2_000, "a restatement is not a move");
+}
+
+#[test]
+fn a_name_that_is_not_a_task_cannot_be_opened_as_one() {
+    let (_dir, mut graph) = open_store();
+    graph
+        .put_entity(
+            1,
+            &mem_core::graph::Term {
+                value: "alice".to_string(),
+                type_label: "person".to_string(),
+                props: Default::default(),
+            },
+        )
+        .unwrap();
+    let err = graph.open_task(1, &decl("alice"), 1_000).unwrap_err();
+    assert!(
+        format!("{err}").contains("not a task"),
+        "a declaration must not re-label a node: {err}"
+    );
+    assert!(graph.list_tasks(1, None).unwrap().is_empty());
 }
 
 #[test]

@@ -153,9 +153,28 @@ impl GraphStore {
             type_label: TASK_KIND.to_string(),
             props: BTreeMap::new(),
         };
-        // A node that already exists keeps its kind, and a name that is already
-        // a person must not become a task by declaration (ADR-0015's rule).
         let (node_id, created) = self.put_entity(scope, &term)?;
+        if !created {
+            // An existing node keeps its kind, so a name that is a person or a
+            // skill must not become a task by declaration (ADR-0015's rule).
+            let kind = self
+                .entity(scope, node_id)?
+                .map(|row| row.kind.as_str().unwrap_or_default().to_string())
+                .unwrap_or_default();
+            if kind != TASK_KIND {
+                return Err(IngestError::Refused(format!(
+                    "`{}` is a {kind}, not a task: a declaration does not re-label a node",
+                    decl.name
+                )));
+            }
+            // Opening a task that is already open RESTATES it and does not move it.
+            // Writing the sheet here would be the quiet bug: a retried or duplicated
+            // tool call would drag a task out of `doing` back into `open` and reset
+            // its clock, so the one call whose entire meaning is "this work exists"
+            // would be the call that loses the work's progress. A caller that wants
+            // the task changed says so at `/move`.
+            return Ok(TaskLanded { node_id, created });
+        }
         let sheet = TaskSheet {
             state,
             next: decl.next.clone().unwrap_or_default(),
