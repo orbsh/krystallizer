@@ -584,6 +584,21 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   prose from compression is still a summary, prose from a review writes nothing.
   Still owed: a trigger that is not the compression read, and a second review whose
   product has a door of its own.
+  TASKS LANDED 2026-10-27 (ADR-0021): a task is an ORDINARY vertex of the fact graph
+  (`kind = task`, ns 36) — so a dependency, a parent, a tag or a reference is an
+  ordinary edge and a fact about a task is an ordinary fact, with no second
+  vocabulary — plus a sheet in ns 44 (same `EntityKey`) holding the only things a
+  vertex cannot: `state` (a closed set, indexed by `by_state`), `next`, two clocks.
+  The sheet is created in the same batch as the vertex, so a task named by a FACT
+  exists and lists as open. Three doors (`POST /tasks/{scope}`, `POST
+  /tasks/{scope}/{node_id}/move`, `GET /tasks/{scope}?state=open`) and three
+  gravity tools (`open_task` / `move_task` / `list_tasks`); the turn now opens by
+  listing what is open. Gates: mem-core tasks 8/0, workspace green, clippy clean;
+  gravity 21/0 + 6 + 10, clippy clean.
+  NODE COUNTERS ARE FIELDS NOW (ADR-0018 amendment, okm ADR-0042): `invoke_calls` /
+  `invoke_ok` / `last_invoked` moved out of the dynamic segment onto `EntityRow`
+  (layout reset, counters at the FRONT) — a number every call bumps is read on the
+  hot path, and a prop is a map walk. `GET /graph/{scope}` exposes them.
   ASSERTION IDENTITY LANDED 2026-10-27 (ADR-0020, on okm ADR-0041): `ingest` checks
   `(head, kind, tail)` before it writes anything, and the check is one seek — the pair
   leads the graph index key now. A re-assertion with the same `since` and `confidence`

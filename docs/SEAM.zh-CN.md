@@ -121,7 +121,11 @@ in-process 不是第二道门：`InProcessSurface` 在调用方进程内链接�
 | skill 提议——给一次走出的组合计数 | gravity 走到组合的那一刻（ADR-0016，同日修订） | `POST /skills/{scope}/propose` | `GraphStore::propose`（kind `skill_proposal`，计数是一个 prop） | 2026-10-26 落地；解析器永远看不到它——草稿不是候选；走路长大了才上报，所以重试不会数两遍 |
 | skill 提议——复审队列 | 不是 gravity 的：这是**人**的门（今天用 curl） | `GET /skills/{scope}/proposals?min_count=N` | `GraphStore::proposals` | 2026-10-26 落地；面向人的动词仍欠（ADR-0016 后果段） |
 | skill 声明——模型把一段做法写下来 | gravity `create_skill`（ADR-0004 的第五条工具） | `POST /skills/{scope}` | `GraphStore::put_skill`（kind `skill`，以 `name` 幂等；步形三部分以 JSON TEXT 到达） | 2026-10-26 落地（k10r ADR-0018） |
-| skill 调用——给这次调用计数 | gravity `invoke_skill`（调用前记 attempt，返回后记 success） | `POST /skills/{scope}/{node_id}/touch` | `GraphStore::touch_skill`（prop `invoke_calls` / `invoke_ok`，merge 进段） | 2026-10-26 落地（ADR-0018）；尽力而为——是回执，不是前提 |
+| skill 调用——给这次调用计数 | gravity `invoke_skill`（调用前记 attempt，返回后记 success） | `POST /skills/{scope}/{node_id}/touch` | `GraphStore::touch_skill`（2026-10-27 修订起是节点行上的声明字段——`invoke_calls` / `invoke_ok` / `last_invoked`，不再 merge 进段） | 2026-10-26 落地（ADR-0018）；尽力而为——是回执，不是前提 |
+| 任务——开单 | gravity `open_task` | `POST /tasks/{scope}`（`{name, next?, state?, ts_ms?}`） | `GraphStore::open_task`（kind `task` 顶点 + ns 44 任务单，一次写） | 2026-10-27 落地（ADR-0021） |
+| 任务——迁移（状态 / 下一步） | gravity `move_task` | `POST /tasks/{scope}/{node_id}/move`（`{state?, next?, ts_ms?}`；缺席即不动） | `GraphStore::set_task_state`（只写任务单那一行；顶点不动） | 2026-10-27 落地（ADR-0021） |
+| 任务——什么还开着 | gravity `list_tasks`，以及 turn 开头那段提示词 | `GET /tasks/{scope}?state=open` | `GraphStore::list_tasks`（任务单的 `by_state` 面；不给状态就是 kind 扫描） | 2026-10-27 落地（ADR-0021） |
+| 任务——依赖 / 父子 / 标签 / 引用 | gravity `commit_memory`（没有任务专用工具） | `POST /memories/{scope}`，类型写 `task` | `GraphStore::ingest`——普通的连边路径 | 2026-10-27 落地（ADR-0021：一张图，一套边词汇） |
 | skill 晋升——人声明「提议所建议的那个 skill」 | 只有人 | `POST /skills/{scope}/{node_id}/promote` | `GraphStore::promote`（把 `steps` 拷进真 skill，并记录 `promoted_to`） | 2026-10-26 落地 |
 | 初始化记忆（人设 / 风格） | 调用方无操作：它随投影到达 | — | 装配是 k10r 内部细节（从用户节点出发遍历，注入上下文头部） | 已声明（ADR-0001） |
 

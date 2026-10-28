@@ -43,11 +43,24 @@ it been tried and abandoned. An edge counter is association weight: how strongly
 do these two belong together, which is a ranking input. Neither substitutes for
 the other, and the fact that both are "counts" is a coincidence of vocabulary.
 
+**3a. Amended 2026-10-27: the counters are DECLARED FIELDS.** They were props,
+argued as "application telemetry that arrives one at a time". That argument was
+wrong about the access pattern, not about the measurement: a number every call bumps
+is read on the hot path, and the dynamic segment is a map to walk for a value the
+touch was already rewriting the row for. `invoke_calls` / `invoke_ok` /
+`last_invoked` are fields on `EntityRow` now, and a touch is still ONE write
+(`merge` routes a name that matches a declared field to the row and leaves the props
+alone). The vector stays out of the row (ADR-0019) and this does not contradict it:
+eight bytes that change every call and 1.5–2 KB that changes never are the two ends
+of the same rule. Moving them was cheap only because okm's layout byte is a stamp,
+not a compatibility promise (okm ADR-0042) — the fields were placed at the front,
+where a reader looks, and the layout number was reset.
+
 **3. Counting never fails what it counts.**
 
 Recall's bump answers the fact as it stands when the count cannot be written; the
-touch door's answer is a receipt, and gravity ignores it. The counters are props
-merged into the dynamic segment: no declared field, no new column, no re-label. The
+touch door's answer is a receipt, and gravity ignores it. The counters are fields on the node row (amended; see 3a): no re-label, no second
+table. The
 bump is still a whole-document write under okm ADR-0035 — which is why the vector
 has to leave the row (ADR-0019), so a count never re-encodes an embedding it cannot
 change.

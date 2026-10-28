@@ -26,6 +26,7 @@ One entity class = one ns (OKM rule). Current state:
 | 41  | Structured log (diagnostics; internal, no door) | Implemented (2026-10-20) | ADR-0011 |
 | 42  | Channel members (identity: display name + human/agent), and the graph's user node set | Implemented (2026-10-20; graph participation 2026-10-21) | ADR-0009 §1, ADR-0014 |
 | 43  | Node vectors (the embedding, in its own table; same `EntityKey`) | Implemented (2026-10-26) | ADR-0019, ADR-0003 |
+| 44  | Task sheets (state + next action of a `kind = task` node; same `EntityKey`) | Implemented (2026-10-27) | ADR-0021 |
 | —   | Initialization memory (persona / style) | Declared (ADR-0001) | ADR-0001 |
 
 The graph's read side (LPA, binning, the rendered community) landed with it
@@ -369,14 +370,14 @@ amended), so a reader can find a node by what it says instead of opening the
 document. `GET /graph/{scope}` carries the props on every node; the rest of the
 graph is unchanged.
 
-**The same segment carries a node's own bookkeeping.** A skill's `invoke_calls` /
-`invoke_ok` / `last_invoked` (ADR-0018) are props too — same carrier, different
-reader: not the vector but a review pass asking whether the thing is still alive.
-The three above are CONVENTIONAL (a view and the embedding read them); a counter is
-the node's own telemetry, and adding one costs a segment merge rather than a
-declared field, which is why counting did not need a schema change. A merge is a
-whole-document write, though — the reason the vector moves out of this row
-(ADR-0019): the cheap thing (a count) was paying for the expensive thing (a vector).
+**A node's own bookkeeping is NOT in the segment.** A skill's `invoke_calls` /
+`invoke_ok` / `last_invoked` (ADR-0018) are DECLARED FIELDS on the row — the
+amendment of 2026-10-27. The three props above are content a view and the embedding
+read; a counter is a number every call bumps, and reading it out of the dynamic
+segment costs a map lookup on the hot path for a value the touch was already
+rewriting the row for. Declaring them did not bring the vector back: the counters
+are eight bytes that change on every call, an embedding is 1.5–2 KB that changes on
+none — okm ADR-0042 draws the same line as ADR-0019, from the other side.
 
 - Key `[scope 8B BE][node_id 8B BE]` — `scope` leads because the corpus is
   per-user (ADR-0003). Ids are
@@ -438,6 +439,38 @@ whole-document write, though — the reason the vector moves out of this row
   read side consumes the face as the community bucket. ADR-0010 §1 keeps the
   design.
 
+### Tasks (ns 36 `kind = task` + ns 44 sheet) — the work, ADR-0021
+
+A task is an ORDINARY vertex of the fact graph: `kind = task` in ns 36, the same
+collection as every other node. Dependencies, parents, tags and references are
+therefore ordinary edges — `["task-12","task",{},"depends_on",{},"task-9","task",{}]`
+is a fact like any other, and a fact naming a task that does not exist creates it
+(being named as work IS being work).
+
+What CHANGES about a task lives beside it, in ns 44, keyed by the same `EntityKey`
+(the `NodeVector` pattern):
+
+```rust
+#[ok_ns(44)]
+#[ok_index(by_state { fields(state) })]     // [state][scope][node_id]
+pub struct TaskSheet {
+    pub state: String,        // open | doing | blocked | done — a CLOSED set
+    pub next: String,         // the next action, in the producer's words
+    pub created_at: u64,      // the caller's clock when it was opened
+    pub updated_at: u64,      // ... at the last move
+}
+```
+
+Three doors and no more: `POST /tasks/{scope}` (open, idempotent on the name),
+`POST /tasks/{scope}/{node_id}/move` (state and/or next; a field that is absent is
+left ALONE), `GET /tasks/{scope}?state=open` (the enumeration, off the face). There
+is deliberately no dependency door: a second vocabulary for one graph is a second
+thing to keep in step.
+
+`gravity` lists the open tasks into every turn's prompt, best effort — a store that
+cannot answer does not fail the turn. That is what makes a turn start from what is
+owED rather than only from what was said.
+
 ### Skills (ns 36, kind `skill`) — the selectable row, ADR-0015
 
 A skill is an entity node in the fact graph, not a table of its own: the
@@ -453,7 +486,9 @@ content= what it does, when to use it // a conventional prop (the vector reads i
 preconditions = TEXT JSON array of strings
 steps         = TEXT JSON array of {"code_id": n, "note": "…"}, execution order
 verification  = TEXT JSON array of strings
-invoke_calls  = prop, u64: how many times a call was STARTED (ADR-0018)
+invoke_calls  = field, u32: how many times a call was STARTED (ADR-0018)
+invoke_ok     = field, u32: ... and how many returned
+last_invoked  = field, u64: the caller's clock at the last count
 invoke_ok     = prop, u64: how many of those came back  // calls - ok = failures
 last_invoked  = prop, u64: the caller's clock at the last record
 experience    = NOT a prop: the node's incident facts (weight + decay, ADR-0005)
