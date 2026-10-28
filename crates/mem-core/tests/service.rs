@@ -8,7 +8,13 @@
 //! assembly and works, and a second process-level open of the same
 //! directory fails (one writer per directory, by construction — no silent
 //! second writer).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use mem_core::{open_service, CodeRow, EntityRow, FactTuple};
 use okm_core::{Document, KeyEncode};
@@ -22,7 +28,8 @@ fn the_service_assembly_serves_every_group() {
     stores.channels.append(7, 1000, 0, 0, 0, "hi").unwrap();
     let code_id = stores
         .code
-        .put("nu", "log into a host", "{}", "ssh $args.host").unwrap();
+        .put("nu", "log into a host", "{}", "ssh $args.host")
+        .unwrap();
     let fact = FactTuple::from_json(
         r#"["galaxy_repo","repository",{},"PIVOTED_TO",{},"k10r_core","system",{}]"#,
     )
@@ -32,18 +39,35 @@ fn the_service_assembly_serves_every_group() {
     assert_eq!(
         stores
             .channels
-            .fetch_full(7, mem_core::DEFAULT_MEMBER).unwrap()
+            .fetch_full(7, mem_core::DEFAULT_MEMBER)
+            .unwrap()
             .increment
             .len(),
         1
     );
-    assert_eq!(stores.code.get(code_id).expect("the row reads").expect("the row is there").language, "nu");
+    assert_eq!(
+        stores
+            .code
+            .get(code_id)
+            .expect("the row reads")
+            .expect("the row is there")
+            .language,
+        "nu"
+    );
     assert_eq!(
         outcome,
         mem_core::IngestOutcome::Linked { edge_id: 1 },
         "the graph's id counters work off the same assembly"
     );
-    assert_eq!(stores.graph.entity_by_name(1, "galaxy_repo").unwrap().unwrap().0, 1);
+    assert_eq!(
+        stores
+            .graph
+            .entity_by_name(1, "galaxy_repo")
+            .unwrap()
+            .unwrap()
+            .0,
+        1
+    );
 }
 
 /// The premise that makes ONE keyspace legal for several tables: their ns

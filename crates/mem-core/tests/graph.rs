@@ -5,7 +5,13 @@
 //!
 //! The round trips are locked, not just the bytes: a byte-pass with an
 //! empty query is the silent-corruption shape this file exists to catch.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use mem_core::graph::{
     FactTuple, GraphStore, IngestError, IngestOutcome, Touch, RECENT_BASE, RECENT_SLOTS,
@@ -198,13 +204,22 @@ fn entities_resolve_by_name_within_a_scope() {
     // Re-ingesting the same fact resolves the SAME nodes (no duplicate
     // entity for a name already in the scope).
     graph.ingest(1, &fact).unwrap();
-    assert_eq!(graph.entity_by_name(1, "galaxy_repo").unwrap().unwrap().0, head_id);
+    assert_eq!(
+        graph.entity_by_name(1, "galaxy_repo").unwrap().unwrap().0,
+        head_id
+    );
 
     // Another scope: a separate node, not a shared one.
     assert!(graph.entity_by_name(2, "galaxy_repo").unwrap().is_none());
     graph.ingest(2, &fact).unwrap();
-    assert_ne!(graph.entity_by_name(2, "galaxy_repo").unwrap().unwrap().0, head_id);
-    assert_ne!(graph.entity_by_name(2, "k10r_core").unwrap().unwrap().0, tail_id);
+    assert_ne!(
+        graph.entity_by_name(2, "galaxy_repo").unwrap().unwrap().0,
+        head_id
+    );
+    assert_ne!(
+        graph.entity_by_name(2, "k10r_core").unwrap().unwrap().0,
+        tail_id
+    );
 }
 
 /// Head/tail props are the ENTITY's attributes (ADR-0004's slot rule): they
@@ -234,7 +249,10 @@ fn entity_props_land_on_the_node_and_merge() {
         )
         .unwrap();
 
-    let props = graph.entity_props(1, head_id).expect("the node has props").unwrap();
+    let props = graph
+        .entity_props(1, head_id)
+        .expect("the node has props")
+        .unwrap();
     assert_eq!(
         props.get("vcs"),
         Some(&DynamicValue::Str("gitea".into())),
@@ -294,7 +312,10 @@ fn functional_relation_rewrites_the_incumbent() {
     );
 
     let (core_id, _) = graph.entity_by_name(1, "k10r_core").unwrap().unwrap();
-    assert_eq!(graph.typed_out(1, core_id, "STORAGE_ENGINE").unwrap().len(), 1);
+    assert_eq!(
+        graph.typed_out(1, core_id, "STORAGE_ENGINE").unwrap().len(),
+        1
+    );
 
     let fact = graph.fact(edge_id).unwrap().unwrap();
     assert_eq!(fact.kind, "STORAGE_ENGINE");
@@ -314,13 +335,17 @@ fn functional_relation_rewrites_the_incumbent() {
     // The old object keeps no stale in-edge: the traversal faces follow the
     // rewrite.
     let (fjall_id, _) = graph.entity_by_name(1, "fjall_engine").unwrap().unwrap();
-    assert!(graph.typed_out(1, fjall_id, "STORAGE_ENGINE").unwrap().is_empty());
+    assert!(graph
+        .typed_out(1, fjall_id, "STORAGE_ENGINE")
+        .unwrap()
+        .is_empty());
 
     // The rewrite is ONE batch (unlink_into + link_into), and the dynamic
     // segment is k10r's entry: the old assertion's props must not survive
     // into the new one.
     let props = graph
-        .fact_props(edge_id).unwrap()
+        .fact_props(edge_id)
+        .unwrap()
         .expect("the assertion's own record");
     assert!(
         !props.contains_key("reason"),
@@ -391,7 +416,8 @@ fn literal_object_becomes_a_node() {
         .unwrap();
 
     let (node_id, row) = graph
-        .entity_by_name(1, "1990").unwrap()
+        .entity_by_name(1, "1990")
+        .unwrap()
         .expect("the literal is reachable by its text");
     assert_eq!(row.literal_num, 1990);
     assert_eq!(row.kind.as_str(), Some(LITERAL_KIND));
@@ -429,7 +455,10 @@ fn fact_open_props_ride_the_edge_dynamic_segment() {
         panic!("the first fact links");
     };
 
-    let props = graph.fact_props(edge_id).expect("the edge has props").unwrap();
+    let props = graph
+        .fact_props(edge_id)
+        .expect("the edge has props")
+        .unwrap();
     assert_eq!(
         props.get("reason"),
         Some(&DynamicValue::Str("network_graph_too_heavy".into()))
@@ -884,7 +913,10 @@ fn a_landed_fact_bins_both_endpoints() {
     let (alpha, _) = graph.entity_by_name(1, "alpha").unwrap().unwrap();
     let (beta, _) = graph.entity_by_name(1, "beta").unwrap().unwrap();
     let community = graph.entity(1, alpha).unwrap().unwrap().community_id;
-    assert_eq!(community, graph.entity(1, beta).unwrap().unwrap().community_id);
+    assert_eq!(
+        community,
+        graph.entity(1, beta).unwrap().unwrap().community_id
+    );
     assert!(community != 0, "every node is seeded with a real community");
 
     let members = graph.community_members(1, community).unwrap();
@@ -1010,12 +1042,14 @@ fn communities_are_per_scope() {
     let two = graph.entity(2, alpha_two).unwrap().unwrap().community_id;
 
     let members_one: Vec<u64> = graph
-        .community_members(1, one).unwrap()
+        .community_members(1, one)
+        .unwrap()
         .into_iter()
         .map(|(node, _)| node)
         .collect();
     let members_two: Vec<u64> = graph
-        .community_members(2, two).unwrap()
+        .community_members(2, two)
+        .unwrap()
         .into_iter()
         .map(|(node, _)| node)
         .collect();
@@ -1051,7 +1085,8 @@ fn top_by_weight_ranks_the_scope_and_stops_at_k() {
         .unwrap();
 
     let base: Vec<u64> = graph
-        .scope_facts(1).unwrap()
+        .scope_facts(1)
+        .unwrap()
         .iter()
         .map(|fact| fact.edge_id)
         .collect();
@@ -1267,7 +1302,10 @@ fn the_scope_is_denormalized_onto_the_row_and_a_rewrite_keeps_it() {
     else {
         panic!("first fact links");
     };
-    assert_eq!(graph.fact_in_scope(7, edge_id).unwrap().unwrap().edge.scope, 7);
+    assert_eq!(
+        graph.fact_in_scope(7, edge_id).unwrap().unwrap().edge.scope,
+        7
+    );
     assert!(
         graph.fact_in_scope(8, edge_id).unwrap().is_none(),
         "the copy agrees with the endpoints, which is what the face depends on"
@@ -1357,7 +1395,8 @@ fn a_user_endpoint_is_a_node_of_the_identity_collection() {
     let mut stores = mem_core::open_service(dir.path()).unwrap();
     stores
         .channels
-        .put_member(1, 1, "orbit", mem_core::channel::member_role::AGENT).unwrap();
+        .put_member(1, 1, "orbit", mem_core::channel::member_role::AGENT)
+        .unwrap();
     let graph = &mut stores.graph;
 
     let fact = tuple(r#"["member-1-1","user",{},"PREFERS",{},"coffee","drink",{}]"#);
@@ -1387,14 +1426,16 @@ fn a_user_endpoint_is_a_node_of_the_identity_collection() {
     // extracted knowledge, so the landing index never contains it.
     assert!(graph.entity_by_name(1, "member-1-1").unwrap().is_none());
     assert!(graph
-        .scope_entities(1).unwrap()
+        .scope_entities(1)
+        .unwrap()
         .iter()
         .all(|(_, row)| row.name != "member-1-1"));
 
     // A rename touches the ROW and nothing else: same edge id, new name.
     stores
         .channels
-        .put_member(1, 1, "orbit2", mem_core::channel::member_role::AGENT).unwrap();
+        .put_member(1, 1, "orbit2", mem_core::channel::member_role::AGENT)
+        .unwrap();
     let renamed = graph.fact_view(edge_id).unwrap().unwrap();
     assert_eq!(renamed.src.name, "orbit2");
     assert_eq!(renamed.edge_id, edge_id);
@@ -1437,7 +1478,10 @@ fn the_vector_lives_beside_the_row_and_outlives_a_prop_merge() {
     let dir = tempfile::tempdir().unwrap();
     let mut graph = GraphStore::open(dir.path()).unwrap().with_embedder(engine);
     graph
-        .ingest(1, &tuple(r#"["alpha","thing",{},"IS",{},"beta","thing",{}]"#))
+        .ingest(
+            1,
+            &tuple(r#"["alpha","thing",{},"IS",{},"beta","thing",{}]"#),
+        )
         .unwrap();
     let (node_id, _) = graph.entity_by_name(1, "alpha").unwrap().unwrap();
     let before = graph
@@ -1463,7 +1507,9 @@ fn the_vector_lives_beside_the_row_and_outlives_a_prop_merge() {
     // And the pair survives a reopen: the table is rebuilt from ns 43, not from
     // anything the process happened to hold.
     drop(graph);
-    let mut graph = GraphStore::open(dir.path()).unwrap().with_embedder(local_embedder().unwrap());
+    let mut graph = GraphStore::open(dir.path())
+        .unwrap()
+        .with_embedder(local_embedder().unwrap());
     assert_eq!(
         graph.node_vector(1, node_id).unwrap().as_ref(),
         Some(&before),

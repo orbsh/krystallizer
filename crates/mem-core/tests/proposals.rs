@@ -31,7 +31,10 @@ fn walking_the_same_composition_counts_and_never_duplicates() {
     assert_eq!(first.count, 1, "seen once");
 
     let second = graph.propose(1, &walk("4+7", 2_000)).unwrap();
-    assert!(!second.created, "the same composition, not a second proposal");
+    assert!(
+        !second.created,
+        "the same composition, not a second proposal"
+    );
     assert_eq!(second.node_id, first.node_id, "the same row");
     assert_eq!(second.count, 2, "counted, not duplicated");
 
@@ -78,7 +81,13 @@ fn the_queue_is_ordered_by_repetition_and_drops_promoted_rows() {
 
     // Promotion takes the row out of the queue without erasing it.
     let promoted = graph
-        .promote(1, queue[0].node_id, "fetch-then-format", "Fetch and format", "")
+        .promote(
+            1,
+            queue[0].node_id,
+            "fetch-then-format",
+            "Fetch and format",
+            "",
+        )
         .unwrap();
     assert!(promoted.created);
 
@@ -88,7 +97,10 @@ fn the_queue_is_ordered_by_repetition_and_drops_promoted_rows() {
 
     match graph.proposal(1, queue[0].node_id).unwrap() {
         ProposalRead::Found(row) => {
-            assert_eq!(row.promoted_to, "fetch-then-format", "the record of what it became");
+            assert_eq!(
+                row.promoted_to, "fetch-then-format",
+                "the record of what it became"
+            );
             assert_eq!(row.count, 3, "the count survives promotion");
             assert!(!row.steps.is_empty(), "and so do the steps it suggested");
         }
@@ -103,7 +115,13 @@ fn promotion_copies_the_steps_into_a_real_skill() {
 
     let landed = graph.propose(1, &walk("4+7", 1_000)).unwrap();
     let promoted = graph
-        .promote(1, landed.node_id, "fetch-then-format", "Fetch, then format", "Two steps.")
+        .promote(
+            1,
+            landed.node_id,
+            "fetch-then-format",
+            "Fetch, then format",
+            "Two steps.",
+        )
         .unwrap();
 
     match graph.skill(1, promoted.skill_node_id).unwrap() {
@@ -111,7 +129,8 @@ fn promotion_copies_the_steps_into_a_real_skill() {
             assert_eq!(skill.name, "fetch-then-format");
             assert_eq!(skill.title, "Fetch, then format");
             assert_eq!(
-                skill.steps, walk("4+7", 0).steps,
+                skill.steps,
+                walk("4+7", 0).steps,
                 "the steps are the run that was counted, copied rather than retyped"
             );
         }

@@ -252,7 +252,8 @@ pub const COMPRESS_OP: TailOp = TailOp {
 
 /// The review pass's prompt. `docs/PROMPTS.md` §2b is its documented home; this
 /// copy is the one the door serves, so the two are kept word-identical.
-pub const REVIEW_PROMPT: &str = "Review the conversation span above and answer ONE JSON object and nothing else.\n\n\
+pub const REVIEW_PROMPT: &str =
+    "Review the conversation span above and answer ONE JSON object and nothing else.\n\n\
 {\"facts\": []}\n\n\
 \"facts\" holds 8-slot tuples [head value, head type, head props, relation name, relation props, \
 tail value, tail type, tail props] — the shape commit_memory takes. Save what a later turn would \

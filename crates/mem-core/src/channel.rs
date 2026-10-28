@@ -433,7 +433,10 @@ impl ChannelStore {
 
     /// Every checkpoint node of one channel, in key order (== pointer order).
     /// Prefix scan over the channel's range, same discipline as the log read.
-    fn checkpoints_of(&mut self, channel_id: u64) -> Result<Vec<(CheckpointKey, CheckpointRow)>, String> {
+    fn checkpoints_of(
+        &mut self,
+        channel_id: u64,
+    ) -> Result<Vec<(CheckpointKey, CheckpointRow)>, String> {
         let mut prefix = Vec::with_capacity(3 + 8);
         prefix.extend_from_slice(CheckpointRow::NS_PREFIX);
         write_slot(&mut prefix, PRIMARY_SLOT);
@@ -498,7 +501,9 @@ impl ChannelStore {
         );
         // The head is a dynamic name, so `merge` routes it to the segment and
         // leaves the row alone (ADR-0035: names decide the arm, not the verb).
-        self.checkpoints.merge(key, &fields).map_err(|e| e.to_string())
+        self.checkpoints
+            .merge(key, &fields)
+            .map_err(|e| e.to_string())
     }
 
     /// Open a compression AT the pointer k10r served (ADR-0008 §4): the node
@@ -516,15 +521,16 @@ impl ChannelStore {
             ts_ms: pointer.0,
             sub: pointer.1,
         };
-        self.checkpoints.put(
-            &key,
-            &CheckpointRow {
-                summary: String::new(),
-                suggested_ts: 0,
-                suggested_sub: 0,
-            },
-        )
-        .map_err(|e| e.to_string())?;
+        self.checkpoints
+            .put(
+                &key,
+                &CheckpointRow {
+                    summary: String::new(),
+                    suggested_ts: 0,
+                    suggested_sub: 0,
+                },
+            )
+            .map_err(|e| e.to_string())?;
         self.write_head(&key, head)
     }
 
@@ -640,7 +646,12 @@ impl ChannelStore {
     /// model's read always reaches the log's end, so no position is stored — the
     /// checkpoint is what cuts the increment (ADR-0008 §2). Never rewinds: an
     /// earlier clock leaves the stored one alone.
-    pub fn note_read(&mut self, channel_id: u64, member_id: u64, read_at: u64) -> Result<(), String> {
+    pub fn note_read(
+        &mut self,
+        channel_id: u64,
+        member_id: u64,
+        read_at: u64,
+    ) -> Result<(), String> {
         let key = CursorKey {
             channel_id,
             member_id,

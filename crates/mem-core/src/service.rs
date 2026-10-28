@@ -43,8 +43,8 @@ pub struct ServiceStores {
 /// group to it. A second call on the same directory fails on Fjall's lock
 /// (one writer per directory, by construction).
 pub fn open_service(path: &std::path::Path) -> Result<ServiceStores, String> {
-    let db = fjall::Database::create_or_recover(fjall::Config::new(path))
-        .map_err(|e| e.to_string())?;
+    let db =
+        fjall::Database::create_or_recover(fjall::Config::new(path)).map_err(|e| e.to_string())?;
     let channel_store =
         FjallStore::from_db(db.clone(), KEYSPACE_CHANNEL).map_err(|e| e.to_string())?;
     let memory_store = FjallStore::from_db(db, KEYSPACE_MEMORY).map_err(|e| e.to_string())?;

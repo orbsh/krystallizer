@@ -248,9 +248,7 @@ impl LogStore {
             // The vocabulary-resolving write: names allocate on first sight.
             // `merge` is the document write; these names are non-declared, so
             // they land in the segment and the row written above is untouched.
-            self.table
-                .merge(&key, &fields)
-                .map_err(|e| e.to_string())?;
+            self.table.merge(&key, &fields).map_err(|e| e.to_string())?;
         }
         // Keep the trim index in KEY order, not arrival order: a clock step
         // backwards makes the two differ, and "oldest" must mean the smallest

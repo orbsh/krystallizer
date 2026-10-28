@@ -192,9 +192,7 @@ pub fn member_memory(
     scope: u64,
     channel_id: u64,
 ) -> Result<Vec<FactView>, IngestError> {
-    let members = channels
-        .members(channel_id)
-        .map_err(IngestError::Storage)?;
+    let members = channels.members(channel_id).map_err(IngestError::Storage)?;
     let mut seen = BTreeSet::new();
     let mut head: Vec<FactView> = Vec::new();
     for (key, _) in members {

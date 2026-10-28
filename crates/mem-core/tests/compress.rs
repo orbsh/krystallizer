@@ -8,7 +8,13 @@
 //! silence that fired the cache clock can never be its own split, ties
 //! resolve to the earlier gap so one corpus always answers identically,
 //! and a span with no internal gap splits at its end.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use mem_core::channel::{MessageKey, MessageRow, SessionView};
 use mem_core::compress::{evaluate, tail_span, Params, Stage, TailOp, Trigger, Verdict};

@@ -125,7 +125,10 @@ impl GraphStore {
         // An empty `steps` stays absent for the usual reason: props merge, so
         // writing "" would erase what a previous walk reported (ADR-0015).
         if !decl.steps.trim().is_empty() {
-            props.insert(STEPS_FIELD.to_string(), DynamicValue::Str(decl.steps.clone()));
+            props.insert(
+                STEPS_FIELD.to_string(),
+                DynamicValue::Str(decl.steps.clone()),
+            );
         }
         props.insert(COUNT_FIELD.to_string(), DynamicValue::UInt(count));
         props.insert(LAST_SEEN_FIELD.to_string(), DynamicValue::UInt(decl.ts_ms));
@@ -171,11 +174,7 @@ impl GraphStore {
     /// and nothing here is on the model's path. A weight face would rank by
     /// retrieval, which is the wrong question — the queue's question is "did
     /// this run REPEAT".
-    pub fn proposals(
-        &mut self,
-        scope: u64,
-        min_count: u64,
-    ) -> Result<Vec<Proposal>, IngestError> {
+    pub fn proposals(&mut self, scope: u64, min_count: u64) -> Result<Vec<Proposal>, IngestError> {
         let mut out: Vec<Proposal> = Vec::new();
         for (node_id, row) in self.scope_entities(scope)? {
             if row.kind.as_str() != Some(PROPOSAL_KIND) {

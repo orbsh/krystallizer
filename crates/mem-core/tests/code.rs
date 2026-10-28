@@ -5,7 +5,13 @@
 //! carries what a skill-to-code link is decided from. The query round trip
 //! is locked, not just the bytes (okm junction lesson: byte-pass +
 //! query-empty is the classic silent corruption shape).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use mem_core::code::{CodeRow, CodeStore};
 use okm_core::KeyEncode;
@@ -34,16 +40,20 @@ fn put_assigns_ids_and_get_round_trips_the_row() {
     let mut store = CodeStore::open(dir.path()).unwrap();
 
     assert_eq!(
-        store.put(
-            "nu",
-            "log into a host via ssh",
-            r#"{"host": "string", "user": "string"}"#,
-            "ssh $args.host",
-        ).unwrap(),
+        store
+            .put(
+                "nu",
+                "log into a host via ssh",
+                r#"{"host": "string", "user": "string"}"#,
+                "ssh $args.host",
+            )
+            .unwrap(),
         1
     );
     assert_eq!(
-        store.put("python", "sum two ints", r#"{"n": "int"}"#, "print(1)").unwrap(),
+        store
+            .put("python", "sum two ints", r#"{"n": "int"}"#, "print(1)")
+            .unwrap(),
         2
     );
 
@@ -57,7 +67,10 @@ fn put_assigns_ids_and_get_round_trips_the_row() {
             source: "ssh $args.host".into(),
         }
     );
-    assert!(store.get(3).unwrap().is_none(), "unknown id = absent, not an error");
+    assert!(
+        store.get(3).unwrap().is_none(),
+        "unknown id = absent, not an error"
+    );
 }
 
 /// Ids are recovered from storage: a fresh process must not reuse an id
@@ -77,7 +90,11 @@ fn ids_are_recovered_across_reopen() {
         "continues past the max"
     );
     assert_eq!(
-        store.get(1).expect("the row reads").expect("the row is there").source,
+        store
+            .get(1)
+            .expect("the row reads")
+            .expect("the row is there")
+            .source,
         "first",
         "id 1 was not overwritten"
     );

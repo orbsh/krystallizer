@@ -127,7 +127,9 @@ impl CodeStore {
     /// Unknown id = absent, not an error (the caller's error value, its
     /// choice).
     pub fn get(&self, code_id: u64) -> Result<Option<CodeRow>, String> {
-        self.table.get(&CodeKey { code_id }).map_err(|e| e.to_string())
+        self.table
+            .get(&CodeKey { code_id })
+            .map_err(|e| e.to_string())
     }
 
     /// This store's table, `(name, ns)` — the name from the row declaration.
