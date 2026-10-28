@@ -38,6 +38,9 @@ pub const VERIFICATION_FIELD: &str = "verification";
 /// (`invoke_ok`). Usage telemetry on the node, not the weight system's counters,
 /// which ride EDGE rows and rank retrieval (ADR-0005/ADR-0018). A failed attempt
 /// still counts as a call: "tried and broke" is the state a reader is looking for.
+///
+/// These three names are FIELDS on `EntityRow` (layout v5), not props — the
+/// constants stay so a caller writing through `merge` keeps one spelling.
 pub const CALLS_FIELD: &str = "invoke_calls";
 pub const OK_FIELD: &str = "invoke_ok";
 /// The caller's clock at the last count, so "hot" and "abandoned" differ.
@@ -224,9 +227,12 @@ impl GraphStore {
     /// leaves `calls > ok`, which is the whole point of recording the attempt
     /// first — the store never has to guess an outcome.
     ///
-    /// The counters are PROPS on the node rather than a new column: they are
-    /// application telemetry, they arrive one at a time, and `merge` writes the
-    /// segment without touching the row (no re-embed, no re-label).
+    /// The counters are DECLARED FIELDS on the node row (ADR-0018 amendment,
+    /// 2026-10-27): a number every call bumps is the opposite of "application
+    /// data that arrives one at a time", and reading it back out of the dynamic
+    /// segment costs a map lookup for a value the touch was already rewriting
+    /// the row for. `merge` routes a name that matches a declared field to the
+    /// row and leaves the props alone, so one touch is still ONE write.
     pub fn touch_skill(
         &mut self,
         scope: u64,
@@ -241,22 +247,20 @@ impl GraphStore {
         if kind != SKILL_KIND {
             return Ok(SkillTouchOutcome::NotASkill { kind });
         }
-        let props = self.entity_props(scope, node_id)?.unwrap_or_default();
-        let count = |field: &str| match props.get(field) {
-            Some(DynamicValue::UInt(value)) => *value,
-            _ => 0,
-        };
-        let calls = count(CALLS_FIELD) + u64::from(phase == TouchPhase::Attempt);
-        let ok = count(OK_FIELD) + u64::from(phase == TouchPhase::Success);
+        let calls = row.invoke_calls + u32::from(phase == TouchPhase::Attempt);
+        let ok = row.invoke_ok + u32::from(phase == TouchPhase::Success);
         let mut write: BTreeMap<String, DynamicValue> = BTreeMap::new();
-        write.insert(CALLS_FIELD.to_string(), DynamicValue::UInt(calls));
-        write.insert(OK_FIELD.to_string(), DynamicValue::UInt(ok));
+        write.insert(
+            CALLS_FIELD.to_string(),
+            DynamicValue::UInt(u64::from(calls)),
+        );
+        write.insert(OK_FIELD.to_string(), DynamicValue::UInt(u64::from(ok)));
         write.insert(LAST_INVOKED_FIELD.to_string(), DynamicValue::UInt(now));
         self.merge_props(scope, node_id, &write)?;
         Ok(SkillTouchOutcome::Counted(SkillTouch {
             node_id,
-            calls,
-            ok,
+            calls: u64::from(calls),
+            ok: u64::from(ok),
         }))
     }
 

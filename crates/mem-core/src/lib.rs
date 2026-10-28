@@ -10,7 +10,16 @@
 // are denied: a panicking test is a failing test with a stack trace. Set once
 // here — `cfg(test)` is only on for this crate's own test build, never for
 // the `tests/` crates (those carry the same line at their own root).
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unwrap_in_result,
+        clippy::panic_in_result_fn
+    )
+)]
 
 pub mod bundle;
 pub mod channel;
@@ -25,6 +34,7 @@ pub mod proposals;
 pub mod render;
 pub mod service;
 pub mod skills;
+pub mod tasks;
 pub mod view;
 
 /// The service's two keyspaces — one Fjall database (one directory, one
@@ -47,9 +57,9 @@ pub use channel::{
 };
 pub use code::{CodeKey, CodeRow, CodeStore};
 pub use compress::{
-    evaluate as evaluate_compression, Params as CompressionParams, TailOp, Trigger as CompressionTrigger,
-    tail_span, Stage, Verdict as CompressionVerdict, COMPRESS_OP, REVIEW_OP, REVIEW_PROMPT, TAIL_OPS,
-    TAIL_PROMPT,
+    evaluate as evaluate_compression, tail_span, Params as CompressionParams, Stage, TailOp,
+    Trigger as CompressionTrigger, Verdict as CompressionVerdict, COMPRESS_OP, REVIEW_OP,
+    REVIEW_PROMPT, TAIL_OPS, TAIL_PROMPT,
 };
 pub use config::{
     CompressionConfig, ConfigError, EmbeddingConfig, EmbeddingEngine, KrystallizerConfig,
@@ -73,4 +83,7 @@ pub use log::{
 pub use okm_core::obj_dynamic::DynamicValue;
 pub use render::{render_head, render_memory, RenderFormat};
 pub use service::{open_service, ServiceStores};
+pub use tasks::{
+    TaskDecl, TaskLanded, TaskRead, TaskSheet, TaskView, OPEN_STATE, TASK_KIND, TASK_STATES,
+};
 pub use view::{assemble, member_memory, role_name, Projection, DEFAULT_SCOPE};

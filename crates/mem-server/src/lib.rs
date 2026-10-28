@@ -259,6 +259,8 @@ fn build(
         .route("/skills/{scope}/{node_id}/promote", post(promote_skill))
         .route("/skills/{scope}/{node_id}/touch", post(touch_skill))
         .route("/skills/{scope}/{node_id}", get(fetch_skill))
+        .route("/tasks/{scope}", post(open_task).get(list_tasks))
+        .route("/tasks/{scope}/{node_id}/move", post(move_task))
         .route("/memories/{scope}", post(ingest_facts))
         .route("/graph/{scope}/search", post(search_facts))
         .route("/graph/{scope}/top", get(top_facts))
@@ -1079,6 +1081,152 @@ async fn promote_skill(
         name: promoted.name,
         created: promoted.created,
     }))
+}
+
+// ---- tasks (k10r ADR-0021) ------------------------------------------------
+//
+// A task is an ordinary vertex of the fact graph with a sheet beside it, so these
+// three doors move ONLY the parts a vertex cannot: whether it is open, what the
+// next action is, when it was stated. Dependencies, parents, tags and references
+// are ordinary edges and ride `POST /memories/{scope}` like any other fact — a
+// door per relation would be a second vocabulary for one graph.
+
+/// Request body of `POST /tasks/{scope}`. `ts_ms` is the caller's clock, the same
+/// discipline the checkpoint and touch doors follow: k10r has no clock of its own.
+#[derive(Debug, Deserialize)]
+pub struct OpenTaskBody {
+    pub name: String,
+    #[serde(default)]
+    pub next: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub ts_ms: Option<u64>,
+}
+
+/// Request body of `PATCH /tasks/{scope}/{node_id}`. Absent fields are LEFT
+/// ALONE — an empty string is how a caller clears the next action, so silence can
+/// never blank a field somebody else filled.
+#[derive(Debug, Deserialize)]
+pub struct MoveTaskBody {
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub next: Option<String>,
+    #[serde(default)]
+    pub ts_ms: Option<u64>,
+}
+
+/// What a task's sheet reports. No `status` string of its own: the sheet IS the
+/// state, and a second vocabulary would drift from it.
+#[derive(Debug, Serialize)]
+struct TaskDto {
+    node_id: u64,
+    name: String,
+    state: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    next: String,
+    created_at: u64,
+    updated_at: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct TaskLandedDto {
+    node_id: u64,
+    created: bool,
+}
+
+fn task_dto(task: mem_core::TaskView) -> TaskDto {
+    TaskDto {
+        node_id: task.node_id,
+        name: task.name,
+        state: task.state,
+        next: task.next,
+        created_at: task.created_at,
+        updated_at: task.updated_at,
+    }
+}
+
+/// `POST /tasks/{scope}` — open a task. Idempotent on the name: opening twice is
+/// opening once (the name is what facts reach it by), and `created` says which
+/// happened.
+async fn open_task(
+    State(state): State<Arc<MemState>>,
+    Path(scope): Path<u64>,
+    Json(body): Json<OpenTaskBody>,
+) -> Result<Json<TaskLandedDto>, FactError> {
+    let now = body.ts_ms.unwrap_or_else(crate::now_ms);
+    let mut graph = state.graph.lock().await;
+    let landed = graph
+        .open_task(
+            scope,
+            &mem_core::TaskDecl {
+                name: body.name,
+                next: body.next,
+                state: body.state,
+            },
+            now,
+        )
+        .map_err(FactError::from)?;
+    Ok(Json(TaskLandedDto {
+        node_id: landed.node_id,
+        created: landed.created,
+    }))
+}
+
+/// `POST /tasks/{scope}/{node_id}/move` — move a task: a state, a next action, or
+/// both. 404 for an unknown id and 400 for a node that is not a task, because a
+/// wrong id and a wrong expectation are different mistakes.
+///
+/// A verb and not `PATCH /tasks/{scope}/{node_id}`, matching the store's other
+/// actions (`/touch`, `/promote`): one door shape for "do something to this node",
+/// so a caller never has to know which HTTP verb a particular action took.
+async fn move_task(
+    State(state): State<Arc<MemState>>,
+    Path((scope, node_id)): Path<(u64, u64)>,
+    Json(body): Json<MoveTaskBody>,
+) -> axum::response::Response {
+    let now = body.ts_ms.unwrap_or_else(crate::now_ms);
+    if body.state.is_none() && body.next.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "a move names a state, a next action, or both".to_string(),
+        )
+            .into_response();
+    }
+    let mut graph = state.graph.lock().await;
+    match graph.set_task_state(scope, node_id, body.state.as_deref(), body.next.as_deref(), now) {
+        Ok(mem_core::TaskRead::Found(task)) => Json(task_dto(*task)).into_response(),
+        Ok(mem_core::TaskRead::Absent) => StatusCode::NOT_FOUND.into_response(),
+        Ok(mem_core::TaskRead::NotATask { kind }) => (
+            StatusCode::BAD_REQUEST,
+            format!("node {node_id} is a `{kind}`, not a task"),
+        )
+            .into_response(),
+        Err(e) => FactError::from(e).into_response(),
+    }
+}
+
+/// Query of `GET /tasks/{scope}` — `?state=open` narrows to one state.
+#[derive(Debug, Deserialize)]
+pub struct TaskListQuery {
+    #[serde(default)]
+    pub state: Option<String>,
+}
+
+/// `GET /tasks/{scope}` — the tasks of a scope, oldest id first. With a state
+/// named the answer comes off the sheet's face (an exact probe); without one it
+/// is the kind scan, which is what "everything" costs.
+async fn list_tasks(
+    State(state): State<Arc<MemState>>,
+    Path(scope): Path<u64>,
+    Query(query): Query<TaskListQuery>,
+) -> Result<Json<Vec<TaskDto>>, FactError> {
+    let mut graph = state.graph.lock().await;
+    let tasks = graph
+        .list_tasks(scope, query.state.as_deref())
+        .map_err(FactError::from)?;
+    Ok(Json(tasks.into_iter().map(task_dto).collect()))
 }
 
 /// `POST /skills/{scope}` — declare a skill (idempotent on its name).
@@ -2018,6 +2166,12 @@ pub struct GraphNodeDto {
     /// The node's community (ADR-0010 §2) — the color cluster, and the
     /// reason the binning is inspectable at all.
     pub community_id: u64,
+    /// The node's usage telemetry (ADR-0018, a declared field set since the
+    /// 2026-10-27 amendment): how many times it was invoked and when. A graph
+    /// view reads them to say "alive" or "abandoned" without opening the node.
+    pub invoke_calls: u32,
+    pub invoke_ok: u32,
+    pub last_invoked: u64,
     /// The node's open attributes — `title` / `content` / `source` and whatever
     /// else the writer attached. A renderer needs them to caption a node without
     /// opening the document, which is the point of the corpus; the analysis face
@@ -2100,6 +2254,9 @@ async fn fetch_graph(
             literal_num: row.literal_num,
             name: row.name,
             community_id: row.community_id,
+            invoke_calls: row.invoke_calls,
+            invoke_ok: row.invoke_ok,
+            last_invoked: row.last_invoked,
             props,
         });
     }

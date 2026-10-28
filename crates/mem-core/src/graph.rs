@@ -61,10 +61,11 @@
 use crate::channel::{MemberKey, MemberRow};
 use crate::embedding::Embedder;
 use crate::render::RenderFormat;
+use crate::tasks::{TaskSheet, TASK_KIND};
 use okm_core::obj_dynamic::DynamicValue;
 use okm_core::{
-    write_slot, Collection, Document, DocumentEncode, EdgeHead, FjallStore, Graph, GraphEncode,
-    KeyEncode, Batch, NodeRef, Vector, VectorElem, VirtualStorage, Vocab, PRIMARY_SLOT,
+    write_slot, Batch, Collection, Document, DocumentEncode, EdgeHead, FjallStore, Graph,
+    GraphEncode, KeyEncode, NodeRef, Vector, VectorElem, VirtualStorage, Vocab, PRIMARY_SLOT,
 };
 use okm_vector::ExactIndex;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -181,7 +182,7 @@ pub struct EntityKey {
 #[ok_ref(EntityKey)]
 #[ok_ns(36)]
 #[ok_name("entities")]
-#[ok_layout(version = 4)]
+#[ok_layout(version = 1)]
 #[ok_index(
     // Payload fields only: the key tail appends the primary key, so the
     // entries land as `[kind][scope][node_id]`,
@@ -195,6 +196,13 @@ pub struct EntityKey {
 )]
 pub struct EntityRow {
     pub kind: Vocab<u16>,
+    /// Invocations STARTED (ADR-0018): a failed call still counts, because
+    /// "tried and broke" is what a reader is looking for.
+    pub invoke_calls: u32,
+    /// Invocations that returned. `calls - ok` is the failure count.
+    pub invoke_ok: u32,
+    /// The caller's clock at the last count, so "hot" and "abandoned" differ.
+    pub last_invoked: u64,
     /// A literal node's integer projection (0 for an ordinary entity): a
     /// declared, fixed-width, ordered field, so a numeric read later stays
     /// a range scan rather than a vector-distance guess. No face is
@@ -208,17 +216,18 @@ pub struct EntityRow {
     #[ok_default(0)]
     pub community_id: u64,
     pub name: String,
-    // Layout v4: the vector is NOT here (ADR-0019). It moved to `NodeVector`
-    // (ns 43) because this row is written WHOLE by every prop merge — the
-    // usage counters included — and re-encoding a 1.5-2 KB embedding that a
-    // count cannot change is the frequent writer paying for the rare field.
+    // The vector is NOT here (ADR-0019). It moved to `NodeVector` (ns 43)
+    // because this row is written WHOLE by every prop merge — the usage counters
+    // included — and re-encoding a 1.5-2 KB embedding that a count cannot change
+    // is the frequent writer paying for the rare field.
     //
-    // A v3 row cannot be read back by this schema (the payload's frames shifted
-    // by one), so a store from before the split is REBUILT, not migrated in
-    // place. Nothing cascades and the corpus is regenerable: an empty `data/`
-    // is the expected upgrade path. If a store ever must be carried over, the
-    // surface is `scan_documents_raw` plus a legacy struct decoded into the two
-    // tables — not a tolerant decoder, which would read garbage silently.
+    // `#[ok_layout(version = 1)]` is a STAMP, not a compatibility promise (okm
+    // ADR-0042): a field is placed where it belongs, the layout number is reset
+    // when the shape changes, and a store written by an older build is rebuilt or
+    // carried over by export/import. Nothing cascades and the corpus is
+    // regenerable, so an empty `data/` is the expected upgrade path — this is
+    // what memory cores do before they hold anything that cannot be re-derived.
+    //
 }
 
 /// The node's vector, out of the entity row (ADR-0019, ns 43).
@@ -1006,6 +1015,10 @@ pub struct GraphStore {
     /// key type, so a node and its vector commit in one batch and no join is
     /// needed to pair them.
     vectors: Collection<FjallStore, EntityKey, NodeVector>,
+    /// The task sheets (ADR-0021): a side table on the SAME keyspace and the
+    /// same key type, so "is this node a task" is answered by a row's presence
+    /// and no join pairs a task with its state.
+    sheets: Collection<FjallStore, EntityKey, TaskSheet>,
     /// The identity collection (ns 42), on the CHANNEL keyspace — `None` when
     /// the caller attached only the memory side. Reads are point reads across
     /// handles; a fact's batch never spans the two keyspaces (okm's
@@ -1046,6 +1059,7 @@ impl GraphStore {
     pub fn wrap(store: FjallStore) -> Result<Self, String> {
         let entities = <EntityRow as Document>::collection(store.clone());
         let vectors = <NodeVector as Document>::collection(store.clone());
+        let sheets = <TaskSheet as Document>::collection(store.clone());
         // Id recovery, both tables: scan the last key in table order.
         // Entity keys are `[scope][node_id]`, so the last key carries the
         // global max node id; the edge primary keys are `[edge_id]` under
@@ -1067,11 +1081,16 @@ impl GraphStore {
             .scan_suffix(&edge_prefix)
             .map_err(|e| e.to_string())?
             .last()
-            .and_then(|sfx| <[u8; 8]>::try_from(sfx.as_slice()).ok().map(u64::from_be_bytes))
+            .and_then(|sfx| {
+                <[u8; 8]>::try_from(sfx.as_slice())
+                    .ok()
+                    .map(u64::from_be_bytes)
+            })
             .map_or(1, |id| id.saturating_add(1));
         Ok(Self {
             entities,
             vectors,
+            sheets,
             store,
             next_node,
             next_edge,
@@ -1096,9 +1115,10 @@ impl GraphStore {
     pub fn open_with_channel(path: &std::path::Path) -> Result<Self, String> {
         let db = fjall::Database::create_or_recover(fjall::Config::new(path))
             .map_err(|e| e.to_string())?;
-        let memory = FjallStore::from_db(db.clone(), crate::KEYSPACE_MEMORY)
-            .map_err(|e| e.to_string())?;
-        let channel = FjallStore::from_db(db, crate::KEYSPACE_CHANNEL).map_err(|e| e.to_string())?;
+        let memory =
+            FjallStore::from_db(db.clone(), crate::KEYSPACE_MEMORY).map_err(|e| e.to_string())?;
+        let channel =
+            FjallStore::from_db(db, crate::KEYSPACE_CHANNEL).map_err(|e| e.to_string())?;
         Ok(Self::wrap(memory)?.with_channel(channel))
     }
 
@@ -1318,7 +1338,11 @@ impl GraphStore {
             .scan_suffix(&edge_prefix)
             .map_err(|e| e.to_string())?
             .last()
-            .and_then(|sfx| <[u8; 8]>::try_from(sfx.as_slice()).ok().map(u64::from_be_bytes))
+            .and_then(|sfx| {
+                <[u8; 8]>::try_from(sfx.as_slice())
+                    .ok()
+                    .map(u64::from_be_bytes)
+            })
             .map_or(1, |id| id.saturating_add(1));
         self.next_node = next_node;
         self.next_edge = next_edge;
@@ -1335,7 +1359,11 @@ impl GraphStore {
     /// This is what a reference LINK resolves to: a fact can name a less central
     /// fact by id in its props, and the reader decides whether to follow it — the
     /// navigation shape skills use, one level down.
-    pub fn fact_in_scope(&mut self, scope: u64, edge_id: u64) -> Result<Option<FactView>, IngestError> {
+    pub fn fact_in_scope(
+        &mut self,
+        scope: u64,
+        edge_id: u64,
+    ) -> Result<Option<FactView>, IngestError> {
         let Some(body) = self
             .facts()
             .get_edge(edge_id)
@@ -1441,13 +1469,13 @@ impl GraphStore {
         }
         let ids: Vec<u64> = {
             let facts = self.facts();
-            let keys =
-                okm_core::model::index::scan_index::<_, BySince>(facts.store(), Facts::NS_PREFIX, &[])
-                    .map_err(|e| IngestError::Storage(e.to_string()))?;
-            keys.into_iter()
-                .rev()
-                .map(|key| key.decoded.0)
-                .collect()
+            let keys = okm_core::model::index::scan_index::<_, BySince>(
+                facts.store(),
+                Facts::NS_PREFIX,
+                &[],
+            )
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
+            keys.into_iter().rev().map(|key| key.decoded.0).collect()
         };
         let mut out = Vec::new();
         for id in ids {
@@ -2389,6 +2417,11 @@ impl GraphStore {
             literal_num: literal_num(term),
             community_id,
             name: term.value.clone(),
+            // A fresh node has been used zero times; a merge onto an existing
+            // node keeps whatever it had (this path only creates).
+            invoke_calls: 0,
+            invoke_ok: 0,
+            last_invoked: 0,
         };
         let key = EntityKey { scope, node_id };
         // One batch: the node and its vector land together or not at all
@@ -2398,6 +2431,16 @@ impl GraphStore {
         self.entities
             .save_with_prev_into(&mut batch, &key, &row, None)
             .map_err(|e| IngestError::Storage(e.to_string()))?;
+        // A task owns a sheet the moment it exists (ADR-0021): presence of the
+        // sheet IS "this node is a task", so a task created by a FACT — not by
+        // the task door — still lists as open. Same batch, so a vertex can never
+        // be visible without the row that says what it is.
+        if row.kind.as_str() == Some(TASK_KIND) {
+            let sheet = TaskSheet::opened();
+            self.sheets
+                .save_with_prev_into(&mut batch, &key, &sheet, None)
+                .map_err(|e| IngestError::Storage(e.to_string()))?;
+        }
         // No engine = no vector row at all, rather than an EMPTY frame nothing
         // reads (presence is the boolean).
         if !embedding.is_empty() {
@@ -2423,6 +2466,35 @@ impl GraphStore {
                 .map_err(|e| IngestError::Storage(e.to_string()))?;
         }
         Ok(Endpoint::Entity(node_id))
+    }
+
+    /// One task's sheet, if the node has one (ADR-0021).
+    pub(crate) fn task_sheet(
+        &mut self,
+        scope: u64,
+        node_id: u64,
+    ) -> Result<Option<TaskSheet>, IngestError> {
+        self.sheets
+            .get(&EntityKey { scope, node_id })
+            .map_err(|e| IngestError::Storage(e.to_string()))
+    }
+
+    /// Write one task's sheet. The vertex is untouched: a state change is not a
+    /// re-label, a re-embed or a prop merge.
+    pub(crate) fn put_task_sheet(
+        &mut self,
+        scope: u64,
+        node_id: u64,
+        sheet: &TaskSheet,
+    ) -> Result<(), IngestError> {
+        self.sheets
+            .put(&EntityKey { scope, node_id }, sheet)
+            .map_err(|e| IngestError::Storage(e.to_string()))
+    }
+
+    /// The sheet collection, for the face scan `tasks::list_tasks` runs.
+    pub(crate) fn sheet_collection(&self) -> &Collection<FjallStore, EntityKey, TaskSheet> {
+        &self.sheets
     }
 
     /// Merge props into an existing node's dynamic segment — the write a

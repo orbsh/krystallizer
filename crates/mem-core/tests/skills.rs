@@ -13,7 +13,7 @@
 use mem_core::graph::{FactTuple, GraphStore};
 use mem_core::skills::{
     SkillDecl, SkillRead, SkillTouchOutcome, TouchPhase, CALLS_FIELD, DEFAULT_LIMIT, MAX_LIMIT,
-    OK_FIELD, PRECONDITIONS_FIELD, SKILL_KIND, STEPS_FIELD,
+    PRECONDITIONS_FIELD, SKILL_KIND, STEPS_FIELD,
 };
 
 fn decl(name: &str, content: &str) -> SkillDecl {
@@ -49,7 +49,9 @@ fn declaring_twice_is_declaring_once_and_the_parts_merge() {
     let dir = tempfile::tempdir().unwrap();
     let mut graph = GraphStore::open(dir.path()).unwrap();
 
-    let first = graph.put_skill(1, &decl("github-issues", "Lists a repo's issues.")).unwrap();
+    let first = graph
+        .put_skill(1, &decl("github-issues", "Lists a repo's issues."))
+        .unwrap();
     assert!(first.created, "the first declaration creates the node");
 
     // A second declaration with a new content and NO preconditions: the parts
@@ -75,7 +77,9 @@ fn declaring_twice_is_declaring_once_and_the_parts_merge() {
 fn the_four_parts_round_trip_and_the_kind_is_checked() {
     let dir = tempfile::tempdir().unwrap();
     let mut graph = GraphStore::open(dir.path()).unwrap();
-    let landed = graph.put_skill(1, &decl("github-issues", "Lists a repo's issues.")).unwrap();
+    let landed = graph
+        .put_skill(1, &decl("github-issues", "Lists a repo's issues."))
+        .unwrap();
 
     let SkillRead::Found(skill) = graph.skill(1, landed.node_id).unwrap() else {
         panic!("the skill reads back");
@@ -83,7 +87,10 @@ fn the_four_parts_round_trip_and_the_kind_is_checked() {
     assert_eq!(skill.name, "github-issues");
     assert_eq!(skill.title, "github-issues (title)");
     assert_eq!(skill.preconditions, r#"["the repo is cloned"]"#);
-    assert_eq!(skill.steps, r#"[{"code_id": 1, "note": "list the issues"}]"#);
+    assert_eq!(
+        skill.steps,
+        r#"[{"code_id": 1, "note": "list the issues"}]"#
+    );
     assert_eq!(skill.verification, r#"["the output parses as JSON"]"#);
 
     // Absence and a wrong kind are different answers: a caller that asked for
@@ -108,7 +115,9 @@ fn the_four_parts_round_trip_and_the_kind_is_checked() {
 fn a_skill_without_a_name_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let mut graph = GraphStore::open(dir.path()).unwrap();
-    let refusal = graph.put_skill(1, &decl("  ", "nothing to call it by")).unwrap_err();
+    let refusal = graph
+        .put_skill(1, &decl("  ", "nothing to call it by"))
+        .unwrap_err();
     assert!(
         refusal.to_string().contains("needs a name"),
         "the refusal names the missing thing: {refusal}"
@@ -133,7 +142,9 @@ fn without_an_engine_the_resolver_scans_the_kind() {
         )
         .unwrap();
 
-    let all = graph.resolve_skills(1, "anything at all", DEFAULT_LIMIT).unwrap();
+    let all = graph
+        .resolve_skills(1, "anything at all", DEFAULT_LIMIT)
+        .unwrap();
     let names: Vec<&str> = all.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, vec!["github-issues", "post-to-slack", "read-a-pdf"]);
     assert!(
@@ -165,13 +176,24 @@ fn with_an_engine_the_query_lands_on_the_skill_that_says_it() {
     let mut graph = GraphStore::open(dir.path()).unwrap().with_embedder(engine);
 
     graph
-        .put_skill(1, &decl("github-issues", "Lists the open issues of a GitHub repository."))
+        .put_skill(
+            1,
+            &decl(
+                "github-issues",
+                "Lists the open issues of a GitHub repository.",
+            ),
+        )
         .unwrap();
     graph
-        .put_skill(1, &decl("read-a-pdf", "Extracts the text layer of a PDF document."))
+        .put_skill(
+            1,
+            &decl("read-a-pdf", "Extracts the text layer of a PDF document."),
+        )
         .unwrap();
 
-    let hits = graph.resolve_skills(1, "open issues in a github repo", 2).unwrap();
+    let hits = graph
+        .resolve_skills(1, "open issues in a github repo", 2)
+        .unwrap();
     assert!(!hits.is_empty(), "the query lands on something");
     assert_eq!(hits[0].name, "github-issues");
     assert!(hits[0].score > 0.0, "a landed candidate carries its score");
@@ -188,7 +210,9 @@ fn with_an_engine_the_query_lands_on_the_skill_that_says_it() {
 fn experience_is_an_ordinary_fact_about_the_skill() {
     let dir = tempfile::tempdir().unwrap();
     let mut graph = GraphStore::open(dir.path()).unwrap();
-    let landed = graph.put_skill(1, &decl("github-issues", "Lists a repo's issues.")).unwrap();
+    let landed = graph
+        .put_skill(1, &decl("github-issues", "Lists a repo's issues."))
+        .unwrap();
 
     graph
         .ingest(
@@ -211,8 +235,8 @@ fn experience_is_an_ordinary_fact_about_the_skill() {
     let props = graph.entity_props(1, landed.node_id).unwrap().unwrap();
     assert!(props.contains_key(STEPS_FIELD));
     assert!(props.contains_key(PRECONDITIONS_FIELD));
-    let row = graph.entity(1, landed.node_id).unwrap().unwrap();
-    assert_eq!(row.kind.as_str(), Some(SKILL_KIND));
+    let node = graph.entity(1, landed.node_id).unwrap().unwrap();
+    assert_eq!(node.kind.as_str(), Some(SKILL_KIND));
 }
 
 /// Counting an invocation (ADR-0018): the attempt is recorded BEFORE the outcome
@@ -223,7 +247,9 @@ fn experience_is_an_ordinary_fact_about_the_skill() {
 fn an_invocation_counts_its_attempt_and_its_success() {
     let dir = tempfile::tempdir().unwrap();
     let mut graph = GraphStore::open(dir.path()).unwrap();
-    let landed = graph.put_skill(1, &decl("github-issues", "list issues")).unwrap();
+    let landed = graph
+        .put_skill(1, &decl("github-issues", "list issues"))
+        .unwrap();
 
     let touched = graph
         .touch_skill(1, landed.node_id, TouchPhase::Attempt, 1_000)
@@ -231,7 +257,11 @@ fn an_invocation_counts_its_attempt_and_its_success() {
     let SkillTouchOutcome::Counted(touched) = touched else {
         panic!("a declared skill counts: {touched:?}");
     };
-    assert_eq!((touched.calls, touched.ok), (1, 0), "dispatched, outcome unknown");
+    assert_eq!(
+        (touched.calls, touched.ok),
+        (1, 0),
+        "dispatched, outcome unknown"
+    );
 
     let touched = graph
         .touch_skill(1, landed.node_id, TouchPhase::Success, 1_200)
@@ -245,9 +275,17 @@ fn an_invocation_counts_its_attempt_and_its_success() {
     graph
         .touch_skill(1, landed.node_id, TouchPhase::Attempt, 2_000)
         .unwrap();
+    // Declared fields since the ADR-0018 amendment, not props: a counter every
+    // call bumps belongs in the row the touch rewrites anyway.
+    let row = graph.entity(1, landed.node_id).unwrap().unwrap();
+    assert_eq!(row.invoke_calls, 2, "two attempts");
+    assert_eq!(row.invoke_ok, 1, "one of them returned");
+    assert_eq!(row.last_invoked, 2_000);
     let props = graph.entity_props(1, landed.node_id).unwrap().unwrap();
-    assert!(props.contains_key(CALLS_FIELD), "the counters are props");
-    assert!(props.contains_key(OK_FIELD));
+    assert!(
+        !props.contains_key(CALLS_FIELD),
+        "no counter lingers in the segment"
+    );
 
     // The counters did not cost the node its declaration: `merge` writes the
     // segment and leaves the row alone.
@@ -255,12 +293,20 @@ fn an_invocation_counts_its_attempt_and_its_success() {
         SkillRead::Found(skill) => {
             assert_eq!(skill.name, "github-issues");
             assert_eq!(skill.content, "list issues");
-            assert_eq!(skill.steps, decl("x", "y").steps, "the steps survive the counting");
+            assert_eq!(
+                skill.steps,
+                decl("x", "y").steps,
+                "the steps survive the counting"
+            );
         }
         other => panic!("the skill still reads back: {other:?}"),
     }
     let row = graph.entity(1, landed.node_id).unwrap().unwrap();
-    assert_eq!(row.kind.as_str(), Some(SKILL_KIND), "and it is still a skill");
+    assert_eq!(
+        row.kind.as_str(),
+        Some(SKILL_KIND),
+        "and it is still a skill"
+    );
 }
 
 /// Only a skill counts: a fact node in the same space is told apart from an
