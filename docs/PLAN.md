@@ -594,7 +594,9 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   /tasks/{scope}/{node_id}/move`, `GET /tasks/{scope}?state=open`) and three
   gravity tools (`open_task` / `move_task` / `list_tasks`); the turn now opens by
   listing what is open. Gates: mem-core tasks 8/0, workspace green, clippy clean;
-  gravity 21/0 + 6 + 10, clippy clean.
+  gravity 25/0 + 6 + 10, clippy clean; prism `tests/turn_tasks.rs` 1/1 — three
+  turns through the real stack (open in turn 1, in the prompt in turn 2, still there
+  after the move to `doing`).
   NODE COUNTERS ARE FIELDS NOW (ADR-0018 amendment, okm ADR-0042): `invoke_calls` /
   `invoke_ok` / `last_invoked` moved out of the dynamic segment onto `EntityRow`
   (layout reset, counters at the FRONT) — a number every call bumps is read on the

@@ -72,6 +72,15 @@ POST /tasks/{scope}/{node_id}/move      state and/or next; absent = left alone
 GET  /tasks/{scope}?state=open          the enumeration
 ```
 
+**Opening a task that already exists RESTATES it and does not move it.** The name is
+the identity, so a second open is a second statement of the same fact — and a door
+that rewrote the sheet there would be the quiet bug: a retried tool call would drag
+a task out of `doing` back into `open`, blank its next action and reset its clock, so
+the one call whose whole meaning is "this work exists" would be the call that loses
+the work's progress. A caller that wants the task changed says so at `/move`. For
+the same reason a declaration never re-labels a node: opening a name that is already
+a person or a skill is refused, not converted.
+
 There is deliberately NO dependency door, parent door or tag door: those are facts,
 and a second vocabulary for one graph is a second thing to keep in step. `/move`
 takes a verb like `/touch` and `/promote` — one door shape for "do something to this
