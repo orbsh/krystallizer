@@ -2,11 +2,13 @@
 
 Graph-native agent memory: session control, atomic-fact graph, vector-landing retrieval — as a Rust core, reached over HTTP by a process you can run (`krystallizer`) or linked in-process as a crate.
 
+Design: [krystallizer-en.md](https://github.com/orbsh/wiki/blob/main/krystallizer-en.md) (wiki; 中文: [krystallizer.md](https://github.com/orbsh/wiki/blob/main/krystallizer.md)), decisions in `docs/adr/`.
+
 ## What it is
 
 A standalone memory system extracted from skillforge's `src/mem`, rebuilt on
-the KV architecture described in [KV 存储引擎](https://github.com/orbsh/wiki/blob/main/kv-storage-engine-en.md)
-and [图谱化记忆](https://github.com/orbsh/wiki/blob/main/graph-memory.md):
+the KV architecture described in [KV storage engine](https://github.com/orbsh/wiki/blob/main/kv-storage-engine-en.md)
+and [Graph memory](https://github.com/orbsh/wiki/blob/main/graph-memory-en.md):
 
 - **Session control surface** — full conversation control as primitives:
   `branch` (fork at any prefix; checkpoint sharing makes forks zero-copy),
@@ -23,7 +25,7 @@ and [图谱化记忆](https://github.com/orbsh/wiki/blob/main/graph-memory.md):
 - **Task surface** — tasks are a graph too: task vertices + `task_links`
   dependency edges, sharing the same graph as the facts; instance state is
   structured (exact enumeration) and travels with the projection. The third
-  interface surface (ADR-0001.
+  interface surface (ADR-0001).
 - **Atomic-fact graph** — append-first facts, a fixed-length 8-slot tuple
   (roles `head` / `rel` / `tail` — head/tail `[value, type, props]`, the
   relation `[name, props]`); the write side's collections and
