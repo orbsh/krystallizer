@@ -22,9 +22,7 @@ use mem_core::channel::{ChannelStore, MessageKey};
 use mem_core::code::{CodeRow, CodeStore};
 use mem_core::graph::{FactTuple, GraphStore, IngestError, IngestOutcome};
 use mem_core::proposals::ProposalDecl;
-use mem_core::skills::{
-    SkillDecl, SkillRead, SkillTouchOutcome, TouchPhase, DEFAULT_LIMIT,
-};
+use mem_core::skills::{SkillDecl, SkillRead, SkillTouchOutcome, TouchPhase, DEFAULT_LIMIT};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -493,10 +491,10 @@ impl SessionDto {
                     Some(TailDto {
                         name: op.name,
                         prompt: op.prompt,
-                        from_ts: span.0.0,
-                        from_sub: span.0.1,
-                        to_ts: span.1.0,
-                        to_sub: span.1.1,
+                        from_ts: span.0 .0,
+                        from_sub: span.0 .1,
+                        to_ts: span.1 .0,
+                        to_sub: span.1 .1,
                     })
                 })
                 .collect(),
@@ -654,7 +652,10 @@ async fn read_channel(
     for (key, row) in rows {
         // An unregistered sender is absence, not a failure: the entry falls
         // back to the id-derived name.
-        let sender_name = match store.member(channel_id, row.sender).map_err(FactError::internal)? {
+        let sender_name = match store
+            .member(channel_id, row.sender)
+            .map_err(FactError::internal)?
+        {
             Some(member) => member.display_name,
             None => format!("member-{}", row.sender),
         };
@@ -1195,7 +1196,13 @@ async fn move_task(
             .into_response();
     }
     let mut graph = state.graph.lock().await;
-    match graph.set_task_state(scope, node_id, body.state.as_deref(), body.next.as_deref(), now) {
+    match graph.set_task_state(
+        scope,
+        node_id,
+        body.state.as_deref(),
+        body.next.as_deref(),
+        now,
+    ) {
         Ok(mem_core::TaskRead::Found(task)) => Json(task_dto(*task)).into_response(),
         Ok(mem_core::TaskRead::Absent) => StatusCode::NOT_FOUND.into_response(),
         Ok(mem_core::TaskRead::NotATask { kind }) => (

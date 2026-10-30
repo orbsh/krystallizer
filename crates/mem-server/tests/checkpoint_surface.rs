@@ -80,9 +80,15 @@ async fn the_session_asks_for_an_operation_and_states_its_span() {
     }
 
     let view = session(&client, &base).await;
-    assert_eq!(view["suggested_ts"], 0, "no compression has passed an opinion yet");
+    assert_eq!(
+        view["suggested_ts"], 0,
+        "no compression has passed an opinion yet"
+    );
     let tails = view["tails"].as_array().unwrap();
-    assert!(!tails.is_empty(), "the budget fired: an operation is asked for");
+    assert!(
+        !tails.is_empty(),
+        "the budget fired: an operation is asked for"
+    );
     let compress = &tails[0];
     assert_eq!(compress["name"], "compress");
     let prompt = compress["prompt"].as_str().unwrap();
@@ -90,9 +96,15 @@ async fn the_session_asks_for_an_operation_and_states_its_span() {
         prompt.contains("\"cut\""),
         "the pass is asked for TWO products: {prompt}"
     );
-    assert_eq!(compress["from_ts"], 0, "the span starts where the summary ends");
+    assert_eq!(
+        compress["from_ts"], 0,
+        "the span starts where the summary ends"
+    );
     let to = compress["to_ts"].as_u64().unwrap();
-    assert_eq!(to, 300, "the split lands in the largest gap, not at the log's end");
+    assert_eq!(
+        to, 300,
+        "the split lands in the largest gap, not at the log's end"
+    );
 }
 
 #[tokio::test]
@@ -127,7 +139,11 @@ async fn the_cut_a_pass_chooses_is_recorded_beside_the_summary() {
     assert_eq!(status, reqwest::StatusCode::NO_CONTENT);
 
     let view = session(&client, &base).await;
-    assert_eq!(view["coverage_ts"].as_u64().unwrap(), to, "the node closes where the verdict said");
+    assert_eq!(
+        view["coverage_ts"].as_u64().unwrap(),
+        to,
+        "the node closes where the verdict said"
+    );
     assert_eq!(view["suggested_ts"], 100, "the opinion rides the node");
     assert_eq!(view["suggested_sub"], 0);
     assert_eq!(view["summary"], "they said hi");

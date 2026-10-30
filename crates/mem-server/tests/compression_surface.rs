@@ -7,7 +7,13 @@
 //! Real axum on an OS-picked port against a real Fjall keyspace, like the
 //! other surface tests: the ordering inside `fetch_session` (measure the
 //! idle against the OLD cursor, then stamp) is only observable here.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use mem_core::channel::role;
 use mem_core::{CompressionParams, TAIL_PROMPT};
@@ -50,7 +56,10 @@ async fn a_summary_lands_on_the_served_split() {
 
     let read = session(&base, &client, 7, None).await;
     let verdict = &read["tails"][0];
-    assert_eq!(verdict["name"], "compress", "the operation table's one entry");
+    assert_eq!(
+        verdict["name"], "compress",
+        "the operation table's one entry"
+    );
     assert_eq!(verdict["to_ts"], 2_000, "the span's last record");
 
     let status = client
@@ -159,7 +168,10 @@ async fn the_cache_clock_fires_after_the_ttl() {
     let compress = &fired["tails"][0];
     assert_eq!(compress["name"], "compress");
     assert_eq!(compress["to_ts"], 2_000, "the span's last record");
-    assert_eq!(compress["from_ts"], 0, "no summary yet, so the span starts at the log's head");
+    assert_eq!(
+        compress["from_ts"], 0,
+        "no summary yet, so the span starts at the log's head"
+    );
     assert_eq!(
         compress["prompt"].as_str(),
         Some(TAIL_PROMPT),
@@ -169,7 +181,11 @@ async fn the_cache_clock_fires_after_the_ttl() {
     let short = session(&base, &client, 8, Some(10_000)).await;
     assert_eq!(short["tails"].as_array().map(Vec::len), Some(0));
     let under = session(&base, &client, 8, Some(10_000 + 59_999)).await;
-    assert_eq!(under["tails"].as_array().map(Vec::len), Some(0), "just under the TTL");
+    assert_eq!(
+        under["tails"].as_array().map(Vec::len),
+        Some(0),
+        "just under the TTL"
+    );
 }
 
 /// The budget needs no clock at all: the same read answers a verdict with

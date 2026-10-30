@@ -9,7 +9,13 @@
 //! a BOOT failure (two vector spaces in one table is not survivable), the vector is
 //! normalized here rather than trusted, and a fact ingested through the door is
 //! retrievable — i.e. the seam really reaches `ingest` and `retrieve`.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use axum::{
     extract::State,

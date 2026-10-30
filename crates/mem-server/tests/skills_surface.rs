@@ -133,7 +133,16 @@ async fn the_doors_keep_absence_and_a_wrong_kind_apart() {
     // a WRONG REQUEST, not a missing id.
     let alice: Value = client
         .post(format!("{base}/memories/1"))
-        .json(&json!([["alice", "person", {}, "likes", {}, "tea", "drink", {}]]))
+        .json(&json!([[
+            "alice",
+            "person",
+            {},
+            "likes",
+            {},
+            "tea",
+            "drink",
+            {}
+        ]]))
         .send()
         .await
         .unwrap()
@@ -179,7 +188,16 @@ async fn the_resolver_answers_skills_and_only_skills() {
     }
     client
         .post(format!("{base}/memories/1"))
-        .json(&json!([["alice", "person", {}, "likes", {}, "tea", "drink", {}]]))
+        .json(&json!([[
+            "alice",
+            "person",
+            {},
+            "likes",
+            {},
+            "tea",
+            "drink",
+            {}
+        ]]))
         .send()
         .await
         .unwrap();
@@ -194,7 +212,10 @@ async fn the_resolver_answers_skills_and_only_skills() {
         .await
         .unwrap();
     assert_eq!(resolved.len(), 1, "the limit is honoured");
-    assert_eq!(resolved[0]["name"], "github-issues", "id order without a query landing");
+    assert_eq!(
+        resolved[0]["name"], "github-issues",
+        "id order without a query landing"
+    );
 
     // Another scope answers from its own corpus: the resolver is scoped like
     // every other door, never a global list.
@@ -243,7 +264,10 @@ async fn the_touch_door_counts_an_invocation_and_keeps_its_refusals() {
         .json()
         .await
         .unwrap();
-    assert_eq!((attempt["calls"].as_u64(), attempt["ok"].as_u64()), (Some(1), Some(0)));
+    assert_eq!(
+        (attempt["calls"].as_u64(), attempt["ok"].as_u64()),
+        (Some(1), Some(0))
+    );
 
     let success: Value = client
         .post(format!("{base}/skills/1/{node_id}/touch"))

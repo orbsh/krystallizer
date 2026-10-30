@@ -100,7 +100,11 @@ async fn a_walk_is_counted_and_the_queue_answers_it() {
         .json()
         .await
         .unwrap();
-    assert_eq!(filtered.as_array().unwrap().len(), 0, "seen twice, asked for 3");
+    assert_eq!(
+        filtered.as_array().unwrap().len(),
+        0,
+        "seen twice, asked for 3"
+    );
 }
 
 #[tokio::test]
@@ -129,7 +133,11 @@ async fn promotion_is_a_humans_declaration_and_the_resolver_sees_the_skill() {
         .json()
         .await
         .unwrap();
-    assert_eq!(resolved.as_array().unwrap().len(), 0, "a draft is not a skill");
+    assert_eq!(
+        resolved.as_array().unwrap().len(),
+        0,
+        "a draft is not a skill"
+    );
 
     let promoted: Value = client
         .post(format!("{base}/skills/1/{node_id}/promote"))
@@ -159,8 +167,7 @@ async fn promotion_is_a_humans_declaration_and_the_resolver_sees_the_skill() {
         .unwrap();
     assert_eq!(skill["name"], "fetch-then-format");
     assert_eq!(
-        skill["steps"],
-        r#"[{"code_id":4,"note":"fetch"},{"code_id":7,"note":"format"}]"#,
+        skill["steps"], r#"[{"code_id":4,"note":"fetch"},{"code_id":7,"note":"format"}]"#,
         "the promotion copies the run rather than retyping it"
     );
 
@@ -190,7 +197,11 @@ async fn promotion_is_a_humans_declaration_and_the_resolver_sees_the_skill() {
         .iter()
         .map(|row| row["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, vec!["fetch-then-format"], "the model can choose it now");
+    assert_eq!(
+        names,
+        vec!["fetch-then-format"],
+        "the model can choose it now"
+    );
 }
 
 #[tokio::test]

@@ -8,7 +8,13 @@
 //!
 //! Skipped (not failed) when `duckdb` is missing or its iceberg extension cannot
 //! load: both are properties of the machine, not of the files.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use std::process::Command;
 
@@ -150,7 +156,9 @@ async fn a_bundle_opens_in_a_warehouse_reader_that_never_saw_k10r() {
             "{table} exported"
         );
         assert!(
-            root.join(table).join("metadata/version-hint.text").is_file(),
+            root.join(table)
+                .join("metadata/version-hint.text")
+                .is_file(),
             "{table} carries the hint a directory read needs"
         );
     }

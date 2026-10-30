@@ -3,7 +3,13 @@
 //!
 //! The assertions read the bytes back with a Parquet reader, not just by
 //! looking at a status code: a backup nobody can open is not a backup.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use mem_server::{AppendMessage, PutCode};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;

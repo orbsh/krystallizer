@@ -4,7 +4,13 @@
 //!
 //! Every assertion here is against a service that never saw the writes: the
 //! bundle is the only thing that crossed.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use mem_server::{AppendMessage, PutCode};
 

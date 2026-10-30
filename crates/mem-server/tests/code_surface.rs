@@ -5,7 +5,13 @@
 //! from, without sources), and — the load-bearing one — that both table
 //! groups live in ONE database without seeing each other (one Fjall
 //! handle, one lock file, ns-discriminated entries).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use mem_server::{AppendMessage, CodeIdDto, CodeRowDto, PutCode};
 use std::net::SocketAddr;

@@ -79,9 +79,17 @@ fn opening_the_same_name_twice_is_one_task() {
 #[test]
 fn reopening_a_task_does_not_drag_it_back_to_open() {
     let (_dir, mut graph) = open_store();
-    let landed = graph.open_task(1, &decl("ship the face change"), 1_000).unwrap();
+    let landed = graph
+        .open_task(1, &decl("ship the face change"), 1_000)
+        .unwrap();
     graph
-        .set_task_state(1, landed.node_id, Some("doing"), Some("read the diff"), 2_000)
+        .set_task_state(
+            1,
+            landed.node_id,
+            Some("doing"),
+            Some("read the diff"),
+            2_000,
+        )
         .unwrap();
 
     // The model retries the same open (or a second turn says "this work exists"
@@ -101,7 +109,10 @@ fn reopening_a_task_does_not_drag_it_back_to_open() {
     let TaskRead::Found(task) = graph.task(1, landed.node_id).unwrap() else {
         panic!("the task reads back");
     };
-    assert_eq!(task.state, "doing", "the work in progress stays in progress");
+    assert_eq!(
+        task.state, "doing",
+        "the work in progress stays in progress"
+    );
     assert_eq!(task.next, "read the diff", "and keeps its next action");
     assert_eq!(task.updated_at, 2_000, "a restatement is not a move");
 }

@@ -3,7 +3,13 @@
 //! Covers the three endpoints' round trips and the projection's
 //! checkpoint/increment semantics over the wire (not just at the
 //! store level — mem-core's own tests cover that).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use mem_core::channel::role;
 use mem_server::{AppendCheckpoint, AppendMessage, MessageKeyDto};
@@ -223,9 +229,10 @@ async fn member_checkpoints_are_independent() {
     // covers the span, and the review that reads it from the cut a model saw the
     // conversation break at.
     assert_eq!(
-        read["tails"]
-            .as_array()
-            .map(|tails| tails.iter().filter_map(|t| t["name"].as_str()).collect::<Vec<_>>()),
+        read["tails"].as_array().map(|tails| tails
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect::<Vec<_>>()),
         Some(vec!["compress", "review"]),
         "member 1 has a verdict"
     );

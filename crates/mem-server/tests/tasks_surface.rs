@@ -126,7 +126,16 @@ async fn a_dependency_is_an_ordinary_fact() {
     // resolver opens them — a task mentioned by a fact exists.
     let landed: Value = client
         .post(format!("{base}/memories/37"))
-        .json(&json!([["task-12","task",{},"depends_on",{},"task-9","task",{}]]))
+        .json(&json!([[
+            "task-12",
+            "task",
+            {},
+            "depends_on",
+            {},
+            "task-9",
+            "task",
+            {}
+        ]]))
         .send()
         .await
         .unwrap()
@@ -170,7 +179,16 @@ async fn the_doors_keep_the_three_mistakes_apart() {
     // task and has no sheet: the move answers 400 naming the kind it found.
     client
         .post(format!("{base}/memories/37"))
-        .json(&json!([["ada","person",{},"OWNS",{},"notes","thing",{}]]))
+        .json(&json!([[
+            "ada",
+            "person",
+            {},
+            "OWNS",
+            {},
+            "notes",
+            "thing",
+            {}
+        ]]))
         .send()
         .await
         .unwrap();

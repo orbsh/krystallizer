@@ -1,7 +1,13 @@
 //! The graph view is served BY the memory service (ADR-0007: no CORS on a
 //! service that holds user memory), and it draws what `GET /graph/{scope}`
 //! answers — so the page, its library and the data come from one origin.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 async fn spawn(dir: &std::path::Path) -> String {
     let router = mem_server::open(dir.to_path_buf()).unwrap();
@@ -59,9 +65,16 @@ async fn the_graph_door_answers_the_shape_the_page_draws() {
 
     let landed = client
         .post(format!("{base}/memories/1"))
-        .json(&serde_json::json!([
-            ["k10r", "system", {}, "DEPENDS_ON", {}, "okm", "system", {}],
-        ]))
+        .json(&serde_json::json!([[
+            "k10r",
+            "system",
+            {},
+            "DEPENDS_ON",
+            {},
+            "okm",
+            "system",
+            {}
+        ],]))
         .send()
         .await
         .unwrap();
@@ -91,11 +104,11 @@ async fn the_graph_door_answers_the_shape_the_page_draws() {
     assert_eq!(links[0]["kind"], "DEPENDS_ON");
     // Endpoints are NODE IDs here; the page resolves them before handing the
     // array to the physics (a string endpoint freezes the render loop).
-    let ids: Vec<i64> = nodes
-        .iter()
-        .map(|n| n["id"].as_i64().unwrap())
-        .collect();
+    let ids: Vec<i64> = nodes.iter().map(|n| n["id"].as_i64().unwrap()).collect();
     for end in ["source", "target"] {
-        assert!(ids.contains(&links[0][end].as_i64().unwrap()), "{end} is a node");
+        assert!(
+            ids.contains(&links[0][end].as_i64().unwrap()),
+            "{end} is a node"
+        );
     }
 }
