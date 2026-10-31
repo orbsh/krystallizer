@@ -10,6 +10,13 @@ question — okm has no learner and no notion of "is this text a relation". They
 memory-layer policy, and this service owns the two faces the pipeline writes:
 `okm-vector` for the embeddings, `okm-core`'s graph for the relations.
 
+A second idea in this directory, [extraction-group.md](extraction-group.md), covers the
+other half of the same worry: an extraction's facts arriving as an unrelated pile. It
+needs none of the machinery below. A third,
+[local-extraction-encoders.md](local-extraction-encoders.md), states what an extractor
+would cost here; the model shortlist itself lives in the compiler that would build it
+(`~/world/silex/encoder-route.md` §1/§1b), not here.
+
 The carrier idea stays in okm: `~/world/okm/docs/ideas/hypergraph.md`. The two are
 decidable separately EXCEPT on one point — the carrier's arity bound and an
 extractor's unbounded output pull against each other (a bounded N forces the
