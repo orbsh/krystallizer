@@ -64,7 +64,7 @@ async fn a_bundle_restores_rows_and_the_issuers_that_hand_out_ids() {
     assert_eq!(landed.len(), 2, "both facts answered");
     for description in ["first", "second"] {
         client
-            .post(format!("{source}/code"))
+            .post(format!("{source}/code/37"))
             .json(&PutCode {
                 language: "nu".into(),
                 description: description.into(),
@@ -113,14 +113,14 @@ async fn a_bundle_restores_rows_and_the_issuers_that_hand_out_ids() {
 
     // Rows are there, read back through the doors.
     let code = client
-        .get(format!("{restored}/code/1"))
+        .get(format!("{restored}/code/37/1"))
         .send()
         .await
         .unwrap();
     assert_eq!(code.status(), 200, "code id 1 restored");
     assert!(code.text().await.unwrap().contains("first"));
     let code = client
-        .get(format!("{restored}/code/2"))
+        .get(format!("{restored}/code/37/2"))
         .send()
         .await
         .unwrap();
@@ -154,7 +154,7 @@ async fn a_bundle_restores_rows_and_the_issuers_that_hand_out_ids() {
 
     // THE ISSUERS: the restored service must not hand out an id already in use.
     let next_code: serde_json::Value = client
-        .post(format!("{restored}/code"))
+        .post(format!("{restored}/code/37"))
         .json(&PutCode {
             language: "nu".into(),
             description: "third".into(),

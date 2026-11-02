@@ -55,7 +55,7 @@ pub use channel::{
     kind, member_node, member_role, role, ChannelStore, CheckpointKey, CheckpointRow, CursorKey,
     CursorRow, MemberKey, MemberRow, MessageKey, MessageRow, SessionView, Span, DEFAULT_MEMBER,
 };
-pub use code::{CodeKey, CodeRow, CodeStore};
+pub use code::{code_id_of_name, code_name, CodeKey, CodeRow, CODE_KIND};
 pub use compress::{
     evaluate as evaluate_compression, tail_span, Params as CompressionParams, Stage, TailOp,
     Trigger as CompressionTrigger, Verdict as CompressionVerdict, COMPRESS_OP, REVIEW_OP,

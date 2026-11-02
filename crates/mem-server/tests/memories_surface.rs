@@ -252,17 +252,18 @@ async fn a_malformed_tuple_is_refused_with_the_reason() {
     );
 }
 
-/// The graph and the code store share ONE keyspace (the `memory` tree),
-/// so the ns is the only separator: an entity and a piece of code can both
-/// be the "first row" of their table (id 1) without either seeing the
-/// other.
+/// A code row is a VERTEX (k10r ADR-0023), so it lives in the entity table with
+/// the facts' nodes — one table family, distinct rows, and the code sheet beside
+/// it still carries the payload. This test used to pin the opposite (two tables,
+/// the same numeric id in each); the property that replaced it is the one that
+/// matters now: the code vertex and the fact's entities never collide.
 #[tokio::test]
-async fn the_graph_and_the_code_store_share_a_keyspace_without_leaking() {
+async fn a_code_row_is_a_vertex_beside_the_facts_entities() {
     let (base, _dir) = spawn_server().await;
     let client = reqwest::Client::new();
 
     let code: serde_json::Value = client
-        .post(format!("{base}/code"))
+        .post(format!("{base}/code/1"))
         .json(&serde_json::json!({
             "language": "nu",
             "description": "log into a host",
@@ -277,6 +278,19 @@ async fn the_graph_and_the_code_store_share_a_keyspace_without_leaking() {
         .unwrap();
     assert_eq!(code["code_id"], 1, "the code table's first id");
 
+    let code_vertex: EntityDto = client
+        .get(format!("{base}/memories/1/entities/code-1"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        code_vertex.kind, "code",
+        "the row is reachable as a vertex, which is the whole point"
+    );
+
     ingest(
         &client,
         &base,
@@ -285,7 +299,6 @@ async fn the_graph_and_the_code_store_share_a_keyspace_without_leaking() {
     )
     .await;
 
-    // Same numeric id (1) in both tables — different ns, no collision.
     let entity: EntityDto = client
         .get(format!("{base}/memories/1/entities/galaxy_repo"))
         .send()
@@ -294,11 +307,13 @@ async fn the_graph_and_the_code_store_share_a_keyspace_without_leaking() {
         .json()
         .await
         .unwrap();
-    assert_eq!(entity.node_id, Some(1));
-    assert_eq!(entity.user, None);
+    assert!(
+        entity.node_id != code_vertex.node_id,
+        "one node per thing: the fact's entity is not the code vertex"
+    );
 
     let stored: serde_json::Value = client
-        .get(format!("{base}/code/1"))
+        .get(format!("{base}/code/1/1"))
         .send()
         .await
         .unwrap()
@@ -307,9 +322,9 @@ async fn the_graph_and_the_code_store_share_a_keyspace_without_leaking() {
         .unwrap();
     assert_eq!(stored["source"], "ssh $args.host", "the code row survives");
 
-    // The entity wrote nothing into the code table: the only id there is the
-    // one the door stored, and the next id is empty.
-    let ghost = client.get(format!("{base}/code/2")).send().await.unwrap();
+    // The fact wrote no code row: the next code id is empty, and the fact's
+    // entity is not a piece of code.
+    let ghost = client.get(format!("{base}/code/1/2")).send().await.unwrap();
     assert_eq!(
         ghost.status(),
         reqwest::StatusCode::NOT_FOUND,

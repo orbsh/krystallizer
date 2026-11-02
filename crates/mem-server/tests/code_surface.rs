@@ -50,7 +50,7 @@ async fn a_script_round_trips_by_id() {
     let client = reqwest::Client::new();
 
     let id: CodeIdDto = client
-        .post(format!("{base}/code"))
+        .post(format!("{base}/code/37"))
         .json(&login())
         .send()
         .await
@@ -61,7 +61,7 @@ async fn a_script_round_trips_by_id() {
     assert_eq!(id.code_id, 1, "the store assigns ids from 1");
 
     let row: CodeRowDto = client
-        .get(format!("{base}/code/1"))
+        .get(format!("{base}/code/37/1"))
         .send()
         .await
         .unwrap()
@@ -85,7 +85,7 @@ async fn a_script_round_trips_by_id() {
 async fn an_unknown_id_is_a_404() {
     let (base, _dir) = spawn_server().await;
     let status = reqwest::Client::new()
-        .get(format!("{base}/code/9"))
+        .get(format!("{base}/code/37/9"))
         .send()
         .await
         .unwrap()
@@ -102,7 +102,7 @@ async fn code_and_channel_share_one_database_without_seeing_each_other() {
     let client = reqwest::Client::new();
 
     client
-        .post(format!("{base}/code"))
+        .post(format!("{base}/code/37"))
         .json(&login())
         .send()
         .await
@@ -136,12 +136,32 @@ async fn code_and_channel_share_one_database_without_seeing_each_other() {
 
     // The message must not leak into the code table: the one row written
     // there is still the one the door stored, and nothing sits beside it.
-    let row = client.get(format!("{base}/code/1")).send().await.unwrap();
+    let row = client.get(format!("{base}/code/37/1")).send().await.unwrap();
     assert_eq!(row.status(), reqwest::StatusCode::OK);
-    let ghost = client.get(format!("{base}/code/2")).send().await.unwrap();
+    let ghost = client.get(format!("{base}/code/37/2")).send().await.unwrap();
     assert_eq!(
         ghost.status(),
         reqwest::StatusCode::NOT_FOUND,
         "the message does not leak into the code table"
     );
+}
+
+/// The code door is SCOPED since k10r ADR-0023 (a code row is a vertex of that
+/// corpus's graph). One scope's row is invisible to another — the same rule the
+/// facts follow, because it is now literally the same table family.
+#[tokio::test]
+async fn a_code_row_belongs_to_one_scope() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    client
+        .post(format!("{base}/code/37"))
+        .json(&login())
+        .send()
+        .await
+        .unwrap();
+
+    let here = client.get(format!("{base}/code/37/1")).send().await.unwrap();
+    assert_eq!(here.status(), reqwest::StatusCode::OK);
+    let elsewhere = client.get(format!("{base}/code/38/1")).send().await.unwrap();
+    assert_eq!(elsewhere.status(), reqwest::StatusCode::NOT_FOUND);
 }

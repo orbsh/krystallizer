@@ -231,14 +231,26 @@ pub struct LogRow { pub level: u8, pub event: Vocab<u16>,
 - Bounded by `logs { max-rows }`: a write trims oldest-first in the SAME batch,
   and the trim is never logged (trimming would emit rows that trigger trimming).
 
-## Code store (ns 35)
+## Code rows (vertex in ns 36, sheet in ns 35)
 
 The delivered script's home — the one table an executor's call reads.
 Declared in `crates/mem-core/src/code.rs`; the design is gravity's
 (ADR-0001/0003: the node mount reads a script that travels as a call
-argument), and this repo's own decision is ADR-0012 — a bare surrogate id
-(no name, no hash), the language as data that never defaults, and a row
-that is code rather than a skill.
+argument), ADR-0012 decided the payload, and ADR-0023 decided the
+ADDRESS: a code row is a vertex of the fact graph (`kind = "code"`,
+named `code-{id}`) with its fields on a sheet beside it. It had to be a
+node the moment `gravity` bound a task to the code that finishes it
+(`task --finishes_on--> code`, gravity ADR-0003 §3) — a fact reaches
+entities, and a bare table row is not one.
+
+### The vertex
+
+`kind = "code"`, ns 36, the same collection every other node lives in.
+The name is synthetic (`code-{id}`) and carries nothing but the id: the
+graph needs a name to address a node, and nothing about a piece of code
+is a name (ADR-0012's refusal of a meaningful key stands — the caller
+re-reads the row on every call and the source travels as a call
+argument, so there is no cache to stale).
 
 ### Key: `CodeKey` (`KeyEncode`)
 
@@ -246,14 +258,14 @@ that is code rather than a skill.
 #[derive(KeyEncode, ...)]
 #[ok_ns(35)]
 pub struct CodeKey {
+    pub scope: u64,
     pub code_id: u64,
 }
 ```
 
-Physical layout: `[code_id 8B BE]` — identity and nothing else. No name
-and no content hash: the caller re-reads the row on every call and the
-source travels as a call argument, so there is no cache to stale
-(gravity ADR-0003, "Code identity").
+Physical layout: `[scope 8B BE][code_id 8B BE]` — scope first like every
+other table here, because the VERTEX lives in that scope's graph and a
+row outside a corpus would be a node with nowhere to be.
 
 ### Row: `CodeRow` (`DocumentEncode`)
 
@@ -285,14 +297,19 @@ pub struct CodeRow {
 - gravity is the only client (ADR-0001: the node never talks to
   krystallizer; the byte path is gravity → control path → node).
 
-### Access (mem-core `CodeStore`)
+### Access (mem-core `GraphStore`)
 
-`put(language, description, parameters, source)` → the store-assigned
-`code_id` (a surrogate id: recovered on reopen from its `HighWater(code_id)` watermark, so a withdrawn row never frees its id); `get(code_id)` → the row, or absent for an
-unknown id; `list()` → `(code_id, language, description)` in id order —
-what a resolver or a linker picks from, and the declared bring-up
-posture (a whole-table scan that the graph's retrieval replaces,
-ADR-0003/0018). Source and parameter definition stay out of `list()`.
+`put_code(scope, language, description, parameters, source)` → the
+store-assigned `code_id` (a surrogate id: recovered on reopen from a
+scan of the sheet's keys, so a withdrawn row never frees its id); it
+writes the vertex first and the sheet second — a failure leaves an inert
+node, never a sheet nobody can reach. `code(scope, code_id)` → the row,
+or absent for an unknown id. `code_vertex` / `code_id_of` translate
+between the number and the node, which is what a `finishes_on` edge
+needs in both directions.
+
+The doors are scoped: `POST /code/{scope}`, `GET /code/{scope}/{code_id}`.
+The sheet is the `code` table of the export bundle.
 
 ## Fact graph (ns 36 entities, ns 37 facts)
 

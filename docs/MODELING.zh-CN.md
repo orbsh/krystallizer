@@ -63,8 +63,8 @@ okm 的纪律：查询只走声明过的路径——没有通用全表扫描的�
   无回表），见 ADR-0008 §3。checkpoint（ns 34）按**键序读**——`[channel_id][ts_ms][sub]`，
   最新 = 一次前缀区间扫描的最后一个键，所以「最近一次压缩」不需要排序；ns 40
   （已撤除的决策日志）空出。
-- Code（ns 35）：`get(code_id)` 是**点读**；`list()` 是**声明的退化路径**（全表按
-  id 序，供解析与关联挑选，由图谱检索取代——ADR-0003/0018）。
+- Code（ns 35 的边表 + ns 36 的 `code` 顶点）：`code(scope, code_id)` 是**点读**；
+  顶点让事实够得着这一行（`task --finishes_on--> code`，ADR-0023），边表装载荷。
 - Fact graph：OKM 节点 collection（entities）+ 边 collection（facts）带声明面，
   见 ADR-0010 §1——不是 `edge:{src}:{label}:{dst}` 那种键布局（`EdgeTable` 是
   旧名：上面那层是 `Graph<S, E: GraphEncode>` + `NodeRef` + 谓词词汇表，okm
@@ -195,12 +195,22 @@ pub struct LogRow { pub level: u8, pub event: Vocab<u16>,
 - 由 `logs { max-rows }` 封顶：写一行时在同一 batch 里从最老的键开始删。裁剪本身
   不记日志（否则裁剪产生日志、日志触发裁剪）。
 
-## Code 存储（ns 35）
+## Code 行（ns 36 的顶点 + ns 35 的边表）
 
 交付脚本的家——执行方的调用会读的那唯一一张表。声明在
 `crates/mem-core/src/code.rs`；设计在 gravity（ADR-0001/0003：节点 mount
-读的脚本以调用参数形态走），本仓自己的裁决是 ADR-0012——裸代理 id（没有名字、
-没有哈希）、语言是永不默认的数据、一行是代码而不是 skill。
+读的脚本以调用参数形态走），载荷由 ADR-0012 决定，而 ADR-0023 决定的是**地址**：
+代码行是事实图里的一个顶点（`kind = "code"`，名 `code-{id}`），字段在它旁边的边表里。
+它必须成为节点，是从 gravity 把任务绑到关掉它的那行代码开始的
+（`task --finishes_on--> code`，gravity ADR-0003 §3）——事实只够得着顶点，
+而一张裸表行不是顶点。
+
+### 顶点
+
+`kind = "code"`，ns 36，和其他所有节点同一个集合。名字是合成的（`code-{id}`），
+除了 id 不承载任何东西：图需要一个名字来寻址节点，而一段代码身上没有哪样东西
+称得上是名字（ADR-0012 拒绝有语义的键的理由照旧成立——调用方每次调用都重读这一行、
+源码以参数形态走，所以没有会被读旧的缓存）。
 
 ### Key：`CodeKey`（`KeyEncode`）
 
@@ -208,13 +218,13 @@ pub struct LogRow { pub level: u8, pub event: Vocab<u16>,
 #[derive(KeyEncode, ...)]
 #[ok_ns(35)]
 pub struct CodeKey {
+    pub scope: u64,
     pub code_id: u64,
 }
 ```
 
-物理布局：`[code_id 8B BE]`——只有身份。没有 name，也没有内容哈希：
-调用方每次调用都重读这一行，脚本以参数形态走，所以没有会被读旧的缓存
-（gravity ADR-0003「Code identity」）。
+物理布局：`[scope 8B BE][code_id 8B BE]`——scope 在前，和这里每张表一样，
+因为**顶点**活在那个 scope 的图里，语料之外的代码行就是一个无处安放的节点。
 
 ### Row：`CodeRow`（`DocumentEncode`）
 
@@ -243,14 +253,16 @@ pub struct CodeRow {
 - gravity 是唯一客户（ADR-0001：节点永不与 krystallizer 说话；字节路径
   是 gravity → 控制路径 → 节点）。
 
-### 访问面（mem-core `CodeStore`）
+### 访问面（mem-core `GraphStore`）
 
-`put(language, description, parameters, source)` → store 分配的
-`code_id`（代理键，重启后从 `HighWater(code_id)` 水位恢复——被撤掉的行不会把 id 让出来）；
-`get(code_id)` → 该行，未知 id = 不存在；`list()` →
-`(code_id, language, description)` 按 id 序——解析方或关联方挑选的依据，
-也是声明的 bring-up 姿态（全表扫描，由图谱检索取代，ADR-0003/0018）。
-`list()` 不带 source 与参数定义。
+`put_code(scope, language, description, parameters, source)` → store 分配的
+`code_id`（代理键，重启后扫一遍边表的键取最大值恢复——被撤掉的行不会把 id 让出来）；
+它先写顶点、后写边表：中途失败只会留下一个惰性节点，绝不会留下一张没人够得着的表。
+`code(scope, code_id)` → 该行，未知 id = 不存在。
+`code_vertex` / `code_id_of` 在数字与节点之间互译——`finishes_on` 边两头都要。
+
+门按 scope：`POST /code/{scope}`、`GET /code/{scope}/{code_id}`。边表就是导出 bundle 里的
+`code` 表。
 
 ## 事实图（ns 36 实体，ns 42 用户，ns 37 事实）
 

@@ -31,7 +31,8 @@ use std::collections::BTreeMap;
 use okm_core::model::index::scan_index_exact;
 use okm_core::Document;
 
-use crate::graph::{EntityKey, GraphStore, IngestError, Term};
+use crate::code::code_name;
+use crate::graph::{EntityKey, FactTuple, GraphStore, IngestError, Relation, Term};
 
 use __OkmIndex_TaskSheet_by_state as ByState;
 
@@ -46,6 +47,18 @@ pub const TASK_STATES: &[&str] = &["open", "doing", "blocked", "done"];
 
 /// The state a task is created in, and the state of a sheet nobody has touched.
 pub const OPEN_STATE: &str = "open";
+
+/// The edge that says which CODE a task is finished by (`task --finishes_on-->
+/// code`). An ordinary fact, written by the ordinary verbs like a dependency is
+/// (ADR-0021 §1) — this store never writes it, and the sheet deliberately has no
+/// field for it: a binding is a relation, and relations are edges.
+///
+/// Why it is read here at all: gravity completes a task at the CALL SITE
+/// (gravity ADR-0003 §3 — completion is never a model judgement), so the one
+/// question it must answer before dispatching is "which open tasks does this
+/// code row finish". That answer has to ride the listing the turn already
+/// fetched, or it becomes a round trip per call.
+pub const FINISHES_ON: &str = "finishes_on";
 
 /// One task's working sheet. Same key as the vertex it belongs to.
 #[derive(okm_derive::DocumentEncode, Clone, PartialEq, Debug)]
@@ -87,6 +100,11 @@ pub struct TaskDecl {
     pub name: String,
     pub next: Option<String>,
     pub state: Option<String>,
+    /// Code ids this task is finished by (`finishes_on` edges, see
+    /// [`FINISHES_ON`]). Stated at open because that is when the caller knows
+    /// which step the work belongs to; a binding is ADDED, never rewritten — an
+    /// edge that should go away is withdrawn, and no door pretends otherwise.
+    pub finishes_on: Vec<u64>,
 }
 
 /// The answer to "open this task": the id it landed on, and whether this call
@@ -97,7 +115,8 @@ pub struct TaskLanded {
     pub created: bool,
 }
 
-/// One task as the door reports it: the vertex's identity and the sheet's state.
+/// One task as the door reports it: the vertex's identity and the sheet's state,
+/// plus the code rows it is bound to finish on (see [`FINISHES_ON`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TaskView {
     pub node_id: u64,
@@ -106,6 +125,10 @@ pub struct TaskView {
     pub next: String,
     pub created_at: u64,
     pub updated_at: u64,
+    /// Entity ids of this task's `finishes_on` targets, in edge order. Empty for
+    /// a task nothing is bound to — which is every task that was not opened as
+    /// part of a scripted step.
+    pub finishes_on: Vec<u64>,
 }
 
 /// Reading a task's sheet: three outcomes, because the door reports them as
@@ -173,6 +196,12 @@ impl GraphStore {
             // its clock, so the one call whose entire meaning is "this work exists"
             // would be the call that loses the work's progress. A caller that wants
             // the task changed says so at `/move`.
+            //
+            // The BINDING is the exception, and it is safe to restate: an edge
+            // carries no clock and no state, so re-stating it is idempotent (the
+            // ingest answers `Bumped` for one that already stands). That is what
+            // lets a turn bind a task it opened in an earlier turn.
+            self.bind_finishes_on(scope, &decl.name, &decl.finishes_on)?;
             return Ok(TaskLanded { node_id, created });
         }
         let sheet = TaskSheet {
@@ -182,6 +211,7 @@ impl GraphStore {
             updated_at: now,
         };
         self.put_task_sheet(scope, node_id, &sheet)?;
+        self.bind_finishes_on(scope, &decl.name, &decl.finishes_on)?;
         Ok(TaskLanded { node_id, created })
     }
 
@@ -219,6 +249,7 @@ impl GraphStore {
             updated_at: now,
         };
         self.put_task_sheet(scope, node_id, &sheet)?;
+        let finishes_on = self.bound_codes(scope, node_id)?;
         let view = TaskView {
             node_id,
             name: row.name,
@@ -226,8 +257,63 @@ impl GraphStore {
             next: sheet.next,
             created_at: sheet.created_at,
             updated_at: sheet.updated_at,
+            finishes_on,
         };
         Ok(TaskRead::Found(Box::new(view)))
+    }
+
+    /// The code ids a task is bound to, resolved from the `finishes_on` edges:
+    /// the edge lands on a code VERTEX, and the caller wants the number a skill's
+    /// `steps[].code_id` carries. A target that is not code is dropped — the
+    /// predicate is this store's own, and an edge with an alien target is a
+    /// caller bug, never a value worth passing on.
+    fn bound_codes(&mut self, scope: u64, node_id: u64) -> Result<Vec<u64>, IngestError> {
+        let mut out = Vec::new();
+        for target in self.targets_of(scope, node_id, FINISHES_ON)? {
+            if let Some(code_id) = self.code_id_of(scope, target)? {
+                out.push(code_id);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Bind a task to the code rows that finish it: one ordinary fact per code
+    /// row, written the same way any other edge is. Refused (not silently
+    /// skipped) when a named code id was never written — a binding to nothing is
+    /// a caller bug, and a phantom `code-99` vertex would be worse than an error.
+    fn bind_finishes_on(
+        &mut self,
+        scope: u64,
+        task_name: &str,
+        code_ids: &[u64],
+    ) -> Result<(), IngestError> {
+        for code_id in code_ids {
+            if self.code_vertex(scope, *code_id)?.is_none() {
+                return Err(IngestError::Refused(format!(
+                    "code row {code_id} does not exist in scope {scope}: a task binds to code \
+                     that was delivered, never to an id somebody hoped for"
+                )));
+            }
+            let props = BTreeMap::new();
+            let fact = FactTuple {
+                head: Term {
+                    value: task_name.to_string(),
+                    type_label: TASK_KIND.to_string(),
+                    props: props.clone(),
+                },
+                rel: Relation {
+                    name: FINISHES_ON.to_string(),
+                    props: props.clone(),
+                },
+                tail: Term {
+                    value: code_name(*code_id),
+                    type_label: crate::code::CODE_KIND.to_string(),
+                    props,
+                },
+            };
+            self.ingest(scope, &fact)?;
+        }
+        Ok(())
     }
 
     /// One task, whether or not its sheet has been written.
@@ -242,6 +328,7 @@ impl GraphStore {
         let sheet = self
             .task_sheet(scope, node_id)?
             .unwrap_or_else(TaskSheet::opened);
+        let finishes_on = self.bound_codes(scope, node_id)?;
         Ok(TaskRead::Found(Box::new(TaskView {
             node_id,
             name: row.name,
@@ -249,6 +336,7 @@ impl GraphStore {
             next: sheet.next,
             created_at: sheet.created_at,
             updated_at: sheet.updated_at,
+            finishes_on,
         })))
     }
 

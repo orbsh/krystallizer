@@ -59,6 +59,7 @@
 //! read without a clock is served but not counted.
 
 use crate::channel::{MemberKey, MemberRow};
+use crate::code::{CodeKey, CodeRow};
 use crate::embedding::Embedder;
 use crate::render::RenderFormat;
 use crate::tasks::{TaskSheet, TASK_KIND};
@@ -1025,12 +1026,17 @@ pub struct GraphStore {
     /// `commit_batch` writes into the handle it was called on), which is why
     /// this is a separate handle and not part of the graph's own tree.
     members: Option<Collection<FjallStore, MemberKey, MemberRow>>,
+    /// The code sheets (ns 35, k10r ADR-0023): the payload behind each `code`
+    /// vertex. Presence is the meaning — a node with no sheet is not code.
+    pub(crate) codes: Collection<FjallStore, CodeKey, CodeRow>,
     /// One handle for the writes the collections cannot express in their
     /// own batch (the dictionary, and the edge's dynamic segment). The
     /// edge collection's own handle is built PER CALL — see `facts()`.
     store: FjallStore,
     next_node: u64,
     next_edge: u64,
+    /// The code id watermark (k10r ADR-0023), seeded from the sheets at open.
+    next_code: u64,
     /// The embedding engine (ADR-0003). `None` = no engine attached:
     /// rows land with an EMPTY vector frame and retrieval has nothing to
     /// rank (a legal, empty result — never an error). WHICH engine (the built-in
@@ -1060,6 +1066,17 @@ impl GraphStore {
         let entities = <EntityRow as Document>::collection(store.clone());
         let vectors = <NodeVector as Document>::collection(store.clone());
         let sheets = <TaskSheet as Document>::collection(store.clone());
+        let codes = crate::code::code_collection(store.clone());
+        // Code ids are a watermark over the code sheets (k10r ADR-0023): the
+        // highest id EVER written, so a deleted row does not free its id. One
+        // scan at open; the sheet is small by construction (a row per script).
+        let next_code = codes
+            .scan_keys()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .map(|key| key.code_id)
+            .max()
+            .map_or(1, |id| id.saturating_add(1));
         // Id recovery, both tables: scan the last key in table order.
         // Entity keys are `[scope][node_id]`, so the last key carries the
         // global max node id; the edge primary keys are `[edge_id]` under
@@ -1091,9 +1108,11 @@ impl GraphStore {
             entities,
             vectors,
             sheets,
+            codes,
             store,
             next_node,
             next_edge,
+            next_code,
             embedder: None,
             members: None,
             tables: ScopeTables::default(),
@@ -1287,6 +1306,10 @@ impl GraphStore {
             // community ids the restored nodes already carry.
             let mut seq = <CommunitySeqRow as Document>::collection(self.store.clone());
             Some(crate::export::table(&mut seq, path))
+        } else if name == <crate::code::CodeRow as Document>::TABLE_NAME {
+            // The code sheets (k10r ADR-0023): a table of this graph's family,
+            // so the bundle carries it with the rest of the corpus.
+            self.export_code(name, path)
         } else {
             None
         }
@@ -1313,6 +1336,8 @@ impl GraphStore {
             // is what makes a restored watermark visible.
             self.next_community.clear();
             Some(crate::export::finish_import(out, || Ok(())))
+        } else if name == <crate::code::CodeRow as Document>::TABLE_NAME {
+            self.import_code(name, path)
         } else {
             None
         }
@@ -2133,6 +2158,33 @@ impl GraphStore {
             .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
+    /// The ENTITY ids one predicate points at out of a scoped node, in edge
+    /// order — the read a sheet needs when the meaning of a relation is "this
+    /// row is about that record" (a task bound to the code that finishes it,
+    /// k10r ADR-0021 + gravity ADR-0003). Callers that need the whole fact use
+    /// [`typed_out_of`](Self::typed_out_of) and [`fact`](Self::fact).
+    ///
+    /// Non-entity endpoints are skipped rather than guessed at: a user node
+    /// (identity ns) has no entity id, and a task bound to a person is not a
+    /// binding this reader can honour.
+    pub fn targets_of(
+        &mut self,
+        scope: u64,
+        node_id: u64,
+        kind: &str,
+    ) -> Result<Vec<u64>, IngestError> {
+        let node = self.node_ref(scope, node_id);
+        let mut out = Vec::new();
+        for edge_id in self.typed_out_of(&node, kind)? {
+            if let Some(fact) = self.fact(edge_id)? {
+                if let Some(id) = entity_node_of(&fact.dst) {
+                    out.push(id);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// One member's node reference (`[42][channel][member]`) — the entry a
     /// context head starts its traversal from.
     pub fn user_ref(&self, channel: u64, member: u64) -> NodeRef {
@@ -2495,6 +2547,57 @@ impl GraphStore {
     /// The sheet collection, for the face scan `tasks::list_tasks` runs.
     pub(crate) fn sheet_collection(&self) -> &Collection<FjallStore, EntityKey, TaskSheet> {
         &self.sheets
+    }
+
+    /// One code row's payload, if the id was ever written (ADR-0023).
+    pub(crate) fn code_sheet(
+        &mut self,
+        scope: u64,
+        code_id: u64,
+    ) -> Result<Option<CodeRow>, IngestError> {
+        self.codes
+            .get(&CodeKey { scope, code_id })
+            .map_err(|e| IngestError::Storage(e.to_string()))
+    }
+
+    /// Write one code row's payload. The vertex is untouched: publishing a
+    /// script is not a re-label and not a prop merge.
+    pub(crate) fn put_code_sheet(
+        &mut self,
+        scope: u64,
+        code_id: u64,
+        row: &CodeRow,
+    ) -> Result<(), IngestError> {
+        self.codes
+            .put(&CodeKey { scope, code_id }, row)
+            .map_err(|e| IngestError::Storage(e.to_string()))
+    }
+
+    /// The code table, for the export boundary (ADR-0007's backup).
+    pub fn code_table(&self) -> &Collection<FjallStore, CodeKey, CodeRow> {
+        &self.codes
+    }
+
+    /// The next code id, and move the watermark one past it.
+    pub(crate) fn take_code_id(&mut self) -> u64 {
+        let id = self.next_code;
+        self.next_code = id.saturating_add(1);
+        id
+    }
+
+    /// Recompute the code watermark from the sheets — the open path, reused
+    /// after a restore wrote rows underneath it (a restored row's id must never
+    /// be handed out again).
+    pub fn reseed_code(&mut self) -> Result<(), IngestError> {
+        self.next_code = self
+            .codes
+            .scan_keys()
+            .map_err(|e| IngestError::Storage(e.to_string()))?
+            .iter()
+            .map(|key| key.code_id)
+            .max()
+            .map_or(1, |id| id.saturating_add(1));
+        Ok(())
     }
 
     /// Merge props into an existing node's dynamic segment — the write a

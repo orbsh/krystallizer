@@ -23,6 +23,7 @@ fn decl(name: &str) -> TaskDecl {
         name: name.to_string(),
         next: None,
         state: None,
+        finishes_on: Vec::new(),
     }
 }
 
@@ -101,6 +102,7 @@ fn reopening_a_task_does_not_drag_it_back_to_open() {
                 name: "ship the face change".to_string(),
                 next: None,
                 state: None,
+                finishes_on: Vec::new(),
             },
             3_000,
         )

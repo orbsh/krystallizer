@@ -74,9 +74,9 @@ sit here were exactly that (retired 2026-10-20).
  (landing → the landed COMMUNITY's bucket → one representation: the rendered, id-bearing text or, under `format=struct`, the data alone; ranked by weight, capped by `budget`; no engine = an empty answer) | entities (36) + facts (37) | landed (2026-10-20) |
 | `GET /memories/{scope}/entities/{name}` | `GraphStore::entity_by_name` (the exact name/alias entrance; 404 on an unknown name) | entities (36) | landed (2026-10-17) |
 | `POST /memories/{scope}/edges/{id}/touch` | `GraphStore::touch` (a caller-reported TOOL consult: counters bump, weight folds; 404 for an unknown edge or another scope's) | facts (37) | landed (2026-10-19) |
-| `POST /code` | `CodeStore::put` | code (35) | landed |
+| `POST /code/{scope}` | `GraphStore::put_code` (vertex + sheet; ADR-0023) | code (35) + entity (36) | landed |
 | `GET /code` | — WITHDRAWN 2026-10-20 (no client ever read it; `GET /code/{id}` is the read gravity makes) | code (35) | gone |
-| `GET /code/{id}` | `CodeStore::get` (the whole row, source included) | code (35) | landed |
+| `GET /code/{scope}/{id}` | `GraphStore::code` (the whole row, source included) | code (35) | landed |
 | `GET /export` | ONE `tar.zst` (ADR-0013 §2): `<table>/data/<table>.parquet` beside each table's Iceberg v2 metadata, `catalog.parquet` at the root. Built under one lock pass in a temp directory, served only when COMPLETE; `Content-Disposition: krystallizer-backup-<ts>.tar.zst`. Paths inside the metadata are table-relative, so the file reads after being moved | all tables | landed 2026-10-22 |
 | `POST /import` | the same bundle back, restored in catalog order through the live write contracts (merge by key, no delete), then every issuer reseeded from the store; answers per-table row counts | all tables | landed 2026-10-22 |
 | `GET /export/{table}` | one table by NAME as Parquet (okm's bridge reading the row declaration; declared fields + a `variant` column for the dynamic segment; `Content-Disposition: <table>.parquet`). Edges export as the edge table okm's `Graph` builds: `(src_table, src_pkey, dst_table, dst_pkey, predicate)` + declared fields + props variant. `log__reduces` / `code__reduces` are the derived reduce tables. 404 = no such name (points at the catalog), 200 + empty file for an empty table | every table | landed 2026-10-21 |
@@ -136,7 +136,7 @@ Every operation in this table rides a CORE door (§1a); the analysis class
 | `commit_memory` — write facts | tool face | `POST /memories/{scope}` | `GraphStore::ingest(fact)` | door landed (2026-10-17); the tool landed 2026-10-26 (gravity ADR-0004) |
 | `resolve_skills` — the selectable skill list | tool face (landed 2026-10-26, gravity ADR-0004) | `POST /skills/{scope}/resolve` (ADR-0015) | `GraphStore::resolve_skills` — retrieval filtered to the `skill` kind, the `by_kind` scan as the fallback | landed 2026-10-26; the node it lists is ADR-0015's, the walk over it is gravity's |
 | `invoke_skill` — the skill row it walks | tool face | `GET /skills/{scope}/{node_id}` | `GraphStore::skill` | landed 2026-10-26 |
-| `invoke_skill` — the step's code row | tool face | `GET /code/{id}` | `CodeStore::get` | landed |
+| `invoke_skill` — the step's code row | tool face | `GET /code/{scope}/{id}` | `GraphStore::code` | landed |
 | `invoke_skill` — the call itself | the step's script on a mount | **not k10r** (see §3) | — | landed 2026-10-26 (gravity `invoke_skill`: one step per call, `ctx.invoke` on the language's mount) |
 | Skill proposal — count a composition a walk reached | gravity, the moment the walk reaches it (ADR-0016, amended the same day) | `POST /skills/{scope}/propose` | `GraphStore::propose` (kind `skill_proposal`, count as a prop) | landed 2026-10-26; the resolver never sees it — a draft is not a candidate; a walk that did not GROW files nothing, so a retry is not counted twice |
 | Skill proposal — the review queue | not gravity's: a HUMAN's door (curl today) | `GET /skills/{scope}/proposals?min_count=N` | `GraphStore::proposals` | landed 2026-10-26; the human-facing verb is still owed (ADR-0016 §Consequences) |
@@ -154,7 +154,7 @@ Every operation in this table rides a CORE door (§1a); the analysis class
 Execution never reaches k10r. `invoke_skill` dispatches through the
 framework's governed call — `invoke(mount_type, session_key, "execute",
 {"code": <source>, "args": <model args>})` — to an **effector node mount**;
-the script was fetched from k10r one step earlier (`GET /code/{id}`) and
+the script was fetched from k10r one step earlier (`GET /code/{scope}/{id}`) and
 travels as a call argument. The mount registration face is prism's
 (`crates/prism/src/mounts.rs`). So the two families part company at the edge:
 the memory family (and the skill family's *resolution*) are calls to k10r,

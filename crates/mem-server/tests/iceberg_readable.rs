@@ -122,7 +122,7 @@ async fn a_bundle_opens_in_a_warehouse_reader_that_never_saw_k10r() {
         .unwrap();
     assert_eq!(landed.status(), 200);
     client
-        .post(format!("{base}/code"))
+        .post(format!("{base}/code/37"))
         .json(&PutCode {
             language: "nu".into(),
             description: "count rows".into(),
@@ -168,12 +168,28 @@ async fn a_bundle_opens_in_a_warehouse_reader_that_never_saw_k10r() {
         return;
     };
     assert_eq!(facts, 2, "both facts in the reader");
-    assert_eq!(rows(&root.join("entities")), Some(3), "three entity nodes");
+    // THREE facts' entities plus the code row's own VERTEX (k10r ADR-0023: a
+    // code row is a node, so facts — and tasks — can point at it).
+    assert_eq!(
+        rows(&root.join("entities")),
+        Some(4),
+        "three entity nodes and the code vertex"
+    );
     assert_eq!(rows(&root.join("code")), Some(1), "one code row");
     assert_eq!(rows(&root.join("messages")), Some(2), "two messages");
 
     // The file carries LABELS: the entity table names its rows without the
     // store's vocabulary tables, which is what makes the backup legible.
     let names = column(&root.join("entities"), "name", "name").unwrap();
-    assert_eq!(names, vec!["fjall", "k10r", "okm"], "labels, not ids");
+    let mut names: Vec<String> = names
+        .iter()
+        .filter(|name| !name.starts_with("code-"))
+        .cloned()
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        vec!["fjall", "k10r", "okm"],
+        "labels, not ids (the code vertex is the row this file is about)"
+    );
 }

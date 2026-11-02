@@ -90,7 +90,7 @@ async fn every_table_answers_and_an_unknown_name_is_a_404() {
     let (base, _dir) = spawn_server().await;
     let client = reqwest::Client::new();
     client
-        .post(format!("{base}/code"))
+        .post(format!("{base}/code/37"))
         .json(&PutCode {
             language: "nu".into(),
             description: "log into a host".into(),
@@ -345,7 +345,7 @@ async fn the_reduce_tables_carry_the_watermarks() {
     let client = reqwest::Client::new();
     for description in ["first", "second"] {
         client
-            .post(format!("{base}/code"))
+            .post(format!("{base}/code/37"))
             .json(&PutCode {
                 language: "nu".into(),
                 description: description.into(),

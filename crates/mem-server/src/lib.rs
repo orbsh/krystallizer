@@ -19,7 +19,7 @@ use axum::{
     Json, Router,
 };
 use mem_core::channel::{ChannelStore, MessageKey};
-use mem_core::code::{CodeRow, CodeStore};
+use mem_core::code::CodeRow;
 use mem_core::graph::{FactTuple, GraphStore, IngestError, IngestOutcome};
 use mem_core::proposals::ProposalDecl;
 use mem_core::skills::{SkillDecl, SkillRead, SkillTouchOutcome, TouchPhase, DEFAULT_LIMIT};
@@ -36,9 +36,6 @@ pub mod embedding;
 /// of adding a sync layer to the core.
 pub struct MemState {
     store: tokio::sync::Mutex<ChannelStore>,
-    /// The code group — the `memory` keyspace, shared with the fact
-    /// graph (different ns).
-    code: tokio::sync::Mutex<CodeStore>,
     /// The fact graph (ns 36 entities / 37 facts) — the `memory`
     /// keyspace. The active memory add lands here (ADR-0008: the facts
     /// come from the model's own add, the caller routes the tuple to
@@ -220,7 +217,6 @@ fn build(
     };
     let state = Arc::new(MemState {
         store: tokio::sync::Mutex::new(stores.channels),
-        code: tokio::sync::Mutex::new(stores.code),
         graph: tokio::sync::Mutex::new(graph),
         log: tokio::sync::Mutex::new(stores.log.with_max_rows(log_max_rows)),
         compression,
@@ -238,7 +234,7 @@ fn build(
             "/channels/{channel_id}/members/{member_id}/checkpoint",
             post(append_checkpoint),
         )
-        .route("/code", post(put_code))
+        .route("/code/{scope}", post(put_code))
         .route("/export", get(export_bundle))
         .route("/export/{table}", get(export_table))
         // A bundle is the whole store: the body limit that protects the small
@@ -247,7 +243,7 @@ fn build(
             "/import",
             post(import_bundle).layer(axum::extract::DefaultBodyLimit::disable()),
         )
-        .route("/code/{code_id}", get(fetch_code))
+        .route("/code/{scope}/{code_id}", get(fetch_code))
         // The skill node's three doors (ADR-0015): declare, resolve (the list
         // `resolve_skills` answers), read one (what a run walks).
         .route("/skills/{scope}", post(put_skill))
@@ -767,7 +763,7 @@ async fn append_checkpoint(
 // authoring act) and re-reads it on every call, so the read goes to the
 // row's identity — no name, no content hash (code identity = the id).
 
-/// Request body of `POST /code` — one piece of code: the language it is
+/// Request body of `POST /code/{scope}` — one piece of code: the language it is
 /// written in, what it is (description, parameter definition) and its
 /// source. The language is required data, never defaulted; the
 /// description and the parameter definition are what a skill-to-code
@@ -808,20 +804,27 @@ impl From<CodeRow> for CodeRowDto {
     }
 }
 
-/// `POST /code` — store one piece of code; the store assigns the id.
+/// `POST /code/{scope}` — store one piece of code; the store assigns the id.
+///
+/// Scoped since k10r ADR-0023: a code row is a VERTEX of that scope's fact graph
+/// (plus a sheet), because tasks bind to the code that finishes them and a fact
+/// reaches entities. The id is unchanged — skills still name it in
+/// `steps[].code_id`, and gravity still addresses it by number.
 async fn put_code(
     State(state): State<Arc<MemState>>,
+    Path(scope): Path<u64>,
     Json(body): Json<PutCode>,
 ) -> Result<Json<CodeIdDto>, FactError> {
-    let mut code = state.code.lock().await;
-    let code_id = code
-        .put(
+    let mut graph = state.graph.lock().await;
+    let code_id = graph
+        .put_code(
+            scope,
             &body.language,
             &body.description,
             &body.parameters,
             &body.source,
         )
-        .map_err(FactError::internal)?;
+        .map_err(FactError::from)?;
     Ok(Json(CodeIdDto { code_id }))
 }
 
@@ -1101,6 +1104,12 @@ pub struct OpenTaskBody {
     pub next: Option<String>,
     #[serde(default)]
     pub state: Option<String>,
+    /// The code rows that finish this task (`task --finishes_on--> code`).
+    /// Stated here because opening is when the caller knows which step the work
+    /// belongs to; the edges it writes are the truth, and gravity closes the task
+    /// at the call site (gravity ADR-0003 §3).
+    #[serde(default)]
+    pub finishes_on: Vec<u64>,
     #[serde(default)]
     pub ts_ms: Option<u64>,
 }
@@ -1129,6 +1138,11 @@ struct TaskDto {
     next: String,
     created_at: u64,
     updated_at: u64,
+    /// The code rows this task is finished by (`finishes_on` edges, ADR-0021).
+    /// Absent rather than `[]`: a caller builds "which calls close what" from the
+    /// bindings that EXIST, and an empty array is noise on every other task.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    finishes_on: Vec<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1145,6 +1159,7 @@ fn task_dto(task: mem_core::TaskView) -> TaskDto {
         next: task.next,
         created_at: task.created_at,
         updated_at: task.updated_at,
+        finishes_on: task.finishes_on,
     }
 }
 
@@ -1165,6 +1180,7 @@ async fn open_task(
                 name: body.name,
                 next: body.next,
                 state: body.state,
+                finishes_on: body.finishes_on,
             },
             now,
         )
@@ -1415,9 +1431,6 @@ async fn export_one(
         found = state.store.lock().await.export(name, &file);
     }
     if found.is_none() {
-        found = state.code.lock().await.export(name, &file);
-    }
-    if found.is_none() {
         found = state.log.lock().await.export(name, &file);
     }
     if found.is_none() {
@@ -1427,7 +1440,7 @@ async fn export_one(
         found = Some(state.log.lock().await.export_reduces(&file));
     }
     if found.is_none() && name == mem_core::export::CODE_REDUCES {
-        found = Some(state.code.lock().await.export_reduces(&file));
+        found = Some(state.graph.lock().await.export_code_reduces(&file));
     }
     match found {
         Some(Ok(())) => {}
@@ -1462,7 +1475,7 @@ async fn export_table(
         found = state.store.lock().await.export(&name, &file);
     }
     if found.is_none() {
-        found = state.code.lock().await.export(&name, &file);
+        found = state.graph.lock().await.export_code(&name, &file);
     }
     if found.is_none() {
         found = state.log.lock().await.export(&name, &file);
@@ -1474,7 +1487,7 @@ async fn export_table(
         found = Some(state.log.lock().await.export_reduces(&file));
     }
     if found.is_none() && name == mem_core::export::CODE_REDUCES {
-        found = Some(state.code.lock().await.export_reduces(&file));
+        found = Some(state.graph.lock().await.export_code_reduces(&file));
     }
     let Some(outcome) = found else {
         return (
@@ -1577,7 +1590,7 @@ async fn import_bundle(
             found = state.store.lock().await.import(name, &file);
         }
         if found.is_none() {
-            found = state.code.lock().await.import(name, &file);
+            found = state.graph.lock().await.import_code(name, &file);
         }
         if found.is_none() {
             found = state.log.lock().await.import(name, &file);
@@ -1613,13 +1626,13 @@ async fn import_bundle(
 /// model; the store has no opinion).
 async fn fetch_code(
     State(state): State<Arc<MemState>>,
-    Path(code_id): Path<u64>,
+    Path((scope, code_id)): Path<(u64, u64)>,
 ) -> axum::response::Response {
-    let code = state.code.lock().await;
-    match code.get(code_id) {
+    let mut graph = state.graph.lock().await;
+    match graph.code(scope, code_id) {
         Ok(Some(row)) => Json(CodeRowDto::from(row)).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(e) => FactError::internal(e).into_response(),
+        Err(e) => FactError::internal(e.to_string()).into_response(),
     }
 }
 

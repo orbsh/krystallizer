@@ -26,9 +26,12 @@ fn the_service_assembly_serves_every_group() {
     let mut stores = open_service(dir.path()).unwrap();
 
     stores.channels.append(7, 1000, 0, 0, 0, "hi").unwrap();
+    // Code is a VERTEX with a sheet now (k10r ADR-0023), so the write also
+    // interns a node — the graph's node counter and the code watermark are two
+    // numbers, and this test is where that stops being implicit.
     let code_id = stores
-        .code
-        .put("nu", "log into a host", "{}", "ssh $args.host")
+        .graph
+        .put_code(1, "nu", "log into a host", "{}", "ssh $args.host")
         .unwrap();
     let fact = FactTuple::from_json(
         r#"["galaxy_repo","repository",{},"PIVOTED_TO",{},"k10r_core","system",{}]"#,
@@ -47,8 +50,8 @@ fn the_service_assembly_serves_every_group() {
     );
     assert_eq!(
         stores
-            .code
-            .get(code_id)
+            .graph
+            .code(1, code_id)
             .expect("the row reads")
             .expect("the row is there")
             .language,
@@ -59,21 +62,26 @@ fn the_service_assembly_serves_every_group() {
         mem_core::IngestOutcome::Linked { edge_id: 1 },
         "the graph's id counters work off the same assembly"
     );
-    assert_eq!(
-        stores
-            .graph
-            .entity_by_name(1, "galaxy_repo")
-            .unwrap()
-            .unwrap()
-            .0,
-        1
+    let (code_vertex, _) = stores
+        .graph
+        .entity_by_name(1, &mem_core::code::code_name(code_id))
+        .unwrap()
+        .expect("the code rows are reachable as vertices");
+    let (entity, _) = stores
+        .graph
+        .entity_by_name(1, "galaxy_repo")
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        code_vertex, entity,
+        "one node per thing: the code vertex is not the fact's entity"
     );
 }
 
 /// The premise that makes ONE keyspace legal for several tables: their ns
 /// differ (35 code, 36 entities, 37 facts), so the address header the
 /// Collection joins can never collide — and the bare key payloads carry no
-/// ns themselves (`[code_id 8B]` = 8 vs `[scope 8B][node_id 8B]` = 16).
+/// ns themselves (`[scope 8B][code_id 8B]` = 16 vs `[scope 8B][node_id 8B]` = 16).
 #[test]
 fn the_memory_keyspace_tables_declare_different_ns() {
     let ns_of = |prefix: &[u8]| u16::from_be_bytes(prefix[0..2].try_into().unwrap());
@@ -84,7 +92,7 @@ fn the_memory_keyspace_tables_declare_different_ns() {
         mem_core::FACT_NS
     );
 
-    assert_eq!(mem_core::CodeKey { code_id: 1 }.encode().len(), 8);
+    assert_eq!(mem_core::CodeKey { scope: 1, code_id: 1 }.encode().len(), 16);
     assert_eq!(
         mem_core::EntityKey {
             scope: 1,

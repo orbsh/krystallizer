@@ -118,3 +118,19 @@ The API is `put` / `get` / `list`.
   can run.
 - The `list()` shape is owed a replacement by the graph's retrieval (PLAN 2.8), and this
   ADR records that the list is a bring-up posture so nobody mistakes it for the design.
+
+## Update (2026-10-31) — the row moved onto a node
+
+[ADR-0023](0023-a-code-row-is-a-vertex.md) amends this decision at the address, not at
+the payload. A code row is now a VERTEX of the fact graph (`kind = "code"`, named
+`code-{id}`) with the fields below on a sheet beside it (ns 35, keyed `[scope][code_id]`).
+
+Why: gravity ADR-0003 §3 binds a task to the code row that finishes it
+(`task --finishes_on--> code`), and a fact reaches entities — so the moment anything has
+to POINT at a piece of code, that piece of code has to be a node.
+
+What stands unchanged: the surrogate id (still the number a skill's `steps[].code_id`
+carries), the payload, the watermark allocator, and this ADR's reason for refusing a
+meaningful name. What changed: the name now exists (synthetic, derived from the id, the
+graph's own addressing), the doors are scoped (`/code/{scope}`), and the table's key has
+a scope in front of it. The "Why Not" entries above still hold as written.

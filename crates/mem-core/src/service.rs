@@ -17,7 +17,6 @@
 //! storage, reached only over HTTP).
 
 use crate::channel::ChannelStore;
-use crate::code::CodeStore;
 use crate::graph::GraphStore;
 use crate::log::LogStore;
 use crate::{KEYSPACE_CHANNEL, KEYSPACE_MEMORY};
@@ -32,8 +31,6 @@ pub struct ServiceStores {
     /// write shape is the log's (append-only, high rate), not the memory
     /// side's (ADR-0002, ADR-0011).
     pub log: LogStore,
-    /// The code group (ns 35) — the `memory` keyspace.
-    pub code: CodeStore,
     /// The fact graph (ns 36 entities, ns 37 facts) — the `memory`
     /// keyspace, like every table whose write shape is not the log's.
     pub graph: GraphStore,
@@ -53,8 +50,7 @@ pub fn open_service(path: &std::path::Path) -> Result<ServiceStores, String> {
         // The graph holds the identity collection's handle too (ADR-0014): a
         // `user` endpoint is validated and rendered by a point read across
         // keyspaces, never by a batch that would span them.
-        graph: GraphStore::wrap(memory_store.clone())?.with_channel(channel_store.clone()),
+        graph: GraphStore::wrap(memory_store)?.with_channel(channel_store.clone()),
         log: LogStore::wrap(channel_store)?,
-        code: CodeStore::wrap(memory_store)?,
     })
 }

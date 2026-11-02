@@ -186,6 +186,12 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   structured node: preconditions / steps / experience / verification).
   Nothing defaults the language. gravity is the only client (the node
   never talks to krystallizer).
+  AMENDED 2026-10-31 (ADR-0023): the row is a VERTEX now (`kind = "code"`, ns 36, named
+  `code-{id}`) with the fields on a sheet beside it (ns 35, key `[scope][code_id]`), because
+  gravity binds a task to the code that finishes it (`task --finishes_on--> code`) and a fact
+  reaches entities. `code_id` is unchanged; the doors are scoped (`/code/{scope}`,
+  `/code/{scope}/{id}`); `CodeStore` is gone — `GraphStore` owns `put_code`/`code`.
+  Gates: 202/0, clippy 0.
   LANDED 2026-10-15 (bring-up slice; ADR-0012 was written 2026-10-20): ns 35 `CodeKey`/`CodeRow`
   (`language`, `description`, `parameters`, `source`) + `CodeStore`
   (`put` / `get` / `list`); mem-server `POST /code` (the store assigns

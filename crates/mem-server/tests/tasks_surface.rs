@@ -170,6 +170,113 @@ async fn a_dependency_is_an_ordinary_fact() {
     assert_eq!(graph["links"].as_array().unwrap().len(), 1);
 }
 
+/// `finishes_on` is the one edge the listing decodes (gravity ADR-0003 §3): the
+/// turn must know, before dispatching a call, which open tasks that code row
+/// finishes — and it reads that from the listing it already fetched, not from a
+/// second round trip per call.
+///
+/// Since k10r ADR-0023 the target is a VERTEX, so the binding is an ordinary
+/// fact, and the door writes it because the caller states it when it opens the
+/// task (that is when it knows which step the work belongs to).
+#[tokio::test]
+async fn a_task_names_the_code_that_finishes_it() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    let code: Value = client
+        .post(format!("{base}/code/37"))
+        .json(&json!({
+            "language": "python",
+            "description": "runs the migration",
+            "parameters": "{}",
+            "source": "print('migrated')",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let code_id = code["code_id"].as_u64().expect("a code id");
+
+    // Nothing bound yet: the field is absent, not an empty array.
+    client
+        .post(format!("{base}/tasks/37"))
+        .json(&json!({ "name": "run the migration", "ts_ms": 1_000 }))
+        .send()
+        .await
+        .unwrap();
+    let listed: Vec<Value> = client
+        .get(format!("{base}/tasks/37"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        listed[0].get("finishes_on").is_none(),
+        "a task nothing is bound to carries no field: {listed:?}"
+    );
+
+    // State the binding on a second open: state is untouched, the edge is added.
+    let moved: Value = client
+        .post(format!("{base}/tasks/37/{}/move", listed[0]["node_id"]))
+        .json(&json!({ "state": "doing", "ts_ms": 2_000 }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(moved["state"], json!("doing"));
+
+    client
+        .post(format!("{base}/tasks/37"))
+        .json(&json!({
+            "name": "run the migration",
+            "finishes_on": [code_id],
+            "ts_ms": 3_000,
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let listed: Vec<Value> = client
+        .get(format!("{base}/tasks/37"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        listed[0]["finishes_on"],
+        json!([code_id]),
+        "the binding rides the listing: {listed:?}"
+    );
+    assert_eq!(
+        listed[0]["state"],
+        json!("doing"),
+        "opening an existing task restates the binding and never rewrites state"
+    );
+
+    // A binding to a code row nobody delivered is refused by name, not written as
+    // a phantom vertex.
+    let refused = client
+        .post(format!("{base}/tasks/37"))
+        .json(&json!({ "name": "wishful", "finishes_on": [9999], "ts_ms": 4_000 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 400, "a binding to nothing is refused");
+    let body: Value = refused.json().await.unwrap();
+    assert!(
+        body["error"].as_str().unwrap_or_default().contains("9999"),
+        "the refusal names the id: {body}"
+    );
+}
+
 #[tokio::test]
 async fn the_doors_keep_the_three_mistakes_apart() {
     let (base, _dir) = spawn_server().await;
