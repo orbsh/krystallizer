@@ -277,3 +277,83 @@ fn a_code_row_is_a_vertex_a_fact_can_reach() {
         "and the number comes back for the caller"
     );
 }
+
+/// The use counters ride the VERTEX, on the same three declared fields skills
+/// carry (ADR-0018): an attempt is one call, a success is one call and one ok, so
+/// `calls > ok` is the visible state of "ran and broke". They count the SCRIPT —
+/// the row several skills and callers meet on — and nothing here counts a caller.
+#[test]
+fn an_invocation_counts_the_script_on_its_vertex() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = GraphStore::open(dir.path()).unwrap();
+    let code_id = store
+        .put_code(1, "python", "generate a pdf", "{}", "print(1)")
+        .unwrap();
+
+    let attempt = store
+        .touch_code(1, code_id, mem_core::skills::TouchPhase::Attempt, 1_700_000_000_000)
+        .unwrap();
+    let mem_core::code::CodeTouchOutcome::Counted(attempt) = attempt else {
+        panic!("a written script is countable: {attempt:?}");
+    };
+    assert_eq!((attempt.calls, attempt.ok), (1, 0), "an attempt is not a success");
+
+    let success = store
+        .touch_code(1, code_id, mem_core::skills::TouchPhase::Success, 1_700_000_002_000)
+        .unwrap();
+    let mem_core::code::CodeTouchOutcome::Counted(success) = success else {
+        panic!("the second record counts too: {success:?}");
+    };
+    assert_eq!((success.calls, success.ok), (1, 1));
+
+    // Two scripts, one caller: the counters do not bleed across rows.
+    let other = store
+        .put_code(1, "python", "log in", "{}", "print(2)")
+        .unwrap();
+    store
+        .touch_code(1, code_id, mem_core::skills::TouchPhase::Attempt, 1_700_000_003_000)
+        .unwrap();
+    let fresh = store
+        .touch_code(1, other, mem_core::skills::TouchPhase::Attempt, 1_700_000_004_000)
+        .unwrap();
+    let mem_core::code::CodeTouchOutcome::Counted(fresh) = fresh else {
+        panic!("the new row counts from zero: {fresh:?}");
+    };
+    assert_eq!((fresh.calls, fresh.ok), (1, 0));
+}
+
+/// An id nobody wrote is absent, and an id that is a skill (or any other kind) is
+/// refused WITH the kind it is: a caller's wrong id and a wrong kind are
+/// different mistakes, and a counter must never invent the row it counts.
+#[test]
+fn a_touch_names_what_is_missing_or_mistyped() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = GraphStore::open(dir.path()).unwrap();
+
+    let absent = store
+        .touch_code(1, 99, mem_core::skills::TouchPhase::Attempt, 1)
+        .unwrap();
+    assert!(
+        matches!(absent, mem_core::code::CodeTouchOutcome::Absent),
+        "{absent:?}"
+    );
+
+    // The vertex is addressed BY NAME (`code-{id}`), so a collision is possible in
+    // exactly one way: somebody declares a skill whose name is `code-7`. Then the
+    // node exists and is not code — the guard says which kind it met instead of
+    // bumping a stranger's counters.
+    store
+        .put_skill(1, &mem_core::skills::SkillDecl {
+            name: "code-7".into(),
+            title: "A skill that happens to be named like code".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let mismatch = store
+        .touch_code(1, 7, mem_core::skills::TouchPhase::Attempt, 1)
+        .unwrap();
+    match mismatch {
+        mem_core::code::CodeTouchOutcome::NotACode { kind } => assert_eq!(kind, "skill"),
+        other => panic!("a skill is not a code row: {other:?}"),
+    }
+}

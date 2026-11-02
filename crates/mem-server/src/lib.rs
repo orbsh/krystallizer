@@ -19,7 +19,7 @@ use axum::{
     Json, Router,
 };
 use mem_core::channel::{ChannelStore, MessageKey};
-use mem_core::code::CodeRow;
+use mem_core::code::{CodeRow, CodeTouchOutcome};
 use mem_core::graph::{FactTuple, GraphStore, IngestError, IngestOutcome};
 use mem_core::proposals::ProposalDecl;
 use mem_core::skills::{SkillDecl, SkillRead, SkillTouchOutcome, TouchPhase, DEFAULT_LIMIT};
@@ -248,6 +248,10 @@ fn build(
         // The current version stays the default (`/code/{scope}/{code_id}`), so
         // the ordinary read never names a revision.
         .route("/code/{scope}/{code_id}/{rev}", get(fetch_code_at))
+        // One record of a script's invocation (k10r ADR-0018's phases, applied to
+        // the code vertex). The caller fires it beside the run it counts; the
+        // answer is a receipt, never a precondition.
+        .route("/code/{scope}/{code_id}/touch", post(touch_code))
         // The skill node's three doors (ADR-0015): declare, resolve (the list
         // `resolve_skills` answers), read one (what a run walks).
         .route("/skills/{scope}", post(put_skill))
@@ -969,15 +973,19 @@ struct ProposalDto {
     promoted_to: String,
 }
 
-/// Request body of `POST /skills/{scope}/{node_id}/touch` (ADR-0018): which
-/// record of an invocation this is, and the caller's clock.
+/// Request body of the touch doors (`/skills/{scope}/{node_id}/touch`,
+/// `/code/{scope}/{code_id}/touch`) — ADR-0018: which record of an invocation
+/// this is, and the caller's clock.
 ///
 /// `attempt` is what a caller sends BEFORE the call — it does not know yet
 /// whether it will succeed, and a call that never comes back must still be
 /// visible. `success` is the second record, after the answer. The store derives
 /// nothing: the counters are `calls` and `ok`, and their difference is failures.
+///
+/// ONE body for both rows: an invocation is attempt-then-success whether the
+/// counted row is a skill (the procedure) or a script (what runs).
 #[derive(Deserialize, Serialize)]
-pub struct TouchSkillBody {
+pub struct TouchBody {
     pub event: String,
     pub ts_ms: u64,
 }
@@ -991,7 +999,7 @@ pub struct TouchSkillBody {
 async fn touch_skill(
     State(state): State<Arc<MemState>>,
     Path((scope, node_id)): Path<(u64, u64)>,
-    Json(body): Json<TouchSkillBody>,
+    Json(body): Json<TouchBody>,
 ) -> Result<Json<SkillTouchDto>, FactError> {
     let Some(phase) = TouchPhase::parse(&body.event) else {
         return Err(FactError {
@@ -1699,6 +1707,57 @@ async fn fetch_code_at(
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => FactError::internal(e.to_string()).into_response(),
     }
+}
+
+/// `POST /code/{scope}/{code_id}/touch` — count one record of a script's
+/// invocation on its vertex.
+///
+/// The count lives on the SCRIPT, not on the caller: one `generate-pdf` row can
+/// be a step in any number of skills and reached from more than one tool, and the
+/// row is where those paths meet. The caller's own counters (a skill's
+/// `invoke_calls`) stay where they were — a count kept on one side cannot be
+/// split back into the other.
+async fn touch_code(
+    State(state): State<Arc<MemState>>,
+    Path((scope, code_id)): Path<(u64, u64)>,
+    Json(body): Json<TouchBody>,
+) -> Result<Json<CodeTouchDto>, FactError> {
+    let Some(phase) = TouchPhase::parse(&body.event) else {
+        return Err(FactError {
+            error: format!(
+                "unknown event `{}` — expected `attempt` (before the call) or `success` (after it)",
+                body.event
+            ),
+            status: StatusCode::BAD_REQUEST,
+        });
+    };
+    let mut store = state.graph.lock().await;
+    match store
+        .touch_code(scope, code_id, phase, body.ts_ms)
+        .map_err(FactError::from)?
+    {
+        CodeTouchOutcome::Counted(touched) => Ok(Json(CodeTouchDto {
+            code_id: touched.code_id,
+            calls: touched.calls,
+            ok: touched.ok,
+        })),
+        CodeTouchOutcome::Absent => Err(FactError {
+            error: format!("no code {code_id} in scope {scope}"),
+            status: StatusCode::NOT_FOUND,
+        }),
+        CodeTouchOutcome::NotACode { kind } => Err(FactError {
+            error: format!("node {code_id} is a `{kind}`, not code"),
+            status: StatusCode::BAD_REQUEST,
+        }),
+    }
+}
+
+/// What a code touch answers: the counters as stored.
+#[derive(Serialize, Deserialize)]
+pub struct CodeTouchDto {
+    pub code_id: u64,
+    pub calls: u64,
+    pub ok: u64,
 }
 
 // ---- the fact graph (ns 36 entities / 37 facts) ----------------------

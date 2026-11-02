@@ -67,6 +67,7 @@ community id），但**维护**那个结构从来不是消费方的活儿。所�
 | `GET /export/{table}` | 按**表名**把一张表导成 Parquet（okm 的桥按行声明生成列；声明字段 + 承载动态段的 `variant` 列；`Content-Disposition: <table>.parquet`）。边按 okm `Graph` 的边表导出：`(src_table, src_pkey, dst_table, dst_pkey, predicate)` + 声明字段 + props variant。`log__reduces` / `code__reduces` 是派生 reduce 表。404 = 没有这个表名（指向 catalog），空表 200 加空文件 | 全部表 | 2026-10-21 已落 |
 | `GET /code/{scope}/{id}` | `GraphStore::code`——**当前版本** `(rev, row)`，含 source | code (35) | 已落 |
 | `GET /code/{scope}/{id}/{rev}` | `GraphStore::code_at`——指定版本（审核读） | code (35) | 已落 |
+| `POST /code/{scope}/{id}/touch` | `GraphStore::touch_code`——一条调用记录（`attempt` / `success`），记在顶点的计数上 | entity (36) | 2026-10-31 落地 |
 
 已从这一类撤除（2026-10-19，随 flat 记忆）：`POST /memory`、
 `GET /memory/{user_id}/search?q=`、以及 `MemoryStore::forget` / `list` /

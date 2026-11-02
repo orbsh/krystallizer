@@ -139,3 +139,32 @@ have run" — and pinning a version would require revisions to be addressable by
 facts, which is the rejected shape above. What a run received is answerable
 because the version it read is in the answer (`rev`) and the immutable body stays
 readable under that number.
+
+## Update (2026-10-31, second) — the vertex carries the use counters
+
+The code vertex carries `invoke_calls`, `invoke_ok` and `last_invoked` — the same
+three declared fields a skill node carries under ADR-0018 — and
+`POST /code/{scope}/{code_id}/touch` records them, `attempt` before the run and
+`success` after it.
+
+**Why the script and not the caller.** A script is not owned by the thing that
+runs it: one `generate-pdf` row can be a step in any number of skills, and the
+tool that dispatches it can differ from call to call. A count kept on the caller
+therefore has to be split back out per script — and it cannot be: three skills
+that each ran the same script once leave three counts in which the script's own
+"ran three times" is nowhere, while a script's count cannot say which path called
+it. Both are recorded, each on its own row; neither is derived from the other, and
+that is not redundancy, it is two different questions ("this procedure was tried N
+times" / "this code ran N times").
+
+**Why the vertex and not a table of its own.** The fields already exist on entity
+rows (ADR-0018's amendment), so a count costs one row write and no new schema; and
+the reader of a count is the graph — `tool_invoke_count` and the weight system
+already rank on these numbers, so a counter in a separate table would be invisible
+to exactly the machinery it exists to feed.
+
+**What a touch is not.** It is best-effort by contract: gravity fires it beside
+the run and reads a receipt, never a precondition. A failed run therefore leaves
+`calls > ok`, which is the state a reader is looking for — and a run whose
+counter could not be written still ran.
+

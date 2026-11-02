@@ -38,16 +38,46 @@
 //! language, and a language with no mount is the caller's error value, never a
 //! fallback here.
 //!
+//! The vertex also carries the USE counters — `invoke_calls`, `invoke_ok`,
+//! `last_invoked`, the same three declared fields a skill node carries
+//! (ADR-0018). They count the SCRIPT, not the caller: one script is reached from
+//! several places (many skills can each name it as a step, and the tool that
+//! dispatches can differ), so a count kept on the caller's side would have to be
+//! split back out per script, and a count kept here has to be split per caller —
+//! neither derives the other. Both are recorded, each where it belongs.
+//!
 //! gravity is the only client (ADR-0001: the node never talks to krystallizer;
 //! the byte path is gravity → control path → node).
 
+use okm_core::obj_dynamic::DynamicValue;
 use okm_core::{Collection, Document, DocumentEncode, FjallStore, KeyEncode, ReduceCodec};
+use std::collections::BTreeMap;
 
 use crate::graph::{GraphStore, IngestError, Term};
+// One invocation vocabulary for both rows: an invocation is attempt-then-success
+// whether the counted row is a skill (the procedure) or a script (what runs).
+use crate::skills::{TouchPhase, CALLS_FIELD, LAST_INVOKED_FIELD, OK_FIELD};
 
 /// The kind a code vertex carries. A piece of code IS this kind; the sheet
 /// beside it holds the payload (language, description, parameters, source).
 pub const CODE_KIND: &str = "code";
+
+/// The counters after one record of an invocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CodeTouch {
+    pub code_id: u64,
+    pub calls: u64,
+    pub ok: u64,
+}
+
+/// Recording an invocation: three outcomes, because the door reports them as
+/// three (absent → 404, another kind → 400, counted → the counters).
+#[derive(Clone, Debug, PartialEq)]
+pub enum CodeTouchOutcome {
+    Counted(CodeTouch),
+    Absent,
+    NotACode { kind: String },
+}
 
 /// The vertex name a code id is addressed by. It carries the id and nothing
 /// else — the graph needs a name, the caller needs a number.
@@ -209,6 +239,45 @@ impl GraphStore {
     pub fn code_vertex(&mut self, scope: u64, code_id: u64) -> Result<Option<u64>, IngestError> {
         let name = code_name(code_id);
         Ok(self.entity_by_name(scope, &name)?.map(|(node_id, _)| node_id))
+    }
+
+    /// Count one record of a script's invocation: `Attempt` when the caller
+    /// dispatches it, `Success` when the answer came back (ADR-0018's phases,
+    /// applied to the code vertex). A failed run therefore leaves `calls > ok`,
+    /// which is exactly the state a reader is looking for.
+    ///
+    /// The count is on the SCRIPT because the script is what ran: the same
+    /// `generate-pdf` row can be a step in three skills and reachable from more
+    /// than one tool, and the row is where those paths meet. Who called it is
+    /// still visible — on the caller's own row — and the two counts are not
+    /// convertible, which is why both exist.
+    pub fn touch_code(
+        &mut self,
+        scope: u64,
+        code_id: u64,
+        phase: TouchPhase,
+        now: u64,
+    ) -> Result<CodeTouchOutcome, IngestError> {
+        let name = code_name(code_id);
+        let Some((node_id, row)) = self.entity_by_name(scope, &name)? else {
+            return Ok(CodeTouchOutcome::Absent);
+        };
+        let kind = row.kind.as_str().unwrap_or_default().to_string();
+        if kind != CODE_KIND {
+            return Ok(CodeTouchOutcome::NotACode { kind });
+        }
+        let calls = row.invoke_calls + u32::from(phase == TouchPhase::Attempt);
+        let ok = row.invoke_ok + u32::from(phase == TouchPhase::Success);
+        let mut write: BTreeMap<String, DynamicValue> = BTreeMap::new();
+        write.insert(CALLS_FIELD.to_string(), DynamicValue::UInt(u64::from(calls)));
+        write.insert(OK_FIELD.to_string(), DynamicValue::UInt(u64::from(ok)));
+        write.insert(LAST_INVOKED_FIELD.to_string(), DynamicValue::UInt(now));
+        self.merge_props(scope, node_id, &write)?;
+        Ok(CodeTouchOutcome::Counted(CodeTouch {
+            code_id,
+            calls: u64::from(calls),
+            ok: u64::from(ok),
+        }))
     }
 }
 

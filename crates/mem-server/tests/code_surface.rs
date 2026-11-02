@@ -260,3 +260,68 @@ async fn a_revision_of_an_unknown_script_is_a_400_that_names_it() {
     let body = answer.text().await.unwrap();
     assert!(body.contains("99"), "the refusal names the id: {body}");
 }
+
+/// The touch door counts the SCRIPT on its vertex: an attempt before the run and
+/// a success after it, so `calls > ok` is what a failure looks like. The count is
+/// per script, not per caller — one `generate-pdf` row can be reached from many
+/// skills, and the row is where those paths meet.
+#[tokio::test]
+async fn a_touch_counts_the_script_and_names_what_is_missing() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    let code: serde_json::Value = client
+        .post(format!("{base}/code/37"))
+        .json(&login())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let code_id = code["code_id"].as_u64().unwrap();
+
+    let attempt: serde_json::Value = client
+        .post(format!("{base}/code/37/{code_id}/touch"))
+        .json(&serde_json::json!({ "event": "attempt", "ts_ms": 1_700_000_000_000u64 }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(attempt["code_id"], code_id);
+    assert_eq!((attempt["calls"].as_u64(), attempt["ok"].as_u64()), (Some(1), Some(0)));
+
+    let success: serde_json::Value = client
+        .post(format!("{base}/code/37/{code_id}/touch"))
+        .json(&serde_json::json!({ "event": "success", "ts_ms": 1_700_000_002_000u64 }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        (success["calls"].as_u64(), success["ok"].as_u64()),
+        (Some(1), Some(1)),
+        "a success is the second record, not a second call"
+    );
+
+    // An unknown script is a 404 and an unknown event a 400: the counters never
+    // invent the row they count, and a typo is not a new phase.
+    let absent = client
+        .post(format!("{base}/code/37/999/touch"))
+        .json(&serde_json::json!({ "event": "attempt", "ts_ms": 1 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(absent.status(), reqwest::StatusCode::NOT_FOUND);
+
+    let typo = client
+        .post(format!("{base}/code/37/{code_id}/touch"))
+        .json(&serde_json::json!({ "event": "started", "ts_ms": 1 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(typo.status(), reqwest::StatusCode::BAD_REQUEST);
+}

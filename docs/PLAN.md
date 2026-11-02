@@ -186,6 +186,12 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   structured node: preconditions / steps / experience / verification).
   Nothing defaults the language. gravity is the only client (the node
   never talks to krystallizer).
+  AMENDED YET AGAIN 2026-10-31: the code VERTEX carries the use counters
+  (`invoke_calls`/`invoke_ok`/`last_invoked`, ADR-0018's fields) behind
+  `POST /code/{scope}/{code_id}/touch`; gravity fires it on both rows — the skill
+  (this procedure was tried) and the script (this code ran) — because a script is
+  not owned by its caller (one `generate-pdf` row serves many skills and more than
+  one tool) and neither count derives the other. Gates: 210/0, clippy 0.
   AMENDED AGAIN 2026-10-31 (ADR-0023's Update): the sheet is a VERSION CHAIN —
   key `[scope][code_id][rev]`, append-only, current version = last key of the
   script's range (no head pointer to disagree with the rows). New doors:

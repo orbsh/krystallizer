@@ -321,9 +321,16 @@ exact version (the audit read). `code_vertex` / `code_id_of` translate
 between the number and the node, which is what a `finishes_on` edge
 needs in both directions.
 
+`touch_code(scope, code_id, phase, now)` records one invocation on the
+vertex's three counters (`invoke_calls` / `invoke_ok` / `last_invoked`, the
+same declared fields a skill row carries): an unknown id is absent, and a node
+that is not code is refused WITH its kind — a skill may legally be named
+`code-7`, and a counter must never bump a stranger's numbers.
+
 The doors are scoped: `POST /code/{scope}` (with `code_id` = a revision,
 without = a new script), `GET /code/{scope}/{code_id}` (current),
-`GET /code/{scope}/{code_id}/{rev}` (exact). The sheet is the `code`
+`GET /code/{scope}/{code_id}/{rev}` (exact), `POST /code/{scope}/{code_id}/touch`
+(one invocation record, `attempt` or `success`). The sheet is the `code`
 table of the export bundle, keys and all — a restored chain keeps its
 version numbers.
 

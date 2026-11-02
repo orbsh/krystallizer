@@ -269,8 +269,14 @@ pub struct CodeRow {
 加一次点读，不遍历历史。`code_at(scope, code_id, rev)` → 指定版本（审核用的读）。
 `code_vertex` / `code_id_of` 在数字与节点之间互译——`finishes_on` 边两头都要。
 
+`touch_code(scope, code_id, phase, now)` 把一次调用记在顶点的三个计数上
+（`invoke_calls` / `invoke_ok` / `last_invoked`——与 skill 行同一组声明字段）：
+未知 id = 不存在；不是 code 的节点按**它实际的 kind** 拒掉——一个 skill 完全可以
+合法地叫 `code-7`，计数器绝不能去改一个陌生节点的数。
+
 门按 scope：`POST /code/{scope}`（带 `code_id` = 改版，不带 = 新脚本）、
-`GET /code/{scope}/{code_id}`（当前版）、`GET /code/{scope}/{code_id}/{rev}`（指定版）。
+`GET /code/{scope}/{code_id}`（当前版）、`GET /code/{scope}/{code_id}/{rev}`（指定版）、
+`POST /code/{scope}/{code_id}/touch`（一条调用记录，`attempt` 或 `success`）。
 边表就是导出 bundle 里的 `code` 表，键一并带走——还原回来的链保持原版本号。
 
 ## 事实图（ns 36 实体，ns 42 用户，ns 37 事实）
