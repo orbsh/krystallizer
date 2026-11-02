@@ -15,10 +15,14 @@
 //!   carries no meaning beyond the id, and [`code_id_of_name`] is the only
 //!   reader that cares. `code_id` itself is unchanged: a skill's `steps[].code_id`
 //!   still holds it, and gravity still addresses code by it.
-//! - The SHEET is ns 35, keyed `[scope][code_id]`: language, description,
+//! - The SHEET is ns 35, keyed `[scope][code_id][rev]`: language, description,
 //!   parameters and source. Presence is the meaning (a node with no sheet is not
 //!   code), and the payload stays out of the vertex's props — source text does
 //!   not belong in a dynamic segment every reader decodes.
+//! - A REVISION is immutable. Writing a correction appends `rev + 1`; nothing
+//!   ever overwrites a version that may already have run. The current version is
+//!   the LAST key of that script's range — ordering answers it, so there is no
+//!   head pointer to fall out of step with the rows (see [`CodeKey`]).
 //! - The id allocator is a WATERMARK over the sheet, exactly as it was: the
 //!   highest `code_id` ever written, so a deleted row does not free its id. A
 //!   fresh table starts at 1.
@@ -58,11 +62,17 @@ pub fn code_id_of_name(name: &str) -> Option<u64> {
 
 /// Code row key: the SHEET's address. `scope` first, so a table scan stays
 /// inside one corpus — the ordering every other k10r table uses.
+///
+/// `rev` is the version axis: 1-based, monotone per script, and never reused.
+/// The rows of one script are therefore CONTIGUOUS in key order, which is what
+/// makes "the current version" the last key of the range instead of a pointer
+/// somebody has to keep true.
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 #[ok_ns(35)]
 pub struct CodeKey {
     pub scope: u64,
     pub code_id: u64,
+    pub rev: u64,
 }
 
 /// One piece of deliverable code: what it is, and its source.
@@ -84,6 +94,17 @@ pub struct CodeRow {
     pub description: String,
     pub parameters: String,
     pub source: String,
+}
+
+/// The payload of one version, built from what the caller delivered. The store
+/// carries these verbatim; it does not police them (storage stores).
+fn row_of(language: &str, description: &str, parameters: &str, source: &str) -> CodeRow {
+    CodeRow {
+        language: language.to_string(),
+        description: description.to_string(),
+        parameters: parameters.to_string(),
+        source: source.to_string(),
+    }
 }
 
 /// The sheet collection on a store handle — what the graph holds beside its
@@ -116,23 +137,59 @@ impl GraphStore {
             props: std::collections::BTreeMap::new(),
         };
         self.put_entity(scope, &term)?;
-        self.put_code_sheet(
-            scope,
-            code_id,
-            &CodeRow {
-                language: language.to_string(),
-                description: description.to_string(),
-                parameters: parameters.to_string(),
-                source: source.to_string(),
-            },
-        )?;
+        self.put_code_sheet(scope, code_id, 1, &row_of(language, description, parameters, source))?;
         Ok(code_id)
     }
 
-    /// One piece of code by id — the read gravity makes at call time. Unknown id
-    /// = absent, not an error (the caller's error value, its choice).
-    pub fn code(&mut self, scope: u64, code_id: u64) -> Result<Option<CodeRow>, IngestError> {
-        self.code_sheet(scope, code_id)
+    /// Store a new VERSION of a script that already exists; returns the revision.
+    ///
+    /// Nothing is overwritten (a version that may already have run must stay
+    /// readable) and nothing about the script's address moves: the vertex, the
+    /// skills that name its `code_id` and the tasks bound to it keep pointing at
+    /// the same script. An id that was never written is REFUSED rather than
+    /// invented — a revision of nothing is a caller bug, and a phantom script
+    /// would answer calls with the wrong body.
+    ///
+    /// A vertex with no sheet (a write that failed halfway) is not refused: it is
+    /// an inert node, and its first revision is `1`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn put_code_revision(
+        &mut self,
+        scope: u64,
+        code_id: u64,
+        language: &str,
+        description: &str,
+        parameters: &str,
+        source: &str,
+    ) -> Result<u64, IngestError> {
+        if self.code_vertex(scope, code_id)?.is_none() {
+            return Err(IngestError::Refused(format!(
+                "code {code_id} does not exist in scope {scope}: a revision needs a script"
+            )));
+        }
+        let rev = self
+            .latest_code(scope, code_id)?
+            .map_or(1, |(rev, _)| rev.saturating_add(1));
+        self.put_code_sheet(scope, code_id, rev, &row_of(language, description, parameters, source))?;
+        Ok(rev)
+    }
+
+    /// The CURRENT version of a piece of code, with its revision number — the
+    /// read gravity makes at call time. "Current" is the last key of the
+    /// script's range, so it costs one bounded seek, never a scan of the history.
+    /// Unknown id = absent, not an error (the caller's error value, its choice).
+    pub fn code(&mut self, scope: u64, code_id: u64) -> Result<Option<(u64, CodeRow)>, IngestError> {
+        self.latest_code(scope, code_id)
+    }
+
+    /// One EXACT version — what an auditor reads to see what a run was given.
+    pub fn code_at(
+        &mut self,
+        scope: u64,
+        code_id: u64,
+        rev: u64,
+    ) -> Result<Option<CodeRow>, IngestError> {
+        self.code_sheet_at(scope, code_id, rev)
     }
 
     /// The code id behind one of this scope's vertices, `None` when the vertex is

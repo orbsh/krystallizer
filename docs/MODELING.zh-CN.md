@@ -220,11 +220,16 @@ pub struct LogRow { pub level: u8, pub event: Vocab<u16>,
 pub struct CodeKey {
     pub scope: u64,
     pub code_id: u64,
+    pub rev: u64,
 }
 ```
 
-物理布局：`[scope 8B BE][code_id 8B BE]`——scope 在前，和这里每张表一样，
+物理布局：`[scope 8B BE][code_id 8B BE][rev 8B BE]`——scope 在前，和这里每张表一样，
 因为**顶点**活在那个 scope 的图里，语料之外的代码行就是一个无处安放的节点。
+
+`rev` 是版本轴（ADR-0023 的更新）：从 1 起、只增不减、绝不复用，写下的版本正文永不覆盖。
+所以一个脚本的各版本在键序里**连续**，而「当前版本」= 它键段的最后一个键——键序自己回答，
+不需要一个会和行不一致的「头」指针。
 
 ### Row：`CodeRow`（`DocumentEncode`）
 
@@ -258,11 +263,15 @@ pub struct CodeRow {
 `put_code(scope, language, description, parameters, source)` → store 分配的
 `code_id`（代理键，重启后扫一遍边表的键取最大值恢复——被撤掉的行不会把 id 让出来）；
 它先写顶点、后写边表：中途失败只会留下一个惰性节点，绝不会留下一张没人够得着的表。
-`code(scope, code_id)` → 该行，未知 id = 不存在。
+`put_code_revision(scope, code_id, …)` 给已有脚本追加下一版并回答版本号；没写过的 id
+按 id **拒掉**（给空处做修正属调用方 bug，而幽灵脚本会用没人交付过的正文回答调用）。
+`code(scope, code_id)` → 当前版本的 `(rev, row)`：对这个脚本的键做一次有界前缀扫描
+加一次点读，不遍历历史。`code_at(scope, code_id, rev)` → 指定版本（审核用的读）。
 `code_vertex` / `code_id_of` 在数字与节点之间互译——`finishes_on` 边两头都要。
 
-门按 scope：`POST /code/{scope}`、`GET /code/{scope}/{code_id}`。边表就是导出 bundle 里的
-`code` 表。
+门按 scope：`POST /code/{scope}`（带 `code_id` = 改版，不带 = 新脚本）、
+`GET /code/{scope}/{code_id}`（当前版）、`GET /code/{scope}/{code_id}/{rev}`（指定版）。
+边表就是导出 bundle 里的 `code` 表，键一并带走——还原回来的链保持原版本号。
 
 ## 事实图（ns 36 实体，ns 42 用户，ns 37 事实）
 

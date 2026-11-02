@@ -260,12 +260,19 @@ argument, so there is no cache to stale).
 pub struct CodeKey {
     pub scope: u64,
     pub code_id: u64,
+    pub rev: u64,
 }
 ```
 
-Physical layout: `[scope 8B BE][code_id 8B BE]` — scope first like every
-other table here, because the VERTEX lives in that scope's graph and a
-row outside a corpus would be a node with nowhere to be.
+Physical layout: `[scope 8B BE][code_id 8B BE][rev 8B BE]` — scope first
+like every other table here, because the VERTEX lives in that scope's
+graph and a row outside a corpus would be a node with nowhere to be.
+
+`rev` is the version axis (ADR-0023's Update): 1-based, monotone, never
+reused, and the payload of a written version is never overwritten. One
+script's versions are therefore CONTIGUOUS in key order, which is what
+makes the current version the LAST key of its range — ordering answers
+it, so there is no head pointer that can disagree with the rows.
 
 ### Row: `CodeRow` (`DocumentEncode`)
 
@@ -303,13 +310,22 @@ pub struct CodeRow {
 store-assigned `code_id` (a surrogate id: recovered on reopen from a
 scan of the sheet's keys, so a withdrawn row never frees its id); it
 writes the vertex first and the sheet second — a failure leaves an inert
-node, never a sheet nobody can reach. `code(scope, code_id)` → the row,
-or absent for an unknown id. `code_vertex` / `code_id_of` translate
+node, never a sheet nobody can reach. `put_code_revision(scope,
+code_id, …)` appends the next version of an existing script and answers
+its number; an id nobody wrote is REFUSED by id (a revision of nothing
+is a caller bug, and a phantom script would answer with a body nobody
+delivered). `code(scope, code_id)` → `(rev, row)` for the CURRENT
+version: one bounded prefix scan of that script's keys plus one point
+read, never a walk of the history. `code_at(scope, code_id, rev)` → one
+exact version (the audit read). `code_vertex` / `code_id_of` translate
 between the number and the node, which is what a `finishes_on` edge
 needs in both directions.
 
-The doors are scoped: `POST /code/{scope}`, `GET /code/{scope}/{code_id}`.
-The sheet is the `code` table of the export bundle.
+The doors are scoped: `POST /code/{scope}` (with `code_id` = a revision,
+without = a new script), `GET /code/{scope}/{code_id}` (current),
+`GET /code/{scope}/{code_id}/{rev}` (exact). The sheet is the `code`
+table of the export bundle, keys and all — a restored chain keeps its
+version numbers.
 
 ## Fact graph (ns 36 entities, ns 37 facts)
 

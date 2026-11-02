@@ -1,12 +1,18 @@
-//! Code rows are vertices with a sheet (k10r ADR-0023): the id is still a bare
-//! surrogate (no name, no content hash — gravity ADR-0003's reason stands: the
+//! Code rows are vertices with a versioned sheet (k10r ADR-0023): the id is
+//! still a surrogate (no content hash — gravity ADR-0003's reason stands: the
 //! caller re-reads the row on every call and the source travels as a call
-//! argument, so there is no cache to stale), but the row now sits on a NODE so a
-//! fact can point at it (`task --finishes_on--> code`).
+//! argument, so there is no cache to stale), the row sits on a NODE so a fact
+//! can point at it (`task --finishes_on--> code`), and its payload is a CHAIN of
+//! immutable versions.
 //!
-//! Three properties are locked: the sheet's key layout, the write/read round
-//! trip with ids recovered across a reopen, and the vertex itself — a code row
-//! facts cannot reach would leave the binding with nowhere to land.
+//! Why a chain: a script gets corrected, and what ran must stay readable
+//! afterwards. The current version is therefore the last key of the script's
+//! range, not a pointer — nothing can fall out of step with the rows.
+//!
+//! Four properties are locked: the sheet's key layout, the write/read round
+//! trip with ids recovered across a reopen, the revision chain (append-only, and
+//! "latest" resolved by key order), and the vertex itself — a code row facts
+//! cannot reach would leave the binding with nowhere to land.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -19,20 +25,23 @@ use mem_core::code::{code_name, CODE_KIND};
 use mem_core::{CodeRow, GraphStore};
 use okm_core::KeyEncode;
 
-/// Layout lock: the BARE key payload encodes as `[scope 8B][code_id 8B]` — a
-/// scoped surrogate identity. The ns (35) + primary slot live in the ADDRESS
-/// header the Collection joins at entry time, not in the key struct. Changing
-/// the layout breaks this test first, NOT stored data.
+/// Layout lock: the BARE key payload encodes as
+/// `[scope 8B][code_id 8B][rev 8B]` — a scoped surrogate identity with a version
+/// axis. The ns (35) + primary slot live in the ADDRESS header the Collection
+/// joins at entry time, not in the key struct. Changing the layout breaks this
+/// test first, NOT stored data.
 #[test]
 fn key_layout_is_hex_locked() {
     let key = mem_core::CodeKey {
         scope: 3,
         code_id: 7,
+        rev: 2,
     };
     let buf = key.encode();
-    assert_eq!(buf.len(), 16, "scope + code_id");
+    assert_eq!(buf.len(), 24, "scope + code_id + rev");
     assert_eq!(&buf[0..8], &3u64.to_be_bytes(), "scope first");
     assert_eq!(&buf[8..16], &7u64.to_be_bytes(), "then code_id");
+    assert_eq!(&buf[16..24], &2u64.to_be_bytes(), "then the revision");
 }
 
 /// The write/read round trip: ids are assigned in order and the row comes back
@@ -63,7 +72,8 @@ fn put_assigns_ids_and_get_round_trips_the_row() {
         2
     );
 
-    let row = store.code(1, 1).expect("the read works").expect("row 1");
+    let (rev, row) = store.code(1, 1).expect("the read works").expect("row 1");
+    assert_eq!(rev, 1, "a new script starts at its first version");
     assert_eq!(
         row,
         CodeRow {
@@ -80,6 +90,102 @@ fn put_assigns_ids_and_get_round_trips_the_row() {
     assert!(
         store.code(2, 1).unwrap().is_none(),
         "a code id is scoped: another corpus does not see it"
+    );
+}
+
+/// The chain: a revision appends and never overwrites, so the version that ran
+/// yesterday still reads back today — while the ordinary read answers the newest
+/// one, resolved by key order rather than by a pointer somebody maintains.
+#[test]
+fn a_revision_appends_and_the_latest_is_the_last_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = GraphStore::open(dir.path()).unwrap();
+    let code_id = store
+        .put_code(1, "python", "count lines", "{}", "print(1)")
+        .unwrap();
+
+    assert_eq!(
+        store
+            .put_code_revision(1, code_id, "python", "count lines", "{}", "print(2)")
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        store
+            .put_code_revision(1, code_id, "python", "count lines", "{}", "print(3)")
+            .unwrap(),
+        3
+    );
+
+    let (rev, row) = store.code(1, code_id).unwrap().expect("the script reads");
+    assert_eq!((rev, row.source.as_str()), (3, "print(3)"), "latest wins");
+
+    for (rev, source) in [(1, "print(1)"), (2, "print(2)"), (3, "print(3)")] {
+        assert_eq!(
+            store
+                .code_at(1, code_id, rev)
+                .unwrap()
+                .expect("every version stays readable")
+                .source,
+            source,
+            "version {rev} is immutable"
+        );
+    }
+    assert!(
+        store.code_at(1, code_id, 4).unwrap().is_none(),
+        "a version nobody wrote is absent, not the latest"
+    );
+
+    // A second script's version 1 is not "the latest of the first": the range is
+    // per script, and its end is the next script's first key.
+    let other = store
+        .put_code(1, "python", "other", "{}", "print('other')")
+        .unwrap();
+    assert_eq!(store.code(1, other).unwrap().expect("reads").0, 1);
+    assert_eq!(store.code(1, code_id).unwrap().expect("still").0, 3);
+}
+
+/// The revision counter is derived from the keys, not kept in memory: a fresh
+/// process must continue the chain instead of restating version 2 over a version
+/// that may already have run.
+#[test]
+fn revisions_continue_across_a_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let code_id;
+    {
+        let mut store = GraphStore::open(dir.path()).unwrap();
+        code_id = store.put_code(1, "nu", "x", "{}", "one").unwrap();
+        store
+            .put_code_revision(1, code_id, "nu", "x", "{}", "two")
+            .unwrap();
+    }
+    let mut store = GraphStore::open(dir.path()).unwrap();
+    assert_eq!(
+        store
+            .put_code_revision(1, code_id, "nu", "x", "{}", "three")
+            .unwrap(),
+        3,
+        "continues past the stored versions"
+    );
+    assert_eq!(store.code_at(1, code_id, 2).unwrap().unwrap().source, "two");
+}
+
+/// A revision of an id the store never wrote is REFUSED by id: a phantom script
+/// would answer calls with a body nobody delivered.
+#[test]
+fn a_revision_of_a_script_that_does_not_exist_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = GraphStore::open(dir.path()).unwrap();
+    let err = store
+        .put_code_revision(1, 99, "nu", "x", "{}", "print(1)")
+        .expect_err("no script 99");
+    assert!(
+        err.to_string().contains("99"),
+        "the refusal names the id: {err}"
+    );
+    assert!(
+        store.code(1, 99).unwrap().is_none(),
+        "and nothing was created"
     );
 }
 
@@ -100,7 +206,11 @@ fn ids_are_recovered_across_reopen() {
         "continues past the max"
     );
     assert_eq!(
-        store.code(1, 1).expect("the row reads").expect("row").source,
+        store.code(1, 1)
+            .expect("the row reads")
+            .expect("row")
+            .1
+            .source,
         "first",
         "id 1 was not overwritten"
     );
@@ -133,6 +243,17 @@ fn a_code_row_is_a_vertex_a_fact_can_reach() {
             .kind
             .as_str(),
         Some(CODE_KIND)
+    );
+
+    // A revision does not move the address: the binding a task wrote before the
+    // correction still lands on the same script.
+    store
+        .put_code_revision(1, code_id, "python", "says hi", "{}", "print('hi!')")
+        .unwrap();
+    assert_eq!(
+        store.code_vertex(1, code_id).unwrap(),
+        Some(vertex),
+        "the vertex survives a revision"
     );
 
     // An edge from an ordinary task to that vertex — the binding gravity closes.

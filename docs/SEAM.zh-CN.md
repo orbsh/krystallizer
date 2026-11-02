@@ -60,12 +60,13 @@ community id），但**维护**那个结构从来不是消费方的活儿。所�
 | `POST /memories/{scope}/recall`（body：`{q, k, ts_ms, format}` 的数组） | 逐查询调 `GraphStore::recall`（落点 → 着陆到的**社区**的桶 → 一种表示：渲染好的带 id 文本，或 `format=struct` 时只给数据；按权重排序、受 `budget` 封顶；无 engine = 空答案） | 实体（36）+ 事实（37） | 已落（2026-10-20） |
 | `GET /memories/{scope}/entities/{name}` | `GraphStore::entity_by_name`（名/别名精确入口；未知名字 404） | 实体（36） | 已落（2026-10-17） |
 | `POST /memories/{scope}/edges/{id}/touch` | `GraphStore::touch`（调用方上报的工具调用：计数加一、权重重折；未知边或别的 scope 404） | facts (37) | 已落（2026-10-19） |
-| `POST /code/{scope}` | `GraphStore::put_code`（顶点 + 边表；ADR-0023） | code (35) + entity (36) | 已落 |
+| `POST /code/{scope}` | `GraphStore::put_code`（顶点 + 边表）；带 `code_id` 时走 `put_code_revision` | code (35) + entity (36) | 已落（ADR-0023；改版 2026-10-31） |
 | `GET /code` | ——2026-10-20 撤除（从来没有客户端读它；gravity 读的是 `GET /code/{id}`） | code (35) | 已不存在 |
 | `GET /export` | **一个** `tar.zst`（ADR-0013 §2）：每张表 `<table>/data/<table>.parquet` 旁带 Iceberg v2 元数据，根上 `catalog.parquet`。在同一趟锁里建在临时目录，**完整**才发；`Content-Disposition: krystallizer-backup-<ts>.tar.zst`。元数据里的路径是表相对的，文件搬走之后仍可读 | 全部表 | 2026-10-22 已落 |
 | `POST /import` | 同一个包裹原路回来，按 catalog 顺序走活写契约恢复（按 key 并、不删），事后再从库里重算所有签发者；答每表行数 | 全部表 | 2026-10-22 已落 |
 | `GET /export/{table}` | 按**表名**把一张表导成 Parquet（okm 的桥按行声明生成列；声明字段 + 承载动态段的 `variant` 列；`Content-Disposition: <table>.parquet`）。边按 okm `Graph` 的边表导出：`(src_table, src_pkey, dst_table, dst_pkey, predicate)` + 声明字段 + props variant。`log__reduces` / `code__reduces` 是派生 reduce 表。404 = 没有这个表名（指向 catalog），空表 200 加空文件 | 全部表 | 2026-10-21 已落 |
-| `GET /code/{scope}/{id}` | `GraphStore::code`（整行，含 source） | code (35) | 已落 |
+| `GET /code/{scope}/{id}` | `GraphStore::code`——**当前版本** `(rev, row)`，含 source | code (35) | 已落 |
+| `GET /code/{scope}/{id}/{rev}` | `GraphStore::code_at`——指定版本（审核读） | code (35) | 已落 |
 
 已从这一类撤除（2026-10-19，随 flat 记忆）：`POST /memory`、
 `GET /memory/{user_id}/search?q=`、以及 `MemoryStore::forget` / `list` /
@@ -116,7 +117,8 @@ in-process 不是第二道门：`InProcessSurface` 在调用方进程内链接�
 | `commit_memory`——写事实 | 工具面 | `POST /memories/{scope}` | `GraphStore::ingest(fact)` | 门已落（2026-10-17）；工具本身 2026-10-26 落地（gravity ADR-0004） |
 | `resolve_skills`——可选 skills 列表 | 工具面（2026-10-26 落地，gravity ADR-0004） | `POST /skills/{scope}/resolve`（ADR-0015） | `GraphStore::resolve_skills`——检索后只留 `skill` 这个 kind，退回 `by_kind` 面扫描 | 2026-10-26 落地；它列出的节点是 ADR-0015 的，怎么走是 gravity 的 |
 | `invoke_skill`——它要走的那一行 skill | 工具面 | `GET /skills/{scope}/{node_id}` | `GraphStore::skill` | 2026-10-26 落地 |
-| `invoke_skill`——那一步的 code 行 | 工具面 | `GET /code/{scope}/{id}` | `GraphStore::code` | 已落 |
+| `write_code`——交付脚本或改版 | 工具面 | `POST /code/{scope}`（`{language, source, description?, parameters?, code_id?}`） | `GraphStore::put_code` / `put_code_revision` | 2026-10-31 落地 |
+| `invoke_skill`——那一步的 code 行 | 工具面 | `GET /code/{scope}/{id}`（当前版本） | `GraphStore::code` | 已落 |
 | `invoke_skill`——调用本身 | 一步的脚本在 mount 上跑 | **不走 k10r**（见 §3） | — | 2026-10-26 落地（gravity `invoke_skill`：一次一步，`ctx.invoke` 打到该语言的 mount） |
 | skill 提议——给一次走出的组合计数 | gravity 走到组合的那一刻（ADR-0016，同日修订） | `POST /skills/{scope}/propose` | `GraphStore::propose`（kind `skill_proposal`，计数是一个 prop） | 2026-10-26 落地；解析器永远看不到它——草稿不是候选；走路长大了才上报，所以重试不会数两遍 |
 | skill 提议——复审队列 | 不是 gravity 的：这是**人**的门（今天用 curl） | `GET /skills/{scope}/proposals?min_count=N` | `GraphStore::proposals` | 2026-10-26 落地；面向人的动词仍欠（ADR-0016 后果段） |

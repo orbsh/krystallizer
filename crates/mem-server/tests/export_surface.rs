@@ -92,6 +92,7 @@ async fn every_table_answers_and_an_unknown_name_is_a_404() {
     client
         .post(format!("{base}/code/37"))
         .json(&PutCode {
+            code_id: None,
             language: "nu".into(),
             description: "log into a host".into(),
             parameters: "{}".into(),
@@ -347,6 +348,7 @@ async fn the_reduce_tables_carry_the_watermarks() {
         client
             .post(format!("{base}/code/37"))
             .json(&PutCode {
+                code_id: None,
                 language: "nu".into(),
                 description: description.into(),
                 parameters: "{}".into(),

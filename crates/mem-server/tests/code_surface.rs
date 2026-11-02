@@ -33,6 +33,7 @@ async fn spawn_server() -> (String, TempDir) {
 /// A reusable piece of code: a login script many skills would point at.
 fn login() -> PutCode {
     PutCode {
+        code_id: None,
         language: "nu".into(),
         description: "log into a host via ssh".into(),
         parameters: r#"{"host": "string", "user": "string"}"#.into(),
@@ -164,4 +165,98 @@ async fn a_code_row_belongs_to_one_scope() {
     assert_eq!(here.status(), reqwest::StatusCode::OK);
     let elsewhere = client.get(format!("{base}/code/38/1")).send().await.unwrap();
     assert_eq!(elsewhere.status(), reqwest::StatusCode::NOT_FOUND);
+}
+
+/// A correction APPENDS: the door takes the same `code_id` and answers the next
+/// revision, the ordinary read follows the newest one, and the version that ran
+/// yesterday is still readable at its own address (ADR-0023's chain).
+#[tokio::test]
+async fn a_revision_appends_and_the_door_answers_both_versions() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    let first: serde_json::Value = client
+        .post(format!("{base}/code/37"))
+        .json(&login())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(first["code_id"], 1);
+    assert_eq!(first["rev"], 1, "a new script starts at version 1");
+
+    let fixed: serde_json::Value = client
+        .post(format!("{base}/code/37"))
+        .json(&PutCode {
+            code_id: Some(1),
+            language: "nu".into(),
+            description: "log into a host via ssh".into(),
+            parameters: r#"{"host": "string", "user": "string"}"#.into(),
+            source: "ssh $args.user@$args.host".into(),
+        })
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(fixed["code_id"], 1, "the address does not move");
+    assert_eq!(fixed["rev"], 2, "the correction is a new version");
+
+    let latest: serde_json::Value = client
+        .get(format!("{base}/code/37/1"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(latest["rev"], 2);
+    assert_eq!(latest["source"], "ssh $args.user@$args.host");
+
+    let old: serde_json::Value = client
+        .get(format!("{base}/code/37/1/1"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(old["rev"], 1);
+    assert_eq!(old["source"], "ssh $args.host", "version 1 is immutable");
+
+    let absent = client
+        .get(format!("{base}/code/37/1/3"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        absent.status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "a version nobody wrote is absent, and never the latest"
+    );
+}
+
+/// A revision of a script this store never wrote is a caller error, refused BY
+/// ID: a phantom script would answer calls with a body nobody delivered.
+#[tokio::test]
+async fn a_revision_of_an_unknown_script_is_a_400_that_names_it() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    let answer = client
+        .post(format!("{base}/code/37"))
+        .json(&PutCode {
+            code_id: Some(99),
+            language: "nu".into(),
+            description: "never delivered".into(),
+            parameters: "{}".into(),
+            source: "ssh $args.host".into(),
+        })
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(answer.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body = answer.text().await.unwrap();
+    assert!(body.contains("99"), "the refusal names the id: {body}");
 }

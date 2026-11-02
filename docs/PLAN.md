@@ -186,6 +186,14 @@ Phases reference ADRs; design content lives in the ADRs, never here.
   structured node: preconditions / steps / experience / verification).
   Nothing defaults the language. gravity is the only client (the node
   never talks to krystallizer).
+  AMENDED AGAIN 2026-10-31 (ADR-0023's Update): the sheet is a VERSION CHAIN —
+  key `[scope][code_id][rev]`, append-only, current version = last key of the
+  script's range (no head pointer to disagree with the rows). New doors:
+  `POST /code/{scope}` grows an optional `code_id` (append), `GET
+  /code/{scope}/{code_id}` answers the current version, `GET
+  /code/{scope}/{code_id}/{rev}` an exact one. gravity gains `write_code`
+  (ADR-0004's ninth tool) — the writing half execution needs.
+  Gates: 207/0 (k10r), gravity 33/0 lib.
   AMENDED 2026-10-31 (ADR-0023): the row is a VERTEX now (`kind = "code"`, ns 36, named
   `code-{id}`) with the fields on a sheet beside it (ns 35, key `[scope][code_id]`), because
   gravity binds a task to the code that finishes it (`task --finishes_on--> code`) and a fact

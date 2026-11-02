@@ -66,6 +66,7 @@ async fn a_bundle_restores_rows_and_the_issuers_that_hand_out_ids() {
         client
             .post(format!("{source}/code/37"))
             .json(&PutCode {
+                code_id: None,
                 language: "nu".into(),
                 description: description.into(),
                 parameters: "{}".into(),
@@ -156,6 +157,7 @@ async fn a_bundle_restores_rows_and_the_issuers_that_hand_out_ids() {
     let next_code: serde_json::Value = client
         .post(format!("{restored}/code/37"))
         .json(&PutCode {
+            code_id: None,
             language: "nu".into(),
             description: "third".into(),
             parameters: "{}".into(),

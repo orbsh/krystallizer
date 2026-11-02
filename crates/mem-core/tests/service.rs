@@ -54,6 +54,7 @@ fn the_service_assembly_serves_every_group() {
             .code(1, code_id)
             .expect("the row reads")
             .expect("the row is there")
+            .1
             .language,
         "nu"
     );
@@ -92,7 +93,16 @@ fn the_memory_keyspace_tables_declare_different_ns() {
         mem_core::FACT_NS
     );
 
-    assert_eq!(mem_core::CodeKey { scope: 1, code_id: 1 }.encode().len(), 16);
+    assert_eq!(
+        mem_core::CodeKey {
+            scope: 1,
+            code_id: 1,
+            rev: 1
+        }
+        .encode()
+        .len(),
+        24
+    );
     assert_eq!(
         mem_core::EntityKey {
             scope: 1,

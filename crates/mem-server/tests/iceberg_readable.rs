@@ -124,6 +124,7 @@ async fn a_bundle_opens_in_a_warehouse_reader_that_never_saw_k10r() {
     client
         .post(format!("{base}/code/37"))
         .json(&PutCode {
+            code_id: None,
             language: "nu".into(),
             description: "count rows".into(),
             parameters: "{}".into(),

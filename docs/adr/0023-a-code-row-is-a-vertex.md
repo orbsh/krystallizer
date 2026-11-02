@@ -101,3 +101,41 @@ call site that succeeded. The store answers; the executor writes.
 - ADR-0012's reason for a nameless identity stands — nothing caches a name, the caller
   re-reads the row every call — but the name is now the graph's, synthetic and derived,
   not a field a caller proposes.
+
+## Update (2026-10-31) — the sheet is a CHAIN of versions
+
+A code row's payload is not one row but a sequence: the key is
+`[scope][code_id][rev]`, `rev` starts at 1 and only ever grows, and a written
+version is never overwritten. Writing a correction appends the next one.
+
+Why, given that in-place replacement is simpler: a script is corrected, and what
+RAN must stay readable afterwards — for the audit ("which body did that call
+get"), for reference ("the version that worked"), for the counter that lands on a
+specific run. Scripts are small and they change rarely, so the space a chain costs
+is noise next to what it buys. The address does not move either: `code_id` is
+still the script, its vertex is still the thing facts point at, and a revision
+therefore leaves `task --finishes_on--> code`, the skills that name the id, and
+every counter exactly where they were.
+
+**The current version is the last key of the script's range — never a pointer.**
+A stored "head" would be a second fact about the same thing, and the day it
+disagrees with the rows it is silently wrong. Key order cannot disagree with
+itself: the revisions of one script are contiguous (fixed-width key fields), so
+the ordinary read is one bounded prefix scan of THAT script's keys plus one point
+read of the version at its end — not a walk of the history, and never a scan of
+the table. `GET /code/{scope}/{code_id}` answers it; `GET
+/code/{scope}/{code_id}/{rev}` answers one exact version, which is the audit read.
+
+**Versions are not vertices.** Each revision could have been its own node with a
+`supersedes` edge and a fact naming the head, and that is precisely the parallel
+address space this ADR removed: a second identity per script, an edge per
+correction, and a head that can lie. Versioning is bookkeeping inside one table
+family; relations between things are what the graph is for.
+
+**What a binding promises.** `finishes_on` names the SCRIPT, not a version, so a
+task bound before a correction runs the corrected script. That is the intended
+meaning — the task says "when this work is finished", not "when these exact bytes
+have run" — and pinning a version would require revisions to be addressable by
+facts, which is the rejected shape above. What a run received is answerable
+because the version it read is in the answer (`rev`) and the immutable body stays
+readable under that number.

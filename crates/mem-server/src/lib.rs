@@ -244,6 +244,10 @@ fn build(
             post(import_bundle).layer(axum::extract::DefaultBodyLimit::disable()),
         )
         .route("/code/{scope}/{code_id}", get(fetch_code))
+        // One EXACT version — what an auditor reads to see what a run was given.
+        // The current version stays the default (`/code/{scope}/{code_id}`), so
+        // the ordinary read never names a revision.
+        .route("/code/{scope}/{code_id}/{rev}", get(fetch_code_at))
         // The skill node's three doors (ADR-0015): declare, resolve (the list
         // `resolve_skills` answers), read one (what a run walks).
         .route("/skills/{scope}", post(put_skill))
@@ -770,18 +774,30 @@ async fn append_checkpoint(
 /// link is decided from without reading the source.
 #[derive(Deserialize, Serialize)]
 pub struct PutCode {
+    /// The script this write REVISES. Absent = a new script (rev 1); present =
+    /// append the next revision of that script, leaving every earlier one
+    /// readable. The store refuses an id it never wrote, by id.
+    #[serde(default)]
+    pub code_id: Option<u64>,
     pub language: String,
+    /// One line about what it does. Absent = an empty description: a script
+    /// without one is harder to reuse, not invalid.
+    #[serde(default)]
     pub description: String,
     /// Parameter definition as a JSON document in TEXT (the store does
     /// not parse it; the caller that delivered the code owns its shape).
+    #[serde(default)]
     pub parameters: String,
     pub source: String,
 }
 
 /// The assigned identity, returned by `POST /code` (the caller's record).
+/// `rev` is the version that write produced: 1 for a new script, N+1 for a
+/// revision of one that already exists.
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct CodeIdDto {
     pub code_id: u64,
+    pub rev: u64,
 }
 
 /// Wire restatement of `CodeRow` (the core's row has no serde).
@@ -804,6 +820,16 @@ impl From<CodeRow> for CodeRowDto {
     }
 }
 
+/// A version and its payload. The revision lives in the KEY, never in the row:
+/// the answer restates it so a caller can name what it ran without decoding a
+/// key it never sees.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct CodeVersionDto {
+    pub rev: u64,
+    #[serde(flatten)]
+    pub row: CodeRowDto,
+}
+
 /// `POST /code/{scope}` — store one piece of code; the store assigns the id.
 ///
 /// Scoped since k10r ADR-0023: a code row is a VERTEX of that scope's fact graph
@@ -816,16 +842,34 @@ async fn put_code(
     Json(body): Json<PutCode>,
 ) -> Result<Json<CodeIdDto>, FactError> {
     let mut graph = state.graph.lock().await;
-    let code_id = graph
-        .put_code(
-            scope,
-            &body.language,
-            &body.description,
-            &body.parameters,
-            &body.source,
-        )
-        .map_err(FactError::from)?;
-    Ok(Json(CodeIdDto { code_id }))
+    let (code_id, rev) = match body.code_id {
+        Some(code_id) => {
+            let rev = graph
+                .put_code_revision(
+                    scope,
+                    code_id,
+                    &body.language,
+                    &body.description,
+                    &body.parameters,
+                    &body.source,
+                )
+                .map_err(FactError::from)?;
+            (code_id, rev)
+        }
+        None => {
+            let code_id = graph
+                .put_code(
+                    scope,
+                    &body.language,
+                    &body.description,
+                    &body.parameters,
+                    &body.source,
+                )
+                .map_err(FactError::from)?;
+            (code_id, 1)
+        }
+    };
+    Ok(Json(CodeIdDto { code_id, rev }))
 }
 
 /// Request body of `POST /skills/{scope}` (ADR-0015). The three step-shaped
@@ -1630,7 +1674,28 @@ async fn fetch_code(
 ) -> axum::response::Response {
     let mut graph = state.graph.lock().await;
     match graph.code(scope, code_id) {
-        Ok(Some(row)) => Json(CodeRowDto::from(row)).into_response(),
+        Ok(Some((rev, row))) => Json(CodeVersionDto {
+            rev,
+            row: CodeRowDto::from(row),
+        })
+        .into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => FactError::internal(e.to_string()).into_response(),
+    }
+}
+
+/// `GET /code/{scope}/{code_id}/{rev} — one exact version (the audit read).
+async fn fetch_code_at(
+    State(state): State<Arc<MemState>>,
+    Path((scope, code_id, rev)): Path<(u64, u64, u64)>,
+) -> axum::response::Response {
+    let mut graph = state.graph.lock().await;
+    match graph.code_at(scope, code_id, rev) {
+        Ok(Some(row)) => Json(CodeVersionDto {
+            rev,
+            row: CodeRowDto::from(row),
+        })
+        .into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => FactError::internal(e.to_string()).into_response(),
     }

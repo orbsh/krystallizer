@@ -2549,27 +2549,82 @@ impl GraphStore {
         &self.sheets
     }
 
-    /// One code row's payload, if the id was ever written (ADR-0023).
-    pub(crate) fn code_sheet(
+    /// One code version's payload, if that revision was ever written.
+    pub(crate) fn code_sheet_at(
         &mut self,
         scope: u64,
         code_id: u64,
+        rev: u64,
     ) -> Result<Option<CodeRow>, IngestError> {
         self.codes
-            .get(&CodeKey { scope, code_id })
+            .get(&CodeKey {
+                scope,
+                code_id,
+                rev,
+            })
             .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
-    /// Write one code row's payload. The vertex is untouched: publishing a
-    /// script is not a re-label and not a prop merge.
+    /// The CURRENT version of a script: the last key of its range.
+    ///
+    /// A script's revisions are contiguous in key order, so ordering answers
+    /// "which is current" — there is no head pointer to fall out of step with
+    /// the rows. The read costs ONE bounded prefix scan over this script's keys
+    /// (never the table) plus one point read of the version at the end of it;
+    /// the same discipline the channel reads use for a range.
+    pub(crate) fn latest_code(
+        &mut self,
+        scope: u64,
+        code_id: u64,
+    ) -> Result<Option<(u64, CodeRow)>, IngestError> {
+        let mut prefix = Vec::with_capacity(CodeRow::NS_PREFIX.len() + 1 + 16);
+        prefix.extend_from_slice(CodeRow::NS_PREFIX);
+        write_slot(&mut prefix, PRIMARY_SLOT);
+        CodeKey {
+            scope,
+            code_id,
+            rev: 0,
+        }
+        .encode_prefix_named(&mut prefix, &["scope", "code_id"]);
+        let suffixes = self
+            .codes
+            .store()
+            .scan_suffix(&prefix)
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
+        let Some(suffix) = suffixes.last() else {
+            return Ok(None);
+        };
+        let mut full = prefix;
+        full.extend_from_slice(suffix);
+        // The address header (ns prefix + primary slot) rides in front of the
+        // key; the key itself starts after it.
+        let key = CodeKey::decode(&full[CodeRow::NS_PREFIX.len() + 1..]);
+        Ok(self
+            .codes
+            .get(&key)
+            .map_err(|e| IngestError::Storage(e.to_string()))?
+            .map(|row| (key.rev, row)))
+    }
+
+    /// Write one code version's payload. The vertex is untouched: publishing a
+    /// script is not a re-label and not a prop merge — and an existing version is
+    /// never overwritten (a revision that may already have run stays readable).
     pub(crate) fn put_code_sheet(
         &mut self,
         scope: u64,
         code_id: u64,
+        rev: u64,
         row: &CodeRow,
     ) -> Result<(), IngestError> {
         self.codes
-            .put(&CodeKey { scope, code_id }, row)
+            .put(
+                &CodeKey {
+                    scope,
+                    code_id,
+                    rev,
+                },
+                row,
+            )
             .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
