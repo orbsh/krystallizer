@@ -180,13 +180,13 @@ impl LogStore {
         .next()
         .map(|(_, acc)| acc);
         let table = <LogRow as Document>::collection(store);
-        let keys = table.scan_keys().map_err(|e| e.to_string())?;
         let seq = water.map_or(0, |w| w.saturating_add(1));
-        let recent = keys
-            .into_iter()
+        let recent = table
+            .scan_keys(&okm_core::PrefixProbe::empty())
             .rev()
             .take(DEFAULT_MAX_ROWS)
-            .collect::<Vec<_>>()
+            .map(|r| r.map_err(|e| e.to_string()))
+            .collect::<Result<Vec<_>, _>>()?
             .into_iter()
             .rev()
             .collect();
@@ -402,7 +402,11 @@ impl LogStore {
         .next()
         .map(|(_, acc)| acc);
         self.seq = water.map_or(0, |w| w.saturating_add(1));
-        let keys = self.table.scan_keys().map_err(|e| e.to_string())?;
+        let keys = self
+            .table
+            .scan_keys(&okm_core::PrefixProbe::empty())
+            .map(|r| r.map_err(|e| e.to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
         self.recent = keys
             .into_iter()
             .rev()

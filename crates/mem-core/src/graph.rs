@@ -1071,8 +1071,9 @@ impl GraphStore {
         // highest id EVER written, so a deleted row does not free its id. One
         // scan at open; the sheet is small by construction (a row per script).
         let next_code = codes
-            .scan_keys()
-            .map_err(|e| e.to_string())?
+            .scan_keys(&okm_core::PrefixProbe::empty())
+            .map(|r| r.map_err(|e| e.to_string()))
+            .collect::<Result<Vec<_>, _>>()?
             .iter()
             .map(|key| key.code_id)
             .max()
@@ -1083,8 +1084,9 @@ impl GraphStore {
         // ns 37's primary slot, in the same BE order. A fresh table
         // starts at 1 — ids are unique but not contiguous per scope.
         let next_node = entities
-            .scan_keys()
-            .map_err(|e| e.to_string())?
+            .scan_keys(&okm_core::PrefixProbe::empty())
+            .map(|r| r.map_err(|e| e.to_string()))
+            .collect::<Result<Vec<_>, _>>()?
             .last()
             .map_or(1, |k| k.node_id.saturating_add(1));
         // `[ns 2B][0x00]` — the primary slot is a fixed face, one byte
@@ -1349,8 +1351,9 @@ impl GraphStore {
     pub fn reseed(&mut self) -> Result<(), String> {
         let next_node = self
             .entities
-            .scan_keys()
-            .map_err(|e| e.to_string())?
+            .scan_keys(&okm_core::PrefixProbe::empty())
+            .map(|r| r.map_err(|e| e.to_string()))
+            .collect::<Result<Vec<_>, _>>()?
             .last()
             .map_or(1, |k| k.node_id.saturating_add(1));
         let mut pk_prefix = Vec::with_capacity(3);
@@ -2646,8 +2649,9 @@ impl GraphStore {
     pub fn reseed_code(&mut self) -> Result<(), IngestError> {
         self.next_code = self
             .codes
-            .scan_keys()
-            .map_err(|e| IngestError::Storage(e.to_string()))?
+            .scan_keys(&okm_core::PrefixProbe::empty())
+            .map(|r| r.map_err(|e| IngestError::Storage(e.to_string())))
+            .collect::<Result<Vec<_>, _>>()?
             .iter()
             .map(|key| key.code_id)
             .max()
