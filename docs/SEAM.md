@@ -130,7 +130,7 @@ Every operation in this table rides a CORE door (§1a); the analysis class
 | gravity operation | gravity-side name | Door | mem-core primitive | Status |
 |---|---|---|---|---|
 | Turn-start projection read (the head is TEXT k10r rendered, in the format gravity's config names; `struct` is refused there) | `MemorySurface::fetch_session` | `GET /channels/{c}/members/{m}/session?format=` | `ChannelStore::fetch_full` + `render::render_head` | landed; the signature does NOT move with the pointer ruling — the read is an act BY that member (its cursor is stamped, its projection is the answer) |
-| Turn-end delta append (user + reply, one `ts_ms`, `sub` 0/1) | `MemorySurface::append_message` | `POST /channels/{c}/messages` | `ChannelStore::append` | landed |
+| Turn append — every round writes its rows as it runs; the turn closes with ONE `kind = FINAL` record naming the subs to keep (question, one row per successful call, answer), and the store collapses the rest (ADR-0024) | `MemorySurface::append_message` | `POST /channels/{c}/messages` | `ChannelStore::append` | landed (turn axis: code pending) |
 | Compression landing (summarize + the cut it would have chosen) | gravity's tail branch (`compress`) | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::complete_checkpoint` | landed both sides 2026-10-26 (ADR-0017) |
 | Task progress (one task row per step; read with the turn-start projection, completion written at the call site) | ADR-0003 §3/§4 | read side rides `GET /channels/{c}/members/{m}/session`; the write face has no route yet | task vertices + `task_links` edges in the same graph as the facts | Declared — the third interface surface (ADR-0001; gravity Phase 2.6 |
 | `recall_memory` — long-term facts | tool face (landed 2026-10-26, gravity ADR-0004) | `POST /memories/{scope}/recall` (landing + the landed community, rendered)"
@@ -167,13 +167,16 @@ an actor (ADR-0007).
 
 ## 4. Invariants that make this table readable
 
-- **Append-first is the GRAPH's rule; the session log is append-only**
-  (ADR-0002: appending is the default wherever a table holds
+- **Append-first is the GRAPH's rule; the session log is append-only OUTSIDE a
+  closed turn** (ADR-0002: appending is the default wherever a table holds
   knowledge or data (node/edge rows, weights, derived entries, code rows) — no
   read-modify-write race, replayable, a bad derivation is a retry — and a
   modification is allowed where the ban would cost more than the update itself.
-  The log is not that case: it stays append-only, and the compression point
-  lives in its own table as a `(ts_ms, sub)` pointer at one record.
+  The log is not a blanket exception: ADR-0024 writes a turn's rows per round and
+  purges the redundant ones when the turn closes, so the deletion set is bounded
+  by a turn that already ended, and an unfinished turn is OPEN — skipped by the
+  projection until its closing record names what to keep. The compression point
+  lives in its own table: a `(turn_id, ts_ms, sub)` pointer at one record.
 
 - **The caller owns the clock.** `ts_ms` / `sub` ride the request; the server
   never assigns (ADR-0008 §3). Any new door carries the same rule.
@@ -190,8 +193,9 @@ an actor (ADR-0007).
   weight system (ADR-0005, Phase 5), and each tool's fast/idempotent vs
   human-touch/external nature is declared at registration on gravity's side
   (gravity Phase 2.5).
-- **A failure is a value**, not a torn write: a failed turn appends nothing;
-  every door is either called with a complete exchange or not at all.
+- **A failure is a value**, not a torn write: a failed turn appends no FINAL
+  record, so the rows it did write stay OPEN and the projection skips them
+  (ADR-0024); every door is either called with a complete exchange or not at all.
 
 ## 5. Keeping this page true
 

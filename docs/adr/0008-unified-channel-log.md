@@ -36,9 +36,11 @@ replies to (the replier must have seen it).
 
 ### 1. One container: the channel log
 
-The human chat and the LLM conversation share ONE storage primitive:
-an **append-only channel log**, keyed `(ns, channel_id, timestamp)`.
-Nothing else is a container.
+The human chat and the LLM conversation share ONE storage primitive: a
+**channel log**, keyed `(ns, channel_id, turn, timestamp)`, append-only outside a
+turn that has already closed (ADR-0024: a turn's rows are written as it runs and
+the store collapses the redundant ones when the turn closes). Nothing else is a
+container.
 
 - Private chat = a channel with two members. A group chat = N members
   (members are SENDERS — §5 and ADR-0009).
@@ -89,10 +91,14 @@ projection: [persona snapshot][summary] + [m5][m6][m7]
 - **The compression point stands BESIDE the log, not inside it.** The
   checkpoint lives in its OWN table (ns 34), pointing into the log — its
   mutability never touches a log row. Append-first (ADR-0002) covers the
-  graph and the data side; it does not apply to the log, which is append-only
-  outright.
-- **The checkpoint is the CHANNEL's pointer, and the table is keyed by the
-  pointer** (`[channel][ts_ms][sub]`). A row holds three things: the summary
+  graph and the data side; it does not apply to the log, whose records are never
+  rewritten — the one deletion it has is a closed turn's own redundant rows
+  (ADR-0024), and a record outside that window is permanent.
+- **The checkpoint is the CHANNEL's pointer.** The ROW names the record its
+  summary ends at — `(turn_id, ts_ms, sub)`, an address in the log's own key space
+  — while the table's KEY stays `[channel][ts_ms][sub]` so checkpoints order by
+  when the compression happened, not by which turn it covered (ADR-0024 §7: a turn
+  suspended for an hour compresses long after a newer one). A row holds three things: the summary
   of the span that pointer ends, the SNAPSHOT of the initial prompt taken at
   that compression, and the state "no summary yet" (a compression in flight).
   Reading the projection = take the highest-keyed row that HAS a summary, then
@@ -333,8 +339,8 @@ merge:
 - **The memory add** serves CROSS-SESSION MEMORY: atomic facts into the
   graph — produced by the model's OWN active memory add (the tool call the
   caller routes to `ingest(fact)`), never by a compression pass. No trailing
-  extraction worker exists or is scheduled. The log being append-only means a
-  caller MAY lag, batch or re-run over the same bytes; it is an available
+  extraction worker exists or is scheduled. The log keeping a closed turn's bytes
+  stable means a caller MAY lag, batch or re-run over them; it is an available
   property, not a mechanism. So summarize does not gate the add: the summary
   serves the context, the active add serves cross-session memory, and nothing
   obliges them to be one pass.
@@ -368,8 +374,8 @@ becomes real.
   it replaces the summary call too — which is "compress on the spot",
   the thing the trigger avoids. Rejected as the split-point mechanism.
 - **Truncating compression (mainstream shape)**: destroys re-run
-  ability. A bad summary over a truncated log is permanent; over an
-  append-only log it is a retry. Rejected.
+  ability. A bad summary over a log whose records were rewritten is permanent;
+  over a log that keeps them it is a retry. Rejected.
 - **Keying the CHECKPOINT by member (the earlier draft)**: its
   argument was "two agents on one channel each compress their own copy". That
   scenario does not exist — an agent's boundary moves with its long-term memory,

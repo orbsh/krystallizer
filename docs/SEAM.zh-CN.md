@@ -111,7 +111,7 @@ in-process 不是第二道门：`InProcessSurface` 在调用方进程内链接�
 | gravity 操作 | gravity 侧名称 | 门 | mem-core 原语 | 状态 |
 |---|---|---|---|---|
 | 轮首取投影（头部是 k10r 渲染的文本，格式由 gravity 配置给出；`struct` 被拒） | `MemorySurface::fetch_session` | `GET /channels/{c}/members/{m}/session?format=` | `ChannelStore::fetch_full` + `render::render_head` | 已落；签名不随指针裁决变动——读取是**那个成员**发出的动作（盖它的游标，答案也是它的投影） |
-| 轮末追加 delta（用户消息 + 回复，同一个 `ts_ms`，`sub` 0/1） | `MemorySurface::append_message` | `POST /channels/{c}/messages` | `ChannelStore::append` | 已落 |
+| 轮次追加——每一轮随跑随写；轮次以一条 `kind = FINAL` 记录收尾、点明保留的 sub（问题、每次成功调用一行、答案），其余由存储收敛（ADR-0024） | `MemorySurface::append_message` | `POST /channels/{c}/messages` | `ChannelStore::append` | 已落（轮次轴：代码待落） |
 | 压缩落地（摘要 + 它本会选择的切点） | gravity 的尾分支（`compress`） | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::complete_checkpoint` | 2026-10-26 两侧都落（ADR-0017） |
 | 任务进度（一步一 task 行；读随轮首投影，完成在执行点写） | ADR-0003 §3/§4 | 读侧随 `GET /channels/{c}/members/{m}/session`；写侧尚无路由 | 任务顶点 + `task_links` 边，与事实同图 | 已声明——第三个接口面（ADR-0001）；gravity Phase 2.6 |
 | `recall_memory`——长期事实 | 工具面（2026-10-26 落地，gravity ADR-0004） | `POST /memories/{scope}/recall`（落点 + 着陆到的社区，已渲染）与 `GET /memories/{scope}/entities/{name}`（精确入口） | `GraphStore::recall` / `entity_by_name` | 图的门已落（2026-10-20）；工具面 2026-10-26 落地（gravity ADR-0004） |
@@ -163,8 +163,8 @@ k10r 的任何路由都不会成为 LLM 的工具目标，k10r 也从不回调�
 - **计数归 k10r，动作归 gravity**：`tool_invoke_count` 走权重系统
   （ADR-0005，Phase 5），而每个工具的快/幂等 vs 触人/外部性质是在 gravity
   侧注册时声明的（gravity Phase 2.5）。
-- **失败是值**，不是撕裂的写：失败的一轮什么都不追加；每道门要么以一次
-  完整的交流被调用，要么完全不动。
+- **失败是值**，不是撕裂的写：失败的一轮不写收尾记录，于是它写下的行是 **OPEN**，
+  投影跳过它们（ADR-0024）；每道门要么以一次完整的交流被调用，要么完全不动。
 
 ## 5. 保持这页为真
 

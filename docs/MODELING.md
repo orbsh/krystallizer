@@ -15,8 +15,8 @@ One entity class = one ns (OKM rule). Current state:
 
 | ns  | Entity        | Status                  | ADR      |
 |-----|---------------|-------------------------|----------|
-| 33  | Channel messages | Implemented (minimal slice, 2026-10-09) | ADR-0008 |
-| 34  | Checkpoint (channel pointer → summary + persona snapshot) | Implemented (minimal slice, 2026-10-09) | ADR-0008 |
+| 33  | Channel messages | Implemented (minimal slice, 2026-10-09); keyed by turn (ADR-0024), code pending | ADR-0008, ADR-0024 |
+| 34  | Checkpoint (channel pointer → summary + persona snapshot; the pointer names a turn, ADR-0024) | Implemented (minimal slice, 2026-10-09); turn field pending | ADR-0008, ADR-0024 |
 | 35  | Code (delivered scripts) | Implemented (bring-up slice, 2026-10-15) | gravity ADR-0001/0003 |
 | —   | Tasks / task_links DAG | Declared (ADR-0001 — the third interface surface; same graph as the facts) | ADR-0001, ADR-0002 |
 | 36  | Entities (fact graph), including skills (`kind = skill`) | Implemented (2026-10-17; skills 2026-10-26) | ADR-0010, ADR-0015 |
@@ -68,7 +68,10 @@ Current standing:
 - Channel messages (ns 33): a **named face** — prefix scan by
   `[channel_id][ts_ms][sub]`: replay, increment and max-gap reads are one prefix
   scan, and the interval rides the main table's own sort segment (sequential, no
-  fetch-back), per ADR-0008 §3. The checkpoint (ns 34) is read in KEY ORDER —
+  fetch-back), per ADR-0008 §3. ADR-0024 puts a TURN between channel and time:
+  the face stays one prefix scan per turn, but "the whole
+  channel in time order" becomes a merge of turn segments. The checkpoint (ns 34)
+  is read in KEY ORDER —
   `[channel_id][ts_ms][sub]`, newest = the last key of one prefix range — so
   "the latest compression" costs no sort; ns 40 (the withdrawn decision log) is
   free.
@@ -91,8 +94,11 @@ payload without the ns; the Table prepends `[ns 2B][slot 1B]`).
 
 ## Channel log (ns 33)
 
-The append-only message table plus the three tables the projection and the
-compression engine read (ADR-0008). Declared in
+The message table plus the three tables the projection and the compression
+engine read (ADR-0008). Append-only outside a closed turn: a turn's rows are
+written as it runs, and when it closes the store keeps the ones its closing record
+names and purges the rest — the log is mutable inside a turn that already ended,
+and nowhere else. Declared in
 `crates/mem-core/src/channel.rs`.
 
 **No member dimension, and no third table.** The two tables here belong to the
@@ -116,23 +122,40 @@ on its way out.
 #[ok_ns(33)]
 pub struct MessageKey {
     pub channel_id: u64,
+    pub turn_id: u64,
     pub ts_ms: u64,
     pub sub: u16,
 }
 ```
 
-- Key `[channel_id 8B][ts_ms 8B][sub 2B]`, BE fixed width, so byte order IS
-  `(ts_ms, sub)` order: replay, the increment and the max-gap read are one
-  prefix scan in the log's own sort order — no sort step, no secondary index.
+- Key `[channel_id 8B][turn_id 8B][ts_ms 8B][sub 2B]`, all BE fixed width: a turn
+  is one contiguous prefix range, and INSIDE it `(ts, sub)` order is byte order.
+  Reading a turn, collapsing a turn and the increment within a turn are each one
+  prefix scan in the log's own sort order — no secondary index.
+- **Key order is TURN CREATION order, then in-turn time order — not global time
+  order.** A turn suspended for an hour resumes under its original id with fresh
+  `ts_ms`, so its segment sits before turns created while it slept while its rows
+  are newer. A view that wants strict chronology merges the segments by row
+  `ts_ms`; for a conversation with suspensions and interjections that merge IS the
+  honest reconstruction.
+- `turn_id` is minted HERE, per channel, when the turn opens (ADR-0024): a
+  caller-side counter collides across devices, across a retry, and across two
+  turns one client opened. The open record is also what makes "this turn is still
+  running" a fact the store knows without asking anyone.
 - `ts_ms` is the CALLER's clock (ADR-0008 §3); `sub` breaks ties within one
-  millisecond (one writer, sequential appends).
+  millisecond inside a turn (one writer, sequential appends).
 - Row: `role u8` (user/assistant/tool/system), `kind u8` (text / tool_call /
-  tool_result), `content String`. Storage always holds the full row — pruning is
-  the view's job (ADR-0006). The vocabulary existed from the start; since
-  2026-10-31 `TOOL_CALL` has a WRITER: gravity stores one SYSTEM row per
-  successful tool call — the turn's net effect — with `sub` ordering it between
-  the question and the answer. `TOOL_RESULT` still has none: one call is one row,
-  not two.
+  tool_result / final), `content String`. Storage holds the full row — pruning is
+  the view's job (ADR-0006).
+- **The turn's lifecycle is in these rows.** Every round is written as it runs; a
+  turn with an open record and no `FINAL` is OPEN, and the projection marks it and
+  leaves it out of the model's view — which is how several turns can be open at
+  once (an interjection, a turn suspended on a cold call) without any special
+  case, and why "not finished" never means "written wrong". The turn closes with
+  ONE `kind = FINAL` record naming the subs to keep (the question, one `TOOL_CALL`
+  row per successful call, the answer); the store collapses the rest itself.
+  Compression spans CLOSED turns only, so no checkpoint pointer can ever name a
+  row that is about to be purged.
 
 ### `CheckpointKey` / `CheckpointRow` (ns 34) — the channel's pointer
 
@@ -149,6 +172,12 @@ pub struct MessageKey {
   rows at the same pointer (same read result, one wasted model call), and a
   summary returning for an EARLIER pointer lands below the newest row —
   invisible to reads, kept as free history, never deleted.
+- Two axes, deliberately separate (ADR-0024): the ROW carries the record's turn —
+  `(turn_id, ts_ms, sub)` — because `sub` breaks ties only inside a turn, so
+  `(ts_ms, sub)` stops being an address once two turns can be open; the KEY stays
+  `[channel][ts_ms][sub]`, ordering COMPRESSIONS by when they happened, so a turn
+  that compresses long after a newer one still lands where "latest = largest key"
+  expects it.
 
 ### `CursorKey` / `CursorRow` (ns 39)
 
@@ -166,7 +195,7 @@ pub struct MessageKey {
 
 | Call | What it does |
 |---|---|
-| `append(channel, ts_ms, sub, role, kind, content)` | one log entry; returns its key |
+| `append(channel, turn, ts_ms, sub, role, kind, content)` | one log entry in a turn; returns its key |
 | `fetch_full(channel, member)` | `SessionView { coverage, summary, head, compressing, increment, last_read }` — summary/head/cut point from the newest node that HAS a summary; an empty-summary node above it only sets `compressing` |
 | `open_checkpoint(channel, pointer, head)` | put the EMPTY-summary node at the split (the "compressing" marker) carrying the frozen head edge ids; the read keeps answering from the node below |
 | `complete_checkpoint(channel, summary)` | fill the newest open node — the only checkpoint write a door makes |

@@ -14,8 +14,8 @@ memory core 的 schema 集中一处：现有哪些表、key 与 row 形态、声
 
 | ns  | 实体              | 状态                     | ADR      |
 |-----|-------------------|--------------------------|----------|
-| 33  | Channel 消息日志   | 已实现（最小切片，2026-10-09） | ADR-0008 |
-| 34  | Checkpoint（channel 的指针 → 摘要 + 人设快照）| 已实现（最小切片，2026-10-09） | ADR-0008 |
+| 33  | Channel 消息日志   | 已实现（最小切片，2026-10-09）；按轮次键控（ADR-0024），代码待落 | ADR-0008, ADR-0024 |
+| 34  | Checkpoint（channel 的指针 → 摘要 + 人设快照；指针带轮次，ADR-0024）| 已实现（最小切片，2026-10-09）；轮次字段待落 | ADR-0008, ADR-0024 |
 | 35  | Code（交付的脚本） | 已实现（bring-up 切片，2026-10-15） | gravity ADR-0001/0003 |
 | —   | Tasks / task_links DAG | 已声明（ADR-0001——第三个接口面；与事实同图） | ADR-0001, ADR-0002 |
 | 36  | 实体（事实图），含 skill（`kind = skill`） | 已实现（2026-10-17；skill 2026-10-26） | ADR-0010、ADR-0015 |
@@ -60,7 +60,9 @@ okm 的纪律：查询只走声明过的路径——没有通用全表扫描的�
 
 - Channel 消息（ns 33）：**具名面**——`[channel_id][ts_ms][sub]` 前缀扫描：回放、
   increment、max-gap 读都是一次前缀扫描，且区间就落在主表自己的排序段上（顺序扫、
-  无回表），见 ADR-0008 §3。checkpoint（ns 34）按**键序读**——`[channel_id][ts_ms][sub]`，
+  无回表），见 ADR-0008 §3。ADR-0024 把**轮次**插在 channel 与时间之间：
+  这个面仍是每轮一次前缀扫描，但「整个频道按时间序」变成轮次段的归并。checkpoint
+  （ns 34）按**键序读**——`[channel_id][ts_ms][sub]`，
   最新 = 一次前缀区间扫描的最后一个键，所以「最近一次压缩」不需要排序；ns 40
   （已撤除的决策日志）空出。
 - Code（ns 35 的边表 + ns 36 的 `code` 顶点）：`code(scope, code_id)` 是**点读**；
@@ -80,7 +82,9 @@ payload，不含 ns；Table 自行前置 `[ns 2B][slot 1B]`）。
 
 ## Channel 日志（ns 33）
 
-一张只追加的消息表，加三张投影与压缩引擎读的表（ADR-0008）。声明在
+消息表，加三张投影与压缩引擎读的表（ADR-0008）。「只追加」的边界是**已关闭的轮次**：
+一轮的行随它运行逐次写入，轮次关闭时存储留下收尾记录点名的那几行、清除其余——日志只在
+一个已经结束的轮次内部可变，别处不变。声明在
 `crates/mem-core/src/channel.rs`。
 
 **没有成员维度，也没有第三张表。** 这里的两张表属于 **channel**，不属于某个读者：
@@ -100,19 +104,31 @@ channel 也只有一道声音——所以成员段只能是一段恒量，而恒
 #[ok_ns(33)]
 pub struct MessageKey {
     pub channel_id: u64,
+    pub turn_id: u64,
     pub ts_ms: u64,
     pub sub: u16,
 }
 ```
 
-- 键 `[channel_id 8B][ts_ms 8B][sub 2B]`，BE 定宽，所以字节序**就是**
-  `(ts_ms, sub)` 序：回放、增量、max-gap 读都是一次前缀扫描，落在日志自己的排序段
-  上——不排序，也没有二级索引。
-- `ts_ms` 是**调用方**的钟（ADR-0008 §3）；`sub` 破同毫秒平手（单写者、顺序追加）。
-- 行：`role u8`（user/assistant/tool/system）、`kind u8`（text / tool_call / tool_result）、
-  `content String`。存储永远持有完整行，剪枝归视图（ADR-0006）。2026-10-31 起 `tool_call`
-  有了写入方：一次成功的工具调用落一行 SYSTEM 记录，就是那一轮的净效应，`sub` 把它排在
-  问题与回答之间；`tool_result` 仍无写入方（本轮不需要一次调用拆成两行）。
+- 键 `[channel_id 8B][turn_id 8B][ts_ms 8B][sub 2B]`，全 BE 定宽：一轮是一个连续前缀
+  区间，区间**内** `(ts, sub)` 序就是字节序。读一轮、收敛一轮、轮内增量，各是一次前缀
+  扫描，落在日志自己的排序段上——没有二级索引。
+- **键序是轮次的创建顺序，再加轮内时间序——不是全局时间序。** 被挂起一小时的轮次恢复时
+  用原 id、`ts_ms` 是新的，于是它的段落在睡眠期间创建的那些轮次之前，而它的行更新。要
+  严格时间序的视图按行 `ts_ms` 归并轮次段；对带挂起和插话的对话，这个归并**就是**诚实的
+  重建方式。
+- `turn_id` 由**这里**在轮次开始时按频道发号（ADR-0024）：调用方的计数器会在多端之间、
+  重试之间、同一客户端开的两个轮次之间撞。开启记录同时也是"这一轮还在跑"这个事实的来源
+  ——存储自己知道，不用问谁。
+- `ts_ms` 是**调用方**的钟（ADR-0008 §3）；`sub` 破轮内同毫秒平手（单写者、顺序追加）。
+- 行：`role u8`（user/assistant/tool/system）、`kind u8`（text / tool_call / tool_result /
+  final）、`content String`。存储持有完整行，剪枝归视图（ADR-0006）。
+- **轮次的生命周期就在这些行里。** 每一轮随跑随写；有开启记录、没有 `FINAL` 的轮次是
+  OPEN，投影标出它并把它排除在模型视图之外——多个轮次同时开着（插话、挂在冷调用上的
+  轮次）因此不需要任何特殊处理，"没写完"也从不等于"写坏了"。轮次以**一条**
+  `kind = FINAL` 记录收尾，点名要保留的 sub（问题、每次成功调用一行 `TOOL_CALL`、答案），
+  其余由存储自己收敛。压缩只覆盖**已关闭**的轮次，所以 checkpoint 指针永远不可能指到一条
+  即将被清除的行。
 
 ### `CheckpointKey` / `CheckpointRow`（ns 34）——channel 的指针
 
@@ -125,6 +141,10 @@ pub struct MessageKey {
 - 行是**累积**的，不覆盖：同一段压两次各写一行（读出来一样，代价一次多余的模型
   调用）；更早指针的摘要晚回来时落在最大行之下——读路径看不见，也不必删，那是
   免费的历史。
+- 两个轴故意分开（ADR-0024）：**行**携带所指向记录的**轮次**——`(turn_id, ts_ms, sub)`
+  ——因为 `sub` 只在一轮内部破平手，一旦允许两轮同时开着，`(ts_ms, sub)` 就不再是地址；
+  **键**仍是 `[channel][ts_ms][sub]`，排序的是**压缩**发生的先后，所以一个迟到很久才压缩
+  的轮次依然落在「最近一次压缩 = 键最大」所指的位置。
 
 ### `CursorKey` / `CursorRow`（ns 39）
 
@@ -139,7 +159,7 @@ pub struct MessageKey {
 
 | 调用 | 做什么 |
 |---|---|
-| `append(channel, ts_ms, sub, role, kind, content)` | 追加一条，返回它的键 |
+| `append(channel, turn, ts_ms, sub, role, kind, content)` | 在某一轮里追加一条，返回它的键 |
 | `fetch_full(channel, member)` | `SessionView { coverage, summary, head, compressing, increment, last_read }`——摘要、头部、截断点都取**最近那条带摘要**的节点；它上面若有空摘要节点，只让 `compressing` 为真 |
 | `open_checkpoint(channel, pointer, head)` | 在切分点上放下**空摘要**的节点（正在压的标记），带着冻结的头部 edge id；读仍由它下面那个节点作答 |
 | `complete_checkpoint(channel, summary)` | 把摘要填进最新的未完成节点——门唯一的 checkpoint 写 |
