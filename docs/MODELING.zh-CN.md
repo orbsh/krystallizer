@@ -109,8 +109,10 @@ pub struct MessageKey {
   `(ts_ms, sub)` 序：回放、增量、max-gap 读都是一次前缀扫描，落在日志自己的排序段
   上——不排序，也没有二级索引。
 - `ts_ms` 是**调用方**的钟（ADR-0008 §3）；`sub` 破同毫秒平手（单写者、顺序追加）。
-- 行：`role u8`（user/assistant/tool/system）、`kind u8`（text；tool_call/tool_result
-  预留给视图层剪枝）、`content String`。存储永远持有完整行，剪枝归视图（ADR-0006）。
+- 行：`role u8`（user/assistant/tool/system）、`kind u8`（text / tool_call / tool_result）、
+  `content String`。存储永远持有完整行，剪枝归视图（ADR-0006）。2026-10-31 起 `tool_call`
+  有了写入方：一次成功的工具调用落一行 SYSTEM 记录，就是那一轮的净效应，`sub` 把它排在
+  问题与回答之间；`tool_result` 仍无写入方（本轮不需要一次调用拆成两行）。
 
 ### `CheckpointKey` / `CheckpointRow`（ns 34）——channel 的指针
 
@@ -265,8 +267,9 @@ pub struct CodeRow {
 它先写顶点、后写边表：中途失败只会留下一个惰性节点，绝不会留下一张没人够得着的表。
 `put_code_revision(scope, code_id, …)` 给已有脚本追加下一版并回答版本号；没写过的 id
 按 id **拒掉**（给空处做修正属调用方 bug，而幽灵脚本会用没人交付过的正文回答调用）。
-`code(scope, code_id)` → 当前版本的 `(rev, row)`：对这个脚本的键做一次有界前缀扫描
-加一次点读，不遍历历史。`code_at(scope, code_id, rev)` → 指定版本（审核用的读）。
+`code(scope, code_id)` → 当前版本的 `(rev, row)`：对这个脚本键段的**段尾做一次反向 seek**
+再加一次点读——类型化 probe（`CodeKey::prefix().scope(..).code_id(..)`，okm ADR-0049）
+配双向惰性扫描，不遍历历史、更不扫表。`code_at(scope, code_id, rev)` → 指定版本（审核用的读）。
 `code_vertex` / `code_id_of` 在数字与节点之间互译——`finishes_on` 边两头都要。
 
 `touch_code(scope, code_id, phase, now)` 把一次调用记在顶点的三个计数上

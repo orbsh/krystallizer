@@ -2572,36 +2572,25 @@ impl GraphStore {
     ///
     /// A script's revisions are contiguous in key order, so ordering answers
     /// "which is current" — there is no head pointer to fall out of step with
-    /// the rows. The read costs ONE bounded prefix scan over this script's keys
-    /// (never the table) plus one point read of the version at the end of it;
-    /// the same discipline the channel reads use for a range.
+    /// the rows. The read is ONE backward seek to the end of that script's key
+    /// range (never the table, never the history) plus one point read of the
+    /// version it lands on.
+    ///
+    /// The probe is TYPED (okm ADR-0049): the fields are the key's own leading
+    /// segments, so the address header (ns prefix + primary slot) is spliced by
+    /// the Collection instead of by hand — an inserted key field breaks this call
+    /// site at compile time, where the hand-encoded form would have silently
+    /// re-bound the scope's bytes to the wrong segment.
     pub(crate) fn latest_code(
         &mut self,
         scope: u64,
         code_id: u64,
     ) -> Result<Option<(u64, CodeRow)>, IngestError> {
-        let mut prefix = Vec::with_capacity(CodeRow::NS_PREFIX.len() + 1 + 16);
-        prefix.extend_from_slice(CodeRow::NS_PREFIX);
-        write_slot(&mut prefix, PRIMARY_SLOT);
-        CodeKey {
-            scope,
-            code_id,
-            rev: 0,
-        }
-        .encode_prefix_named(&mut prefix, &["scope", "code_id"]);
-        let suffixes = self
-            .codes
-            .store()
-            .scan_suffix(&prefix)
-            .map_err(|e| IngestError::Storage(e.to_string()))?;
-        let Some(suffix) = suffixes.last() else {
+        let probe = CodeKey::prefix().scope(scope).code_id(code_id).finish();
+        let Some(key) = self.codes.scan_keys(&probe).next_back() else {
             return Ok(None);
         };
-        let mut full = prefix;
-        full.extend_from_slice(suffix);
-        // The address header (ns prefix + primary slot) rides in front of the
-        // key; the key itself starts after it.
-        let key = CodeKey::decode(&full[CodeRow::NS_PREFIX.len() + 1..]);
+        let key = key.map_err(|e| IngestError::Storage(e.to_string()))?;
         Ok(self
             .codes
             .get(&key)

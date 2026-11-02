@@ -126,9 +126,13 @@ pub struct MessageKey {
   prefix scan in the log's own sort order — no sort step, no secondary index.
 - `ts_ms` is the CALLER's clock (ADR-0008 §3); `sub` breaks ties within one
   millisecond (one writer, sequential appends).
-- Row: `role u8` (user/assistant/tool/system), `kind u8` (text;
-  tool_call/tool_result reserved for view-layer pruning), `content String`.
-  Storage always holds the full row — pruning is the view's job (ADR-0006).
+- Row: `role u8` (user/assistant/tool/system), `kind u8` (text / tool_call /
+  tool_result), `content String`. Storage always holds the full row — pruning is
+  the view's job (ADR-0006). The vocabulary existed from the start; since
+  2026-10-31 `TOOL_CALL` has a WRITER: gravity stores one SYSTEM row per
+  successful tool call — the turn's net effect — with `sub` ordering it between
+  the question and the answer. `TOOL_RESULT` still has none: one call is one row,
+  not two.
 
 ### `CheckpointKey` / `CheckpointRow` (ns 34) — the channel's pointer
 
@@ -315,8 +319,10 @@ code_id, …)` appends the next version of an existing script and answers
 its number; an id nobody wrote is REFUSED by id (a revision of nothing
 is a caller bug, and a phantom script would answer with a body nobody
 delivered). `code(scope, code_id)` → `(rev, row)` for the CURRENT
-version: one bounded prefix scan of that script's keys plus one point
-read, never a walk of the history. `code_at(scope, code_id, rev)` → one
+version: ONE backward seek to the end of that script's key range plus one
+point read — a typed probe (`CodeKey::prefix().scope(..).code_id(..)`, okm
+ADR-0049) against a double-ended lazy scan, never a walk of the history and
+never the table. `code_at(scope, code_id, rev)` → one
 exact version (the audit read). `code_vertex` / `code_id_of` translate
 between the number and the node, which is what a `finishes_on` edge
 needs in both directions.

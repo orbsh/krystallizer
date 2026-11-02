@@ -121,9 +121,10 @@ every counter exactly where they were.
 A stored "head" would be a second fact about the same thing, and the day it
 disagrees with the rows it is silently wrong. Key order cannot disagree with
 itself: the revisions of one script are contiguous (fixed-width key fields), so
-the ordinary read is one bounded prefix scan of THAT script's keys plus one point
-read of the version at its end — not a walk of the history, and never a scan of
-the table. `GET /code/{scope}/{code_id}` answers it; `GET
+the ordinary read is ONE backward seek to the end of THAT script's key range plus
+one point read of the version it lands on — not a walk of the history, and never a
+scan of the table (okm's typed prefix probe over a double-ended lazy scan,
+ADR-0049, so the address header is spliced by the Collection instead of by hand). `GET /code/{scope}/{code_id}` answers it; `GET
 /code/{scope}/{code_id}/{rev}` answers one exact version, which is the audit read.
 
 **Versions are not vertices.** Each revision could have been its own node with a
