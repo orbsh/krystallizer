@@ -318,6 +318,15 @@ pub struct ChannelStore {
     checkpoints: okm_core::Collection<FjallStore, CheckpointKey, CheckpointRow>,
     cursors: okm_core::Collection<FjallStore, CursorKey, CursorRow>,
     members: okm_core::Collection<FjallStore, MemberKey, MemberRow>,
+    /// Turn ids minted since this store opened, per channel. `last_turn` reads the LOG,
+    /// and a turn that has opened but written no row is not in it — so two turns opening
+    /// one after the other in ONE channel, before either appends, would both be handed
+    /// the same id (ADR-0024 §2 opens several turns at once on purpose: a user may
+    /// interject). This counter is the mint; the log is only its floor, which is what
+    /// makes the ids survive a restart. An id minted and never written dies with the
+    /// process that held its turn, so it cannot collide with anything a reloaded store
+    /// can see.
+    turns: std::collections::HashMap<u64, u64>,
 }
 
 impl ChannelStore {
@@ -337,6 +346,7 @@ impl ChannelStore {
             checkpoints: <CheckpointRow as okm_core::Document>::collection(store.clone()),
             cursors: <CursorRow as okm_core::Document>::collection(store.clone()),
             members: <MemberRow as okm_core::Document>::collection(store),
+            turns: std::collections::HashMap::new(),
         })
     }
 
@@ -407,10 +417,18 @@ impl ChannelStore {
         // The single-party shape seeds its one user on first touch, so a turn
         // never opens on a channel that has no member to attribute it to.
         self.ensure_member(channel_id)?;
-        Ok(self.last_turn(channel_id)? + 1)
+        // MINT from the counter, floored by the log: the log alone answers "the highest
+        // turn that wrote something", which is not "the highest turn that exists".
+        let logged = self.last_turn(channel_id)?;
+        let next = self.turns.entry(channel_id).or_insert(logged);
+        *next = (*next).max(logged) + 1;
+        Ok(*next)
     }
 
     /// The highest turn id in a channel's log, `0` when it has no rows. One
+    /// reverse seek: the prefix's last key carries the newest turn. A FLOOR for the
+    /// mint, never the mint itself — an opened turn writes nothing until its first
+    /// round does.
     /// reverse seek: the prefix's last key carries the newest turn.
     fn last_turn(&self, channel_id: u64) -> Result<u64, String> {
         let probe = MessageKey::prefix().channel_id(channel_id).finish();

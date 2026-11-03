@@ -109,17 +109,23 @@ fn key_layout_is_hex_locked() {
     assert_eq!(&buf[24..26], &5u16.to_be_bytes(), "sub");
 }
 
-/// The turn ids the store mints are dense and advancing, and a turn that wrote
-/// nothing is not consumed: the id is derived from the log, not from a counter
-/// that a restart (or an import) could lose.
+/// The turn ids the store mints are dense and advancing — and DISTINCT, which the log
+/// alone cannot give: two turns can open in one channel before either has written a
+/// row, and a mint derived from the log would hand them both the same id (ADR-0024 §2
+/// allows several open turns per channel: a user may interject). The mint is a counter
+/// floored by the log, so ids also survive a restart.
 #[test]
-fn turn_ids_are_minted_in_order_and_an_empty_turn_is_not_consumed() {
+fn turn_ids_are_minted_in_order_and_never_repeat() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
     assert_eq!(store.open_turn(CH).unwrap(), 1, "a fresh channel opens at 1");
-    assert_eq!(store.open_turn(CH).unwrap(), 1, "minted twice, nothing written");
+    assert_eq!(
+        store.open_turn(CH).unwrap(),
+        2,
+        "a second turn opened before the first wrote anything is still a second turn"
+    );
     store.append(CH, 1, 100, 0, role::USER, kind::TEXT, "hi").unwrap();
-    assert_eq!(store.open_turn(CH).unwrap(), 2);
+    assert_eq!(store.open_turn(CH).unwrap(), 3, "and the counter keeps advancing");
     // Another channel counts on its own.
     assert_eq!(store.open_turn(2).unwrap(), 1);
 }
