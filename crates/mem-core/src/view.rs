@@ -98,11 +98,16 @@ pub fn assemble(
     Ok(Projection { head, view })
 }
 
-/// One turn as the LLM sees it (ADR-0009 §2): consecutive messages from the same
-/// side collapse into ONE, and every line carries `[name(id=N)]` so the model can
-/// name a speaker and look the member up. Tool rows are skipped for now.
+/// One MESSAGE as the LLM reads it (ADR-0009 §2): consecutive records from the
+/// same side collapse into ONE, and every line carries `[name(id=N)]` so the
+/// model can name a speaker and look the member up. Tool rows are skipped for
+/// now.
+///
+/// Not a "turn": a turn is the store's key axis (ADR-0024), which is a
+/// different unit — one request and everything it did. This is the rendering,
+/// and merging can span turns (a user typing twice before the answer).
 #[derive(Clone, Debug, PartialEq)]
-pub struct Turn {
+pub struct ModelMessage {
     pub role: &'static str,
     /// Merged text, one `[name(id=N)] …` line per underlying record.
     pub text: String,
@@ -114,7 +119,7 @@ pub struct Turn {
     pub senders: Vec<u64>,
 }
 
-/// The projection as conversation turns — the LLM's side of the channel.
+/// The projection as the messages the LLM reads — its side of the channel.
 ///
 /// Two rules, both from ADR-0009 §2: messages between two replies MERGE into one
 /// user turn (a burst typed before the model answered is one thing said), and the
@@ -125,21 +130,21 @@ pub fn conversation(
     channels: &mut ChannelStore,
     channel_id: u64,
     member_id: u64,
-) -> Result<Vec<Turn>, IngestError> {
+) -> Result<Vec<ModelMessage>, IngestError> {
     let view = channels
         .fetch_full(channel_id, member_id)
         .map_err(IngestError::Storage)?;
-    turns_of(channels, channel_id, &view.increment)
+    messages_of(channels, channel_id, &view.increment)
 }
 
-/// The same turn building over rows a caller already holds — the door has the
-/// increment from its own projection and must not scan twice.
-pub fn turns_of(
+/// The same merge over rows a caller already holds — the door has the increment
+/// from its own projection and must not scan twice.
+pub fn messages_of(
     channels: &ChannelStore,
     channel_id: u64,
     rows: &[(crate::channel::MessageKey, crate::channel::MessageRow)],
-) -> Result<Vec<Turn>, IngestError> {
-    let mut turns: Vec<Turn> = Vec::new();
+) -> Result<Vec<ModelMessage>, IngestError> {
+    let mut messages: Vec<ModelMessage> = Vec::new();
     for (key, row) in rows {
         if row.kind != crate::channel::kind::TEXT {
             continue; // tool calls / results are not in the conversation yet
@@ -158,15 +163,15 @@ pub fn turns_of(
         };
         let line = format!("[{name}(id={})] {}", row.sender, row.content);
         let ended = row.end_ts_ms.max(key.ts_ms);
-        match turns.last_mut() {
+        match messages.last_mut() {
             // A run of user messages between two replies is ONE thing said.
-            Some(turn) if turn.role == "user" && speaker == "user" => {
-                turn.text.push('\n');
-                turn.text.push_str(&line);
-                turn.end_ts = turn.end_ts.max(ended);
-                turn.senders.push(row.sender);
+            Some(message) if message.role == "user" && speaker == "user" => {
+                message.text.push('\n');
+                message.text.push_str(&line);
+                message.end_ts = message.end_ts.max(ended);
+                message.senders.push(row.sender);
             }
-            _ => turns.push(Turn {
+            _ => messages.push(ModelMessage {
                 role: speaker,
                 text: line,
                 start_ts: key.ts_ms,
@@ -175,7 +180,7 @@ pub fn turns_of(
             }),
         }
     }
-    Ok(turns)
+    Ok(messages)
 }
 
 /// The facts incident to EVERY member of the channel, both directions, each edge

@@ -25,7 +25,13 @@ fn the_service_assembly_serves_every_group() {
     let dir = tempfile::tempdir().unwrap();
     let mut stores = open_service(dir.path()).unwrap();
 
-    stores.channels.append(7, 1000, 0, 0, 0, "hi").unwrap();
+    // One finished turn: the log's rows arrive under a turn id (ADR-0024).
+    let turn = stores.channels.open_turn(7).unwrap();
+    stores.channels.append(7, turn, 1000, 0, 0, 0, "hi").unwrap();
+    stores
+        .channels
+        .close_turn(7, turn, 1000, 1, 0, "", &[(1000, 0)])
+        .unwrap();
     // Code is a VERTEX with a sheet now (k10r ADR-0023), so the write also
     // interns a node — the graph's node counter and the code watermark are two
     // numbers, and this test is where that stops being implicit.

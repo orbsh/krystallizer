@@ -17,7 +17,6 @@
 
 use mem_core::channel::role;
 use mem_core::{CompressionParams, TAIL_PROMPT};
-use mem_server::AppendMessage;
 use serde_json::Value;
 use std::net::SocketAddr;
 use tempfile::TempDir;
@@ -91,26 +90,15 @@ fn budget_only() -> CompressionParams {
     }
 }
 
+/// Three finished exchanges, one per turn: the split the policy picks is a TURN
+/// boundary (ADR-0024 §7), so the fixture is turns, not loose rows.
 async fn append_three(base: &str, client: &reqwest::Client, channel: u64) {
     for (ts, text) in [
         (1_000u64, "first message of the span"),
         (2_000, "second message of the span"),
         (9_000, "third message of the span"),
     ] {
-        let status = client
-            .post(format!("{base}/channels/{channel}/messages"))
-            .json(&AppendMessage {
-                ts_ms: ts,
-                sub: 0,
-                role: role::USER,
-                kind: 0,
-                content: text.into(),
-            })
-            .send()
-            .await
-            .unwrap()
-            .status();
-        assert!(status.is_success(), "append failed: {status}");
+        post_finished(client, base, channel, ts, 0, role::USER, 0, text).await;
     }
 }
 
@@ -217,4 +205,60 @@ async fn the_budget_fires_without_a_clock() {
         Some(0),
         "the floor outranks it"
     );
+}
+
+/// One finished exchange over the wire (k10r ADR-0024): open a turn, append the
+/// record, close the turn keeping it. A closed turn's log is its records PLUS
+/// its closing record — which is why a table's row count is turns + records.
+#[allow(clippy::too_many_arguments)]
+async fn post_finished(
+    client: &reqwest::Client,
+    base: &str,
+    channel: u64,
+    ts_ms: u64,
+    sub: u16,
+    role: u8,
+    kind: u8,
+    content: &str,
+) -> mem_server::MessageKeyDto {
+    let opened: serde_json::Value = client
+        .post(format!("{base}/channels/{channel}/turns"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let turn = opened["turn_id"].as_u64().unwrap();
+    let key: mem_server::MessageKeyDto = client
+        .post(format!("{base}/channels/{channel}/messages"))
+        .json(&mem_server::AppendMessage {
+            turn_id: turn,
+            ts_ms,
+            sub,
+            role,
+            kind,
+            content: content.to_string(),
+        })
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let closed = client
+        .post(format!("{base}/channels/{channel}/turns/{turn}/close"))
+        .json(&serde_json::json!({
+            "ts_ms": ts_ms,
+            "sub": sub + 1,
+            "role": role,
+            "content": "",
+            "keep": [{ "ts_ms": ts_ms, "sub": sub }],
+        }))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(closed, reqwest::StatusCode::NO_CONTENT, "closing the turn");
+    key
 }

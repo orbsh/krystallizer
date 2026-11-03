@@ -31,6 +31,62 @@ fn open() -> (tempfile::TempDir, ServiceStores) {
     (dir, stores)
 }
 
+fn at(turn_id: u64, ts_ms: u64, sub: u16) -> mem_core::Pointer {
+    mem_core::Pointer {
+        turn_id,
+        ts_ms,
+        sub,
+    }
+}
+
+/// One finished exchange: its own turn, one record, closed with that record
+/// kept — what a completed round leaves in the log (ADR-0024).
+#[allow(clippy::too_many_arguments)] // a log record IS this wide
+fn say_from(
+    stores: &mut ServiceStores,
+    channel: u64,
+    ts_ms: u64,
+    sub: u16,
+    sender: u64,
+    end_ts_ms: u64,
+    role: u8,
+    kind: u8,
+    text: &str,
+) -> mem_core::MessageKey {
+    let turn = stores.channels.open_turn(channel).unwrap();
+    let key = stores
+        .channels
+        .append_from(channel, turn, ts_ms, sub, sender, end_ts_ms, role, kind, text)
+        .unwrap();
+    stores
+        .channels
+        .close_turn(channel, turn, ts_ms, sub + 1, role, "", &[(ts_ms, sub)])
+        .unwrap();
+    key
+}
+
+fn say(
+    stores: &mut ServiceStores,
+    channel: u64,
+    ts_ms: u64,
+    sub: u16,
+    role: u8,
+    kind: u8,
+    text: &str,
+) -> mem_core::MessageKey {
+    say_from(
+        stores,
+        channel,
+        ts_ms,
+        sub,
+        mem_core::DEFAULT_MEMBER,
+        0,
+        role,
+        kind,
+        text,
+    )
+}
+
 fn projection(stores: &mut ServiceStores) -> Projection {
     assemble(&mut stores.channels, &mut stores.graph, 7, 1, DEFAULT_SCOPE)
         .expect("the projection assembles")
@@ -43,7 +99,7 @@ fn an_empty_projection_is_empty_not_wrong() {
     let (_d, mut stores) = open();
     let p = projection(&mut stores);
     assert!(p.head.is_empty(), "no facts in the scope yet");
-    assert_eq!(p.view.coverage_ts, 0);
+    assert_eq!(p.view.coverage, mem_core::Pointer::NONE);
     assert!(p.view.summary.is_none());
     assert!(p.view.increment.is_empty());
 }
@@ -116,21 +172,15 @@ fn increment_starts_after_the_compression_point() {
     let (_d, mut stores) = open();
     let channel = 7u64;
     let _member = 1u64;
+    say(&mut stores, channel, 1000, 0, role::USER, kind::TEXT, "hi");
+    say(&mut stores, channel, 1001, 0, role::ASSISTANT, kind::TEXT, "hello");
     stores
         .channels
-        .append(channel, 1000, 0, role::USER, kind::TEXT, "hi")
-        .unwrap();
-    stores
-        .channels
-        .append(channel, 1001, 0, role::ASSISTANT, kind::TEXT, "hello")
-        .unwrap();
-    stores
-        .channels
-        .append_checkpoint(channel, (1000, 0), "greeting done", &[])
+        .append_checkpoint(channel, at(1, 1000, 0), "greeting done", &[])
         .unwrap();
 
     let p = projection(&mut stores);
-    assert_eq!(p.view.coverage_ts, 1000);
+    assert_eq!(p.view.coverage, at(1, 1000, 0));
     assert_eq!(p.view.summary.as_deref(), Some("greeting done"));
     assert_eq!(p.view.increment.len(), 1, "only strictly-after rows");
     assert_eq!(p.view.increment[0].0.ts_ms, 1001);
@@ -171,8 +221,7 @@ fn the_head_is_frozen_at_the_compression() {
     let head_ids: Vec<u64> = live.head.iter().map(|f| f.edge_id).collect();
 
     let verdict = mem_core::compress::Verdict {
-        checkpoint_ts: 1000,
-        checkpoint_sub: 0,
+        checkpoint: at(1, 1000, 0),
         trigger: mem_core::compress::Trigger::Budget,
         assembled_bytes: 60_000,
         context_bytes: 131_072,
@@ -183,11 +232,7 @@ fn the_head_is_frozen_at_the_compression() {
     };
     stores
         .channels
-        .open_checkpoint(
-            7,
-            (verdict.checkpoint_ts, verdict.checkpoint_sub),
-            &head_ids,
-        )
+        .open_checkpoint(7, verdict.checkpoint, &head_ids)
         .unwrap();
     stores
         .channels
@@ -233,33 +278,22 @@ fn conversation_merges_a_user_burst_and_keeps_the_replys_end() {
         .put_member(ch, 2, "k10r", mem_core::member_role::AGENT)
         .unwrap();
 
-    stores
-        .channels
-        .append_from(ch, 1_000, 0, 10, 0, role::USER, kind::TEXT, "在吗")
-        .unwrap();
-    stores
-        .channels
-        .append_from(ch, 1_050, 0, 11, 0, role::USER, kind::TEXT, "问个事")
-        .unwrap();
+    say_from(&mut stores, ch, 1_000, 0, 10, 0, role::USER, kind::TEXT, "在吗");
+    say_from(&mut stores, ch, 1_050, 0, 11, 0, role::USER, kind::TEXT, "问个事");
     // The reply is keyed by its FIRST token and ends 4 s later.
-    stores
-        .channels
-        .append_from(
-            ch,
-            1_100,
-            0,
-            2,
-            5_000,
-            role::ASSISTANT,
-            kind::TEXT,
-            "在，你说",
-        )
-        .unwrap();
+    say_from(
+        &mut stores,
+        ch,
+        1_100,
+        0,
+        2,
+        5_000,
+        role::ASSISTANT,
+        kind::TEXT,
+        "在，你说",
+    );
     // Typed while that reply was still streaming.
-    stores
-        .channels
-        .append_from(ch, 1_200, 0, 10, 0, role::USER, kind::TEXT, "急")
-        .unwrap();
+    say_from(&mut stores, ch, 1_200, 0, 10, 0, role::USER, kind::TEXT, "急");
 
     let turns = mem_core::view::conversation(&mut stores.channels, ch, 1).unwrap();
     assert_eq!(
@@ -301,10 +335,7 @@ fn the_default_member_is_seeded_on_first_touch() {
         stores.channels.member(ch, 1).unwrap().is_none(),
         "nothing yet"
     );
-    stores
-        .channels
-        .append(ch, 10, 0, role::USER, kind::TEXT, "hi")
-        .unwrap();
+    say(&mut stores, ch, 10, 0, role::USER, kind::TEXT, "hi");
     let seeded = stores
         .channels
         .member(ch, 1)

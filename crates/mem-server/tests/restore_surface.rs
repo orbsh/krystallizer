@@ -12,7 +12,7 @@
     clippy::panic_in_result_fn
 )]
 
-use mem_server::{AppendMessage, PutCode};
+use mem_server::PutCode;
 
 async fn spawn(dir: &std::path::Path) -> String {
     let router = mem_server::open(dir.to_path_buf()).unwrap();
@@ -36,19 +36,8 @@ async fn a_bundle_restores_rows_and_the_issuers_that_hand_out_ids() {
 
     // A store with all three kinds of state: channel rows, a fact graph, code.
     for ts in [1_000u64, 2_000] {
-        let response = client
-            .post(format!("{source}/channels/7/messages"))
-            .json(&AppendMessage {
-                ts_ms: ts,
-                sub: 0,
-                role: 0,
-                kind: mem_core::channel::kind::TEXT,
-                content: format!("line {ts}"),
-            })
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), 200);
+        let text = format!("line {ts}");
+        post_finished(&client, &source, 7, ts, 0, 0, mem_core::channel::kind::TEXT, &text).await;
     }
     let landed = client
         .post(format!("{source}/memories/1"))
@@ -100,7 +89,7 @@ async fn a_bundle_restores_rows_and_the_issuers_that_hand_out_ids() {
     let text = response.text().await.unwrap();
     assert_eq!(status, 200, "{text}");
     let report: std::collections::BTreeMap<String, usize> = serde_json::from_str(&text).unwrap();
-    assert_eq!(report["messages"], 2);
+    assert_eq!(report["messages"], 4, "two records + two closing records");
     assert_eq!(report["facts"], 2);
     assert_eq!(report["code"], 2);
     // The reduce table is imported LAST, and by then re-folding the restored
@@ -221,4 +210,60 @@ async fn an_empty_body_is_refused_by_name() {
         .unwrap();
     assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
     assert!(response.text().await.unwrap().contains("empty"));
+}
+
+/// One finished exchange over the wire (k10r ADR-0024): open a turn, append the
+/// record, close the turn keeping it. A closed turn's log is its records PLUS
+/// its closing record — which is why a table's row count is turns + records.
+#[allow(clippy::too_many_arguments)]
+async fn post_finished(
+    client: &reqwest::Client,
+    base: &str,
+    channel: u64,
+    ts_ms: u64,
+    sub: u16,
+    role: u8,
+    kind: u8,
+    content: &str,
+) -> mem_server::MessageKeyDto {
+    let opened: serde_json::Value = client
+        .post(format!("{base}/channels/{channel}/turns"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let turn = opened["turn_id"].as_u64().unwrap();
+    let key: mem_server::MessageKeyDto = client
+        .post(format!("{base}/channels/{channel}/messages"))
+        .json(&mem_server::AppendMessage {
+            turn_id: turn,
+            ts_ms,
+            sub,
+            role,
+            kind,
+            content: content.to_string(),
+        })
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let closed = client
+        .post(format!("{base}/channels/{channel}/turns/{turn}/close"))
+        .json(&serde_json::json!({
+            "ts_ms": ts_ms,
+            "sub": sub + 1,
+            "role": role,
+            "content": "",
+            "keep": [{ "ts_ms": ts_ms, "sub": sub }],
+        }))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(closed, reqwest::StatusCode::NO_CONTENT, "closing the turn");
+    key
 }

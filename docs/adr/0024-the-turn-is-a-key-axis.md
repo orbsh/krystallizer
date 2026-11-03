@@ -2,8 +2,10 @@
 
 > **Languages:** [English](0024-the-turn-is-a-key-axis.md) (primary) · [中文](0024-the-turn-is-a-key-axis.zh-CN.md)
 
-**Status:** Accepted (2026-10-31). Code pending: the layout below is what the key
-and the write path move to (per round, then one closing record).
+**Status:** Accepted (2026-10-31), landed in mem-core and the HTTP surface: the
+key, the two doors (`/channels/{c}/turns`, `…/turns/{t}/close`), the projection's
+skip of open turns, and the checkpoint's turn. gravity's per-round writes are the
+next step.
 **Date:** 2026-10-31
 
 ## Context
@@ -86,26 +88,33 @@ working state, not history. The projection marks the segment and leaves it out o
 the model's view. This is also what makes multiple suspended turns work — nothing
 special is needed for interjection, because each open turn is its own segment.
 
-### 7. The checkpoint's pointer names a turn; its KEY still orders by compression time
+### 7. The checkpoint's pointer names a turn, and so does its key
 
 A checkpoint row says which log record a summary ends at, and until now the key
 IS the pointer (`[channel][ts_ms][sub]`, ADR-0008 §4): one address, no second
-field to keep in step. The turn axis breaks that identity in a way worth spelling
-out — `sub` breaks ties INSIDE a turn, so `(ts_ms, sub)` alone is no longer unique
-across a channel once two turns can be open at once. A pointer of `(ts, sub)` would
-resolve to two records.
+field to keep in step. The turn axis breaks that identity, and the fix is to put
+the turn in BOTH:
 
-So the pointer becomes `(turn_id, ts_ms, sub)` — an address in the log's own key
-space, which is also the space the increment reads "strictly after" — carried in
-the row. The checkpoint's own KEY stays `[channel][ts_ms][sub]`: it orders
-COMPRESSIONS, and compressions must stay ordered by when they happened, not by
-which turn they cover. A turn suspended for an hour can compress long after a
-newer turn already did; keying the checkpoint by turn would make that late row
-sort before the newer one and the reader's "latest = largest key" rule would pick
-the older compression.
+- `sub` breaks ties INSIDE a turn, so `(ts_ms, sub)` stops being unique across a
+  channel once two turns can be open at once. Two turns can also write in the same
+  millisecond with the same `sub`, which is not exotic — one writer, one clock,
+  two turns opened by two messages in the same millisecond — and then a
+  `(ts_ms, sub)` key would make the second compression OVERWRITE the first.
+- So the pointer is `(turn_id, ts_ms, sub)`: an address in the log's own key
+  space, which is also the space the increment reads "strictly after", and the
+  checkpoint's key is `[channel][turn_id][ts_ms][sub]`.
 
-The two axes are therefore separate on purpose: the ROW knows the log position
-(the turn included), the KEY knows the compression's own order.
+Key order along the coverage axis is monotone, because a compression always
+covers the span AFTER the previous node — the increment it summarizes starts where
+the last summary ended. "Newest node = largest key" therefore still holds, and it
+now holds for the right reason: the key is the log position, not the wall clock of
+the compression pass. (Anchoring it to time was never needed: a turn suspended
+for an hour compresses late, but what it compresses is still the tail after the
+previous coverage, so its pointer is larger than that coverage whatever the
+clock says.)
+
+The row still carries the turn separately — `suggested_turn_id` — for the cut a
+pass *would* have chosen, which is a label rather than a coverage point.
 
 ### 8. Compression can never point into a collapsible set
 
@@ -129,7 +138,9 @@ only here.
   entry died keeps its rows, skipped by the projection forever.
 - **The increment's boundary is still the checkpoint**, not the turn: turns are
   the write and delete unit, checkpoints are the read cut. They are different
-  axes and the code must not conflate them.
+  axes and the code must not conflate them — the turn appears in a checkpoint
+  because the pointer needs an ADDRESS, not because compression cuts at turns by
+  accident.
 - **`sub` keeps its meaning** (tie-break inside one millisecond, one writer), but
   it is no longer the only ordering inside a channel.
 

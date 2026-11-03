@@ -38,10 +38,24 @@ async fn spawn_server() -> (String, TempDir) {
     (format!("http://{addr}"), dir)
 }
 
-async fn say(client: &reqwest::Client, base: &str, ts_ms: u64, content: &str) {
+/// One finished exchange: its own turn, closed with the record kept — a turn
+/// the projection reads (ADR-0024: an open turn is working state and invisible).
+/// The id it opened under is returned, because a pointer into the log now names
+/// a TURN as well as a millisecond.
+async fn say(client: &reqwest::Client, base: &str, ts_ms: u64, content: &str) -> u64 {
+    let opened: Value = client
+        .post(format!("{base}/channels/3/turns"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let turn = opened["turn_id"].as_u64().unwrap();
     client
         .post(format!("{base}/channels/3/messages"))
         .json(&json!({
+            "turn_id": turn,
             "ts_ms": ts_ms,
             "sub": 0,
             "role": 0,
@@ -51,6 +65,21 @@ async fn say(client: &reqwest::Client, base: &str, ts_ms: u64, content: &str) {
         .send()
         .await
         .unwrap();
+    let closed = client
+        .post(format!("{base}/channels/3/turns/{turn}/close"))
+        .json(&json!({
+            "ts_ms": ts_ms,
+            "sub": 1,
+            "role": 1,
+            "content": "",
+            "keep": [{ "ts_ms": ts_ms, "sub": 0 }],
+        }))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(closed, reqwest::StatusCode::NO_CONTENT);
+    turn
 }
 
 async fn session(client: &reqwest::Client, base: &str) -> Value {
@@ -91,6 +120,10 @@ async fn the_session_asks_for_an_operation_and_states_its_span() {
     );
     let compress = &tails[0];
     assert_eq!(compress["name"], "compress");
+    assert_eq!(
+        compress["from_turn"], 0,
+        "before the first turn: the pointer's turn is 0"
+    );
     let prompt = compress["prompt"].as_str().unwrap();
     assert!(
         prompt.contains("\"cut\""),
@@ -104,6 +137,10 @@ async fn the_session_asks_for_an_operation_and_states_its_span() {
     assert_eq!(
         to, 300,
         "the split lands in the largest gap, not at the log's end"
+    );
+    assert_eq!(
+        compress["to_turn"], 3,
+        "and it lands on a TURN boundary: the split is a record of turn 3"
     );
 }
 
@@ -129,6 +166,7 @@ async fn the_cut_a_pass_chooses_is_recorded_beside_the_summary() {
         .post(format!("{base}/channels/3/members/1/checkpoint"))
         .json(&json!({
             "summary": "they said hi",
+            "suggested_turn": 1,
             "suggested_ts": 100,
             "suggested_sub": 0,
         }))
@@ -144,7 +182,8 @@ async fn the_cut_a_pass_chooses_is_recorded_beside_the_summary() {
         to,
         "the node closes where the verdict said"
     );
-    assert_eq!(view["suggested_ts"], 100, "the opinion rides the node");
+    assert_eq!(view["suggested_turn"], 1, "the opinion rides the node");
+    assert_eq!(view["suggested_ts"], 100);
     assert_eq!(view["suggested_sub"], 0);
     assert_eq!(view["summary"], "they said hi");
     let increments = view["increment"].as_array().unwrap();
@@ -177,7 +216,7 @@ async fn a_cut_outside_the_span_is_refused_rather_than_stored() {
     // reached it, so a later pass would read a range that never existed.
     let beyond = client
         .post(format!("{base}/channels/3/members/1/checkpoint"))
-        .json(&json!({ "summary": "s", "suggested_ts": to + 1000 }))
+        .json(&json!({ "summary": "s", "suggested_turn": 4, "suggested_ts": to + 1000 }))
         .send()
         .await
         .unwrap();
@@ -194,7 +233,7 @@ async fn a_cut_outside_the_span_is_refused_rather_than_stored() {
     assert_eq!(view["suggested_ts"], 0);
     let ok = client
         .post(format!("{base}/channels/3/members/1/checkpoint"))
-        .json(&json!({ "summary": "landed", "suggested_ts": 100 }))
+        .json(&json!({ "summary": "landed", "suggested_turn": 1, "suggested_ts": 100 }))
         .send()
         .await
         .unwrap();

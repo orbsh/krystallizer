@@ -18,7 +18,7 @@
 
 use std::process::Command;
 
-use mem_server::{AppendMessage, PutCode};
+use mem_server::PutCode;
 
 async fn spawn(dir: &std::path::Path) -> String {
     let router = mem_server::open(dir.to_path_buf()).unwrap();
@@ -98,18 +98,8 @@ async fn a_bundle_opens_in_a_warehouse_reader_that_never_saw_k10r() {
     let client = reqwest::Client::new();
 
     for ts in [1_000u64, 2_000] {
-        client
-            .post(format!("{base}/channels/7/messages"))
-            .json(&AppendMessage {
-                ts_ms: ts,
-                sub: 0,
-                role: 0,
-                kind: mem_core::channel::kind::TEXT,
-                content: format!("line {ts}"),
-            })
-            .send()
-            .await
-            .unwrap();
+        let text = format!("line {ts}");
+        post_finished(&client, &base, 7, ts, 0, 0, mem_core::channel::kind::TEXT, &text).await;
     }
     let landed = client
         .post(format!("{base}/memories/1"))
@@ -177,7 +167,11 @@ async fn a_bundle_opens_in_a_warehouse_reader_that_never_saw_k10r() {
         "three entity nodes and the code vertex"
     );
     assert_eq!(rows(&root.join("code")), Some(1), "one code row");
-    assert_eq!(rows(&root.join("messages")), Some(2), "two messages");
+    assert_eq!(
+        rows(&root.join("messages")),
+        Some(4),
+        "two messages, each with its turn's closing record"
+    );
 
     // The file carries LABELS: the entity table names its rows without the
     // store's vocabulary tables, which is what makes the backup legible.
@@ -193,4 +187,60 @@ async fn a_bundle_opens_in_a_warehouse_reader_that_never_saw_k10r() {
         vec!["fjall", "k10r", "okm"],
         "labels, not ids (the code vertex is the row this file is about)"
     );
+}
+
+/// One finished exchange over the wire (k10r ADR-0024): open a turn, append the
+/// record, close the turn keeping it. A closed turn's log is its records PLUS
+/// its closing record — which is why a table's row count is turns + records.
+#[allow(clippy::too_many_arguments)]
+async fn post_finished(
+    client: &reqwest::Client,
+    base: &str,
+    channel: u64,
+    ts_ms: u64,
+    sub: u16,
+    role: u8,
+    kind: u8,
+    content: &str,
+) -> mem_server::MessageKeyDto {
+    let opened: serde_json::Value = client
+        .post(format!("{base}/channels/{channel}/turns"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let turn = opened["turn_id"].as_u64().unwrap();
+    let key: mem_server::MessageKeyDto = client
+        .post(format!("{base}/channels/{channel}/messages"))
+        .json(&mem_server::AppendMessage {
+            turn_id: turn,
+            ts_ms,
+            sub,
+            role,
+            kind,
+            content: content.to_string(),
+        })
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let closed = client
+        .post(format!("{base}/channels/{channel}/turns/{turn}/close"))
+        .json(&serde_json::json!({
+            "ts_ms": ts_ms,
+            "sub": sub + 1,
+            "role": role,
+            "content": "",
+            "keep": [{ "ts_ms": ts_ms, "sub": sub }],
+        }))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(closed, reqwest::StatusCode::NO_CONTENT, "closing the turn");
+    key
 }

@@ -19,7 +19,7 @@
 //! deferred until feedback labels exist, since fitting policy to
 //! unlabelled traces fits noise.
 
-use crate::channel::{SessionView, Span};
+use crate::channel::{Pointer, SessionView, Span};
 
 /// Policy parameters — `config/krystallizer.kdl`'s `compression` node.
 #[derive(Clone, Debug, PartialEq)]
@@ -100,11 +100,10 @@ impl Trigger {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Verdict {
     /// The coverage point the summary should end at — the last log record of
-    /// the span (ADR-0008 §4: k10r derives this, the caller never states
-    /// one). A POINTER: `ts_ms` plus the same-millisecond tiebreaker, so the
-    /// checkpoint can name the record rather than the millisecond.
-    pub checkpoint_ts: u64,
-    pub checkpoint_sub: u16,
+    /// the span (ADR-0008 §4: k10r derives this, the caller never states one).
+    /// A POINTER, so the checkpoint names the RECORD rather than the
+    /// millisecond: turn, then `ts_ms`, then the same-millisecond tiebreaker.
+    pub checkpoint: Pointer,
     pub trigger: Trigger,
     pub assembled_bytes: usize,
     pub context_bytes: usize,
@@ -151,8 +150,7 @@ pub fn evaluate(
     };
     let (checkpoint, max_gap_ms) = split(view)?;
     Some(Verdict {
-        checkpoint_ts: checkpoint.0,
-        checkpoint_sub: checkpoint.1,
+        checkpoint,
         trigger,
         assembled_bytes,
         context_bytes: params.context_bytes,
@@ -163,29 +161,39 @@ pub fn evaluate(
     })
 }
 
-/// The split point: the span ends at the LAST record before the largest
-/// inter-message gap (a zero-cost topic-change proxy), and at the span's
-/// own end when it holds no internal gap.
+/// The split point: the span ends at the LAST record of the turn before the
+/// largest gap between two TURNS (a zero-cost topic-change proxy), and at the
+/// increment's own end when it holds no turn boundary.
+///
+/// Only turn boundaries are candidates (ADR-0024 §7): a compression covers whole
+/// closed turns, so a cut that landed mid-turn would leave a summary covering
+/// half a turn and an increment starting inside the other half — a turn split
+/// across the seam, which is exactly what the turn axis exists to prevent.
 ///
 /// The silence that fired the cache-clock trigger is deliberately not
 /// reachable here: it sits AFTER the increment's last record (now minus
 /// that record's ts), never between two records, so "the gap IS the
 /// silence that fired the trigger" cannot select itself. Ties go to the
 /// earlier gap, so one corpus always answers identically.
-fn split(view: &SessionView) -> Option<((u64, u16), Option<u64>)> {
+fn split(view: &SessionView) -> Option<(Pointer, Option<u64>)> {
     let last = view.increment.last()?;
-    let mut best: Option<(u64, (u64, u16))> = None;
+    let mut best: Option<(u64, Pointer)> = None;
     for pair in view.increment.windows(2) {
+        // Inside one turn the records are one exchange; a boundary is where the
+        // turn changes.
+        if pair[0].0.turn_id == pair[1].0.turn_id {
+            continue;
+        }
         let gap = pair[1].0.ts_ms.saturating_sub(pair[0].0.ts_ms);
         if best.is_none_or(|(seen, _)| gap > seen) {
-            best = Some((gap, (pair[0].0.ts_ms, pair[0].0.sub)));
+            best = Some((gap, Pointer::of(&pair[0].0)));
         }
     }
     let (checkpoint, max_gap_ms) = match best {
         Some((gap, pointer)) => (pointer, Some(gap)),
-        None => ((last.0.ts_ms, last.0.sub), None),
+        None => (Pointer::of(&last.0), None),
     };
-    if checkpoint <= (view.coverage_ts, view.coverage_sub) {
+    if checkpoint <= view.coverage {
         return None;
     }
     Some((checkpoint, max_gap_ms))
@@ -285,8 +293,8 @@ pub const TAIL_OPS: &[TailOp] = &[COMPRESS_OP, REVIEW_OP];
 /// Mandatory: exactly the span the verdict asks to compress. Optional: from the
 /// suggested cut — the boundary a model saw the conversation break at instead of
 /// where a byte budget did — to the newest record, which is what an analysis pass
-/// wants to look at. Both are stated as `((ts, sub), (ts, sub))`: a position in
-/// the log is a RECORD, so a millisecond alone names several.
+/// wants to look at. Both are stated as two [`Pointer`]s: a position in the log
+/// is a RECORD, so a millisecond alone names several.
 ///
 /// `None` = nothing to read, and the caller is not asked for that operation. The
 /// fallback is deliberate: a compression that named no better cut leaves the
@@ -294,19 +302,22 @@ pub const TAIL_OPS: &[TailOp] = &[COMPRESS_OP, REVIEW_OP];
 /// skipping them — silence from the compressor is not a range.
 pub fn tail_span(op: &TailOp, view: &SessionView, verdict: &Verdict) -> Option<Span> {
     let span = match op.stage {
-        Stage::Mandatory => (
-            (view.coverage_ts, view.coverage_sub),
-            (verdict.checkpoint_ts, verdict.checkpoint_sub),
-        ),
+        Stage::Mandatory => Span {
+            start: view.coverage,
+            end: verdict.checkpoint,
+        },
         Stage::Optional => {
-            let from = if (view.suggested_ts, view.suggested_sub) == (0, 0) {
-                (view.coverage_ts, view.coverage_sub)
+            let from = if view.suggested == Pointer::NONE {
+                view.coverage
             } else {
-                (view.suggested_ts, view.suggested_sub)
+                view.suggested
             };
             let (last, _) = view.increment.last()?;
-            (from, (last.ts_ms, last.sub))
+            Span {
+                start: from,
+                end: Pointer::of(last),
+            }
         }
     };
-    (span.0 < span.1).then_some(span)
+    (!span.is_empty()).then_some(span)
 }

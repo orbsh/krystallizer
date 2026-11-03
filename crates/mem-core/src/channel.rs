@@ -1,7 +1,13 @@
 //! The unified channel log + the agent's projection (ADR-0008, minimal
-//! Phase 2 slice serving gravity Phase 0): an append-only message log
-//! keyed `(channel_id, ts_ms, sub)` with gravity's clock as the order
+//! Phase 2 slice serving gravity Phase 0): a message log keyed
+//! `(channel_id, turn_id, ts_ms, sub)` with gravity's clock as the order
 //! authority, plus the per-member checkpoint (the compression record).
+//!
+//! The TURN axis is ADR-0024: the store mints a turn id when a turn opens,
+//! every round is written as the turn runs, and the turn closes with one
+//! `kind::FINAL` record that names the rows to keep — the rest of the turn
+//! is purged in the same write. A turn with rows and no closing record is
+//! OPEN: it is working state, and the projection leaves it out.
 //!
 //! Phase 2.6 adds this group's two pieces of compression STATE — the
 //! member's read cursor (the cache clock's only observable, ADR-0008 §2)
@@ -20,8 +26,10 @@
 //! millisecond (single writer, sequential appends — one u16 counter on
 //! the caller side; u16 overflows at 65 536 messages in one ms, which
 //! is a pathological signal, not a re-keying need). KeyEncode's BE
-//! layout makes byte order == time order: a prefix scan over
-//! `channel_id` returns the log in conversation order, no sort step.
+//! layout makes byte order == key order, and the key's field order is
+//! what that order MEANS: turn creation first, then the record's own
+//! time inside that turn, so a prefix scan over `channel_id` returns the
+//! log in conversation order with no sort step (ADR-0024).
 
 use okm_core::{
     write_slot, Document, DocumentEncode, FjallStore, KeyEncode, VirtualStorage, PRIMARY_SLOT,
@@ -29,12 +37,59 @@ use okm_core::{
 
 /// Append-only message log (ns 33 — the channel-log band, next to flat
 /// memory's 32; one entity class = one ns, per MODELING).
+///
+/// `turn_id` sits after `channel_id` because a turn is one contiguous prefix
+/// range of the log (ADR-0024): reading a turn, closing a turn and the
+/// compression span are each one prefix scan in the engine's own order.
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
 #[ok_ns(33)]
 pub struct MessageKey {
     pub channel_id: u64,
+    pub turn_id: u64,
     pub ts_ms: u64,
     pub sub: u16,
+}
+
+/// A position in the log: a record's key minus the channel (ADR-0024).
+///
+/// It is a RECORD, not a millisecond — two records can share a millisecond, and
+/// after ADR-0024 two records of different turns can share both `ts_ms` and
+/// `sub`. Comparisons are field-wise in key order, which is exactly the order
+/// the increment walks in.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+pub struct Pointer {
+    pub turn_id: u64,
+    pub ts_ms: u64,
+    pub sub: u16,
+}
+
+impl Pointer {
+    /// The position of `(0, 0, 0)`: before every record of a channel. What "no
+    /// checkpoint yet" means for a coverage point.
+    pub const NONE: Pointer = Pointer {
+        turn_id: 0,
+        ts_ms: 0,
+        sub: 0,
+    };
+
+    /// The position a log key names.
+    pub fn of(key: &MessageKey) -> Self {
+        Self {
+            turn_id: key.turn_id,
+            ts_ms: key.ts_ms,
+            sub: key.sub,
+        }
+    }
+
+    /// The position a checkpoint key names — the record that compression's
+    /// summary ends at.
+    pub fn of_checkpoint(key: &CheckpointKey) -> Self {
+        Self {
+            turn_id: key.turn_id,
+            ts_ms: key.ts_ms,
+            sub: key.sub,
+        }
+    }
 }
 
 /// One log entry. `role` is the speaker class (the projection maps it to
@@ -61,8 +116,14 @@ pub struct MessageRow {
 
 /// A checkpoint NODE (ns 34) — layer 1 of the channel, isomorphic to the log
 /// below it (ADR-0008 §2). The KEY is a pointer into layer 0: the record's own
-/// `(ts_ms, sub)`. The payload is the summary of the span ending at that
-/// record, plus (dynamic segment) the head frozen at that compression.
+/// `(turn_id, ts_ms, sub)`. The payload is the summary of the span ending at
+/// that record, plus (dynamic segment) the head frozen at that compression.
+///
+/// The turn is IN the key (ADR-0024 §7): the pointer has to name one record, and
+/// two turns can produce records that share both a millisecond and a `sub`. Key
+/// order then runs along the coverage axis, which is monotone — a compression
+/// always advances past the previous node, so "newest node = largest key" still
+/// holds and the same-millisecond pair can never overwrite each other.
 ///
 /// Nodes accumulate; there is no "current row" to overwrite. The state is "the
 /// newest node that carries a summary", exactly as the channel's state is its
@@ -74,6 +135,7 @@ pub struct MessageRow {
 #[ok_ns(34)]
 pub struct CheckpointKey {
     pub channel_id: u64,
+    pub turn_id: u64,
     pub ts_ms: u64,
     pub sub: u16,
 }
@@ -97,19 +159,33 @@ pub struct CheckpointRow {
     /// model saw the conversation break rather than where a byte budget did.
     ///
     /// Two segments because a position in the log is a RECORD, not a
-    /// millisecond — the same fault `coverage_sub` exists to prevent: with a ts
-    /// alone, two records sharing that millisecond are one suggestion.
+    /// millisecond, and after ADR-0024 the turn comes before the millisecond:
+    /// without it a suggestion made in turn 3 would read as a position inside
+    /// turn 5 when both wrote in the same millisecond.
+    #[ok_default(0)]
+    pub suggested_turn_id: u64,
     #[ok_default(0)]
     pub suggested_ts: u64,
     #[ok_default(0)]
     pub suggested_sub: u16,
 }
 
-/// A span of the log, as the checkpoint layer states it: `(start, end)` where
-/// `start` is EXCLUSIVE (what the previous summary already covers) and `end` is
-/// INCLUSIVE (the record the node closes at). Two pointers, because a position in
-/// the log is a record — see [`CheckpointRow::suggested_ts`].
-pub type Span = ((u64, u16), (u64, u16));
+/// A span of the log, as the checkpoint layer states it: `start` is EXCLUSIVE
+/// (what the previous summary already covers) and `end` is INCLUSIVE (the record
+/// the span closes at). Two pointers, because a position in the log is a record
+/// — see [`CheckpointRow::suggested_ts`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Span {
+    pub start: Pointer,
+    pub end: Pointer,
+}
+
+impl Span {
+    /// A span that covers nothing is not a span: both ends must advance.
+    pub fn is_empty(&self) -> bool {
+        self.end <= self.start
+    }
+}
 
 /// The member's read cursor `(channel, member) → last-read ts`
 /// (ADR-0008 §2). It is the cache clock's only observable: the prompt
@@ -177,17 +253,16 @@ pub mod member_role {
 /// tool-call pruning are Phase 2.5's view layer, not storage's job.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SessionView {
-    /// The coverage point the checkpoint carries (`(0, 0)` = no checkpoint:
-    /// the increment IS the full log). A POINTER — see [`CheckpointRow`].
-    pub coverage_ts: u64,
-    pub coverage_sub: u16,
+    /// The coverage point the checkpoint carries ([`Pointer::NONE`] = no
+    /// checkpoint: the increment IS the full log). A POINTER into the log's own
+    /// key space — see [`CheckpointRow`].
+    pub coverage: Pointer,
     pub summary: Option<String>,
     /// The cut that compression considered better than the mechanical one
-    /// (`(0, 0)` = none). A LABEL, not a coverage point: the increment is still
-    /// cut at `coverage_*`. A tail operation reads from here so its range
+    /// ([`Pointer::NONE`] = none). A LABEL, not a coverage point: the increment
+    /// is still cut at `coverage`. A tail operation reads from here so its range
     /// follows a model's view of the conversation's structure.
-    pub suggested_ts: u64,
-    pub suggested_sub: u16,
+    pub suggested: Pointer,
     /// The FROZEN initialization memory of that compression: the edge ids the
     /// head was built from (ADR-0008 §2). Frozen as a SET and rendered per
     /// request, so the head's bytes stay stable while `?format=` still picks
@@ -321,13 +396,41 @@ impl ChannelStore {
         }
     }
 
+    /// Mint the next turn id for a channel (ADR-0024 §2). Derived from the last
+    /// row in key order — key order IS turn creation order — so there is no
+    /// counter to keep, nothing to repair after an import, and a restart picks up
+    /// where the log left off.
+    ///
+    /// An id that is minted and never written is reused by the next open, which
+    /// is what you want: a turn that wrote nothing never happened.
+    pub fn open_turn(&mut self, channel_id: u64) -> Result<u64, String> {
+        // The single-party shape seeds its one user on first touch, so a turn
+        // never opens on a channel that has no member to attribute it to.
+        self.ensure_member(channel_id)?;
+        Ok(self.last_turn(channel_id)? + 1)
+    }
+
+    /// The highest turn id in a channel's log, `0` when it has no rows. One
+    /// reverse seek: the prefix's last key carries the newest turn.
+    fn last_turn(&self, channel_id: u64) -> Result<u64, String> {
+        let probe = MessageKey::prefix().channel_id(channel_id).finish();
+        match self.messages.scan_keys(&probe).next_back() {
+            None => Ok(0),
+            Some(key) => Ok(key.map_err(|e| e.to_string())?.turn_id),
+        }
+    }
+
     /// Append one entry; returns the full key (the caller's delta record
     /// carries it for idempotent replay). The caller assigns `ts_ms` AND
     /// `sub` — gravity's clock and gravity's tiebreaker (ADR-0008 §3:
-    /// the single clock authority is the writer, never this store).
+    /// the single clock authority is the writer, never this store) — and names
+    /// the TURN it is writing into (ADR-0024: the store mints the id at the
+    /// turn's open, the caller carries it round to round).
+    #[allow(clippy::too_many_arguments)] // a log record IS this wide
     pub fn append(
         &mut self,
         channel_id: u64,
+        turn_id: u64,
         ts_ms: u64,
         sub: u16,
         role: u8,
@@ -338,6 +441,7 @@ impl ChannelStore {
         // said it" (ADR-0009 §1).
         self.append_from(
             channel_id,
+            turn_id,
             ts_ms,
             sub,
             DEFAULT_MEMBER,
@@ -354,6 +458,7 @@ impl ChannelStore {
     pub fn append_from(
         &mut self,
         channel_id: u64,
+        turn_id: u64,
         ts_ms: u64,
         sub: u16,
         sender: u64,
@@ -363,8 +468,15 @@ impl ChannelStore {
         content: &str,
     ) -> Result<MessageKey, String> {
         self.ensure_member(channel_id)?;
+        if self.turn_is_closed(channel_id, turn_id)? {
+            return Err(format!(
+                "turn {turn_id} of channel {channel_id} is closed: its rows were collapsed, \
+                 and a row appended after the closing record would never be purged"
+            ));
+        }
         let key = MessageKey {
             channel_id,
+            turn_id,
             ts_ms,
             sub,
         };
@@ -377,6 +489,104 @@ impl ChannelStore {
         };
         self.messages.put(&key, &row).map_err(|e| e.to_string())?;
         Ok(key)
+    }
+
+    /// Close a turn (ADR-0024 §4/§5): write the ONE `kind::FINAL` record, then
+    /// keep the rows it names and purge the rest of that turn.
+    ///
+    /// `keep` names RECORDS of this turn — `(ts_ms, sub)` pairs, i.e. what the
+    /// caller asked to survive (the question, one row per successful call, the
+    /// answer). It is an argument and not stored data: the columns that survive
+    /// are their own answer, and nothing reads the list afterwards.
+    ///
+    /// The purge is a `Collection::purge` per unkept row inside the turn's own
+    /// prefix range — one scan of one turn, once per turn. It is an internal
+    /// write-path action: there is no door for it, and the storage layer gains
+    /// nothing.
+    #[allow(clippy::too_many_arguments)] // the closing record plus the keep set
+    pub fn close_turn(
+        &mut self,
+        channel_id: u64,
+        turn_id: u64,
+        ts_ms: u64,
+        sub: u16,
+        role: u8,
+        content: &str,
+        keep: &[(u64, u16)],
+    ) -> Result<MessageKey, String> {
+        self.ensure_member(channel_id)?;
+        let closing = MessageKey {
+            channel_id,
+            turn_id,
+            ts_ms,
+            sub,
+        };
+        // The closing record must be the turn's LAST record: the read decides
+        // "closed" from these rows alone, so a closing record that sorted before
+        // a later row would read as an open turn with a stray FINAL in it.
+        let existing = self.turn_keys(channel_id, turn_id)?;
+        if let Some(last) = existing.last() {
+            if Pointer::of(last) >= Pointer::of(&closing) {
+                return Err(format!(
+                    "the closing record {turn_id}:{ts_ms}:{sub} does not follow the turn's last \
+                     record {}:{}:{}",
+                    last.turn_id, last.ts_ms, last.sub
+                ));
+            }
+        }
+        self.messages
+            .put(
+                &closing,
+                &MessageRow {
+                    sender: DEFAULT_MEMBER,
+                    role,
+                    kind: kind::FINAL,
+                    end_ts_ms: 0,
+                    content: content.to_string(),
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        for key in self.turn_keys(channel_id, turn_id)? {
+            if key.ts_ms == ts_ms && key.sub == sub {
+                continue; // the closing record itself
+            }
+            if keep.contains(&(key.ts_ms, key.sub)) {
+                continue;
+            }
+            self.messages.purge(&key).map_err(|e| e.to_string())?;
+        }
+        Ok(closing)
+    }
+
+    /// Whether the turn already carries its closing record. One reverse seek:
+    /// the closing record is a turn's last row, so its presence is the answer.
+    fn turn_is_closed(&self, channel_id: u64, turn_id: u64) -> Result<bool, String> {
+        let probe = MessageKey::prefix()
+            .channel_id(channel_id)
+            .turn_id(turn_id)
+            .finish();
+        let Some(key) = self.messages.scan_keys(&probe).next_back() else {
+            return Ok(false);
+        };
+        let key = key.map_err(|e| e.to_string())?;
+        Ok(self
+            .messages
+            .get(&key)
+            .map_err(|e| e.to_string())?
+            .is_some_and(|row| row.kind == kind::FINAL))
+    }
+
+    /// Every key of one turn, in key order — one prefix scan over the turn's own
+    /// range (`[channel][turn]`), which is why the turn sits in the key.
+    fn turn_keys(&self, channel_id: u64, turn_id: u64) -> Result<Vec<MessageKey>, String> {
+        let probe = MessageKey::prefix()
+            .channel_id(channel_id)
+            .turn_id(turn_id)
+            .finish();
+        self.messages
+            .scan_keys(&probe)
+            .map(|key| key.map_err(|e| e.to_string()))
+            .collect()
     }
 
     /// Member 1 always exists (ADR-0009 §1): a channel's first touch seeds it
@@ -406,27 +616,29 @@ impl ChannelStore {
         self.ensure_member(channel_id)?;
         let nodes = self.checkpoints_of(channel_id)?;
         let complete = nodes.iter().rfind(|(_, row)| !row.summary.is_empty());
-        let coverage = complete.map_or((0, 0), |(key, _)| (key.ts_ms, key.sub));
+        let coverage = complete.map_or(Pointer::NONE, |(key, _)| Pointer::of_checkpoint(key));
         let summary = complete.map(|(_, row)| row.summary.clone());
-        let (suggested_ts, suggested_sub) = complete
-            .map(|(_, row)| (row.suggested_ts, row.suggested_sub))
-            .unwrap_or((0, 0));
+        let suggested = complete
+            .map(|(_, row)| Pointer {
+                turn_id: row.suggested_turn_id,
+                ts_ms: row.suggested_ts,
+                sub: row.suggested_sub,
+            })
+            .unwrap_or(Pointer::NONE);
         let head = match complete {
             Some((key, _)) => self.checkpoint_head(key)?,
             None => None,
         };
         let compressing = nodes
             .last()
-            .is_some_and(|(key, row)| row.summary.is_empty() && (key.ts_ms, key.sub) > coverage);
+            .is_some_and(|(key, row)| row.summary.is_empty() && Pointer::of_checkpoint(key) > coverage);
         Ok(SessionView {
-            coverage_ts: coverage.0,
-            coverage_sub: coverage.1,
+            coverage,
             summary,
-            suggested_ts,
-            suggested_sub,
+            suggested,
             head,
             compressing,
-            increment: self.messages_after(channel_id, coverage)?,
+            increment: self.increment(channel_id, coverage)?,
             read_at: self.read_at(channel_id, member_id)?,
         })
     }
@@ -442,6 +654,7 @@ impl ChannelStore {
         write_slot(&mut prefix, PRIMARY_SLOT);
         let probe = CheckpointKey {
             channel_id,
+            turn_id: 0,
             ts_ms: 0,
             sub: 0,
         };
@@ -513,19 +726,21 @@ impl ChannelStore {
     pub fn open_checkpoint(
         &mut self,
         channel_id: u64,
-        pointer: (u64, u16),
+        pointer: Pointer,
         head: &[u64],
     ) -> Result<(), String> {
         let key = CheckpointKey {
             channel_id,
-            ts_ms: pointer.0,
-            sub: pointer.1,
+            turn_id: pointer.turn_id,
+            ts_ms: pointer.ts_ms,
+            sub: pointer.sub,
         };
         self.checkpoints
             .put(
                 &key,
                 &CheckpointRow {
                     summary: String::new(),
+                    suggested_turn_id: 0,
                     suggested_ts: 0,
                     suggested_sub: 0,
                 },
@@ -547,13 +762,13 @@ impl ChannelStore {
         let Some(open_at) = nodes.iter().rposition(|(_, row)| row.summary.is_empty()) else {
             return Ok(None);
         };
-        let end = (nodes[open_at].0.ts_ms, nodes[open_at].0.sub);
+        let end = Pointer::of_checkpoint(&nodes[open_at].0);
         let start = if open_at == 0 {
-            (0, 0)
+            Pointer::NONE
         } else {
-            (nodes[open_at - 1].0.ts_ms, nodes[open_at - 1].0.sub)
+            Pointer::of_checkpoint(&nodes[open_at - 1].0)
         };
-        Ok(Some((start, end)))
+        Ok(Some(Span { start, end }))
     }
 
     /// Land a summary on the newest OPEN node — its pointer is the one k10r
@@ -572,47 +787,77 @@ impl ChannelStore {
         &mut self,
         channel_id: u64,
         summary: &str,
-        suggested: Option<(u64, u16)>,
-    ) -> Result<Option<(u64, u16)>, String> {
+        suggested: Option<Pointer>,
+    ) -> Result<Option<Pointer>, String> {
         let nodes = self.checkpoints_of(channel_id)?;
         let Some(open_at) = nodes.iter().rposition(|(_, row)| row.summary.is_empty()) else {
             return Ok(None);
         };
         let key = nodes[open_at].0.clone();
         let span_start = if open_at == 0 {
-            (0, 0)
+            Pointer::NONE
         } else {
-            (nodes[open_at - 1].0.ts_ms, nodes[open_at - 1].0.sub)
+            Pointer::of_checkpoint(&nodes[open_at - 1].0)
         };
-        let span_end = (key.ts_ms, key.sub);
+        let span_end = Pointer::of_checkpoint(&key);
         let suggested = match suggested {
             None => None,
             Some(point) if point == span_end => None,
             Some(point) if point > span_start && point < span_end => Some(point),
             Some(point) => {
                 return Err(format!(
-                    "the suggested cut {}:{} is outside the span this checkpoint closes \
-                     ({}:{} exclusive .. {}:{} inclusive)",
-                    point.0, point.1, span_start.0, span_start.1, span_end.0, span_end.1
+                    "the suggested cut {}:{}:{} is outside the span this checkpoint closes \
+                     ({}:{}:{} exclusive .. {}:{}:{} inclusive)",
+                    point.turn_id,
+                    point.ts_ms,
+                    point.sub,
+                    span_start.turn_id,
+                    span_start.ts_ms,
+                    span_start.sub,
+                    span_end.turn_id,
+                    span_end.ts_ms,
+                    span_end.sub
                 ))
             }
         };
-        let (suggested_ts, suggested_sub) = suggested.unwrap_or((0, 0));
+        // A label names a RECORD that existed: a pointer inside the span but on
+        // no record (a turn nothing was written under, a millisecond with no
+        // row) would send a later pass to a range that was never there, which is
+        // the same defect as one outside the span.
+        if suggested.is_some_and(|point| {
+            self.messages
+                .get(&MessageKey {
+                    channel_id,
+                    turn_id: point.turn_id,
+                    ts_ms: point.ts_ms,
+                    sub: point.sub,
+                })
+                .is_ok_and(|row| row.is_none())
+        }) {
+            return Err(format!(
+                "the suggested cut {}:{}:{} names no record of this channel",
+                suggested.map_or(0, |p| p.turn_id),
+                suggested.map_or(0, |p| p.ts_ms),
+                suggested.map_or(0, |p| p.sub),
+            ));
+        }
+        let suggested = suggested.unwrap_or(Pointer::NONE);
         let head = self.checkpoint_head(&key)?.unwrap_or_default();
         self.checkpoints
             .put(
                 &key,
                 &CheckpointRow {
                     summary: summary.to_string(),
-                    suggested_ts,
-                    suggested_sub,
+                    suggested_turn_id: suggested.turn_id,
+                    suggested_ts: suggested.ts_ms,
+                    suggested_sub: suggested.sub,
                 },
             )
             .map_err(|e| e.to_string())?;
         // The head is rewritten with the summary: `put` replaces the whole
         // document, so the node's upward half has to ride along.
         self.write_head(&key, &head)?;
-        Ok(Some((key.ts_ms, key.sub)))
+        Ok(Some(span_end))
     }
 
     /// Write a complete node directly (tests, and the backfill path if one ever
@@ -620,20 +865,22 @@ impl ChannelStore {
     pub fn append_checkpoint(
         &mut self,
         channel_id: u64,
-        pointer: (u64, u16),
+        pointer: Pointer,
         summary: &str,
         head: &[u64],
     ) -> Result<(), String> {
         let key = CheckpointKey {
             channel_id,
-            ts_ms: pointer.0,
-            sub: pointer.1,
+            turn_id: pointer.turn_id,
+            ts_ms: pointer.ts_ms,
+            sub: pointer.sub,
         };
         self.checkpoints
             .put(
                 &key,
                 &CheckpointRow {
                     summary: summary.to_string(),
+                    suggested_turn_id: 0,
                     suggested_ts: 0,
                     suggested_sub: 0,
                 },
@@ -749,23 +996,57 @@ impl ChannelStore {
 
     /// The channel's WHOLE log, key order — the human view (ADR-0009 §3: people
     /// read the channel; no checkpoint, no merging, every record as written).
+    ///
+    /// The one row it leaves out is a closing record: `kind::FINAL` is the
+    /// store's own bookkeeping for the turn axis, carries no conversation, and
+    /// would otherwise appear to a person as an empty line between turns.
     pub fn history(&mut self, channel_id: u64) -> Result<Vec<(MessageKey, MessageRow)>, String> {
-        self.messages_after(channel_id, (0, 0))
+        Ok(self
+            .rows_after(channel_id, Pointer::NONE)?
+            .into_iter()
+            .filter(|(_, row)| row.kind != kind::FINAL)
+            .collect())
+    }
+
+    /// The INCREMENT (ADR-0008 §2 + ADR-0024 §6): the rows a caller may read
+    /// after the coverage point — closed turns only, and never their closing
+    /// record.
+    ///
+    /// A turn is closed exactly when its closing record is among these rows. The
+    /// closing record is always a turn's LAST row (that is enforced by
+    /// [`Self::close_turn`]), so a turn whose closing record sits at or before
+    /// the coverage point has no rows in this window at all: any turn with rows
+    /// here and no closing record here is still running, and is left out.
+    fn increment(
+        &self,
+        channel_id: u64,
+        after: Pointer,
+    ) -> Result<Vec<(MessageKey, MessageRow)>, String> {
+        let rows = self.rows_after(channel_id, after)?;
+        let closed: std::collections::BTreeSet<u64> = rows
+            .iter()
+            .filter(|(_, row)| row.kind == kind::FINAL)
+            .map(|(key, _)| key.turn_id)
+            .collect();
+        Ok(rows
+            .into_iter()
+            .filter(|(key, row)| row.kind != kind::FINAL && closed.contains(&key.turn_id))
+            .collect())
     }
 
     /// Log entries for `channel_id` strictly after `after`, in key order.
     /// Prefix-scan over the channel's primary-key range: BE bytes make engine
-    /// order == `(ts_ms, sub)` order, so no sort and no secondary index — the
-    /// log IS the index (ADR-0008 §3: max-gap and increments ride the same
-    /// physical order).
+    /// order == key order, so no sort and no secondary index — the log IS the
+    /// index (ADR-0008 §3: max-gap and increments ride the same physical order,
+    /// ADR-0024: turn first, then the record's own time).
     ///
-    /// The comparison is LEXICOGRAPHIC on the pointer: a record that shares
-    /// the coverage point's millisecond but sorts after it is NOT covered
-    /// (its `sub` is larger), which a ts-only compare would silently drop.
-    fn messages_after(
+    /// The comparison is on the whole pointer: a record that shares the coverage
+    /// point's millisecond but sorts after it is NOT covered, which a ts-only
+    /// compare would silently drop — and the same holds across turns.
+    fn rows_after(
         &self,
         channel_id: u64,
-        after: (u64, u16),
+        after: Pointer,
     ) -> Result<Vec<(MessageKey, MessageRow)>, String> {
         // Header is `[ns 2B][0x00]` — the primary slot is a fixed face, one
         // byte (okm ADR-0030).
@@ -774,6 +1055,7 @@ impl ChannelStore {
         okm_core::index::write_slot(&mut prefix, okm_core::index::PRIMARY_SLOT);
         let probe = MessageKey {
             channel_id,
+            turn_id: 0,
             ts_ms: 0,
             sub: 0,
         };
@@ -785,13 +1067,13 @@ impl ChannelStore {
             .map_err(|e| e.to_string())?;
         let mut out = Vec::with_capacity(suffixes.len());
         for sfx in &suffixes {
-            // suffix = `[ts_ms 8B][sub 2B]` after
+            // suffix = `[turn_id 8B][ts_ms 8B][sub 2B]` after
             // `[ns 2B][0x00][channel_id 8B]`; decode via full-key
             // reconstruction (the graph's pattern).
             let mut full = prefix.clone();
             full.extend_from_slice(sfx);
             let key = MessageKey::decode(&full[3..]);
-            if (key.ts_ms, key.sub) <= after {
+            if Pointer::of(&key) <= after {
                 continue;
             }
             // A row that vanished between the scan and the read is absence; a
@@ -820,4 +1102,9 @@ pub mod kind {
     pub const TEXT: u8 = 0;
     pub const TOOL_CALL: u8 = 1;
     pub const TOOL_RESULT: u8 = 2;
+    /// The turn's closing record (ADR-0024 §4): its presence is what makes the
+    /// turn CLOSED, and the write that puts it there is the write that purges the
+    /// rows the closing record did not name. Never projected, never shown to a
+    /// person — it is the store's bookkeeping for the turn axis.
+    pub const FINAL: u8 = 3;
 }

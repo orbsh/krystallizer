@@ -45,30 +45,16 @@ async fn append_returns_full_key() {
     let (base, _dir) = spawn_server().await;
     let client = reqwest::Client::new();
 
-    let body = AppendMessage {
-        ts_ms: 1000,
-        sub: 1,
-        role: role::USER,
-        kind: 0, // kind::TEXT
-        content: "hello".into(),
-    };
-    let key: MessageKeyDto = client
-        .post(format!("{base}/channels/7/messages"))
-        .json(&body)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let key = post_finished(&client, &base, 7, 1000, 1, role::USER, 0, "hello").await;
     assert_eq!(
         key,
         MessageKeyDto {
             channel_id: 7,
+            turn_id: 1,
             ts_ms: 1000,
             sub: 1
         },
-        "the key must echo channel/ts/sub verbatim"
+        "the key must echo channel/turn/ts/sub verbatim"
     );
 }
 
@@ -86,20 +72,7 @@ async fn append_fetch_checkpoint_flow() {
         (1000u64, role::USER, "hi"),
         (1001, role::ASSISTANT, "hello"),
     ] {
-        let status = client
-            .post(format!("{base}/channels/7/messages"))
-            .json(&AppendMessage {
-                ts_ms: ts,
-                sub: 1,
-                role: r,
-                kind: 0,
-                content: text.into(),
-            })
-            .send()
-            .await
-            .unwrap()
-            .status();
-        assert_eq!(status, reqwest::StatusCode::OK);
+        post_finished(&client, &base, 7, ts, 1, r, 0, text).await;
     }
 
     // Fresh channel: projection == the full log (no checkpoint yet).
@@ -134,6 +107,7 @@ async fn append_fetch_checkpoint_flow() {
         .post(format!("{base}/channels/7/members/1/checkpoint"))
         .json(&AppendCheckpoint {
             summary: "greeting done".into(),
+            suggested_turn: None,
             suggested_ts: None,
             suggested_sub: None,
         })
@@ -166,18 +140,8 @@ async fn channels_are_isolated() {
     let client = reqwest::Client::new();
 
     for ch in [1u64, 2] {
-        client
-            .post(format!("{base}/channels/{ch}/messages"))
-            .json(&AppendMessage {
-                ts_ms: 500,
-                sub: 0,
-                role: role::USER,
-                kind: 0,
-                content: format!("ch{ch}"),
-            })
-            .send()
-            .await
-            .unwrap();
+        let text = format!("ch{ch}");
+        post_finished(&client, &base, ch, 500, 0, role::USER, 0, &text).await;
     }
     for ch in [1u64, 2] {
         let session: serde_json::Value = client
@@ -209,12 +173,7 @@ async fn member_checkpoints_are_independent() {
     .await;
     let client = reqwest::Client::new();
 
-    client
-        .post(format!("{base}/channels/9/messages"))
-        .json(&json!({"ts_ms": 10, "sub": 0, "role": role::USER, "kind": 0, "content": "m"}))
-        .send()
-        .await
-        .unwrap();
+    post_finished(&client, &base, 9, 10, 0, role::USER, 0, "m").await;
 
     // Member 1 reads (the verdict is theirs), then lands the summary.
     let read: serde_json::Value = client
@@ -240,6 +199,7 @@ async fn member_checkpoints_are_independent() {
         .post(format!("{base}/channels/9/members/1/checkpoint"))
         .json(&AppendCheckpoint {
             summary: "m1".into(),
+            suggested_turn: None,
             suggested_ts: None,
             suggested_sub: None,
         })
@@ -310,12 +270,7 @@ async fn session_carries_the_head_block_and_named_roles() {
         .status();
     assert_eq!(status, reqwest::StatusCode::OK);
 
-    client
-        .post(format!("{base}/channels/7/messages"))
-        .json(&json!({"ts_ms": 1000, "sub": 0, "role": role::USER, "kind": 0, "content": "hi"}))
-        .send()
-        .await
-        .unwrap();
+    post_finished(&client, &base, 7, 1000, 0, role::USER, 0, "hi").await;
 
     let session: serde_json::Value = client
         .get(format!("{base}/channels/7/members/1/session"))
@@ -391,18 +346,7 @@ async fn the_session_gives_turns_and_the_channel_gives_rows() {
         (1_050, role::USER, "问个事"),
         (1_100, role::ASSISTANT, "在，你说"),
     ] {
-        client
-            .post(format!("{base}/channels/7/messages"))
-            .json(&AppendMessage {
-                ts_ms: ts,
-                sub: 0,
-                role: role_code,
-                kind: 0,
-                content: text.into(),
-            })
-            .send()
-            .await
-            .unwrap();
+        post_finished(&client, &base, 7, ts, 0, role_code, 0, text).await;
     }
 
     let session: serde_json::Value = client
@@ -413,7 +357,7 @@ async fn the_session_gives_turns_and_the_channel_gives_rows() {
         .json()
         .await
         .unwrap();
-    let turns = session["turns"].as_array().unwrap();
+    let turns = session["messages"].as_array().unwrap();
     assert_eq!(turns.len(), 2, "two user lines merged into one turn");
     assert_eq!(turns[0]["role"], "user");
     assert_eq!(
@@ -769,4 +713,59 @@ async fn the_three_entrances_answer_without_a_query() {
         vec![0, 1, 2],
         "the walk order IS the answer's order"
     );
+}
+
+/// One finished exchange over the wire (k10r ADR-0024): open a turn, append the
+/// record, close the turn keeping it.
+#[allow(clippy::too_many_arguments)]
+async fn post_finished(
+    client: &reqwest::Client,
+    base: &str,
+    channel: u64,
+    ts_ms: u64,
+    sub: u16,
+    role: u8,
+    kind: u8,
+    content: &str,
+) -> MessageKeyDto {
+    let opened: serde_json::Value = client
+        .post(format!("{base}/channels/{channel}/turns"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let turn = opened["turn_id"].as_u64().unwrap();
+    let key: MessageKeyDto = client
+        .post(format!("{base}/channels/{channel}/messages"))
+        .json(&AppendMessage {
+            turn_id: turn,
+            ts_ms,
+            sub,
+            role,
+            kind,
+            content: content.to_string(),
+        })
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let closed = client
+        .post(format!("{base}/channels/{channel}/turns/{turn}/close"))
+        .json(&serde_json::json!({
+            "ts_ms": ts_ms,
+            "sub": sub + 1,
+            "role": role,
+            "content": "",
+            "keep": [{ "ts_ms": ts_ms, "sub": sub }],
+        }))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(closed, reqwest::StatusCode::NO_CONTENT, "closing the turn");
+    key
 }

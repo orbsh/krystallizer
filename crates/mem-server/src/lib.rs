@@ -222,6 +222,15 @@ fn build(
         compression,
     });
     Ok(Router::new()
+        // The turn axis (k10r ADR-0024): a turn is opened here, its rounds are
+        // appended through the message door with the id it answers, and it is
+        // closed with ONE record naming the rows that survive. The collapse of
+        // the rest is the closing write's own business — no door for it.
+        .route("/channels/{channel_id}/turns", post(open_turn))
+        .route(
+            "/channels/{channel_id}/turns/{turn_id}/close",
+            post(close_turn),
+        )
         .route(
             "/channels/{channel_id}/messages",
             post(append_message).get(read_channel),
@@ -296,6 +305,9 @@ fn build(
 /// parameters minus `channel_id` (path).
 #[derive(Deserialize, Serialize)]
 pub struct AppendMessage {
+    /// The turn this record belongs to (ADR-0024). The store minted it at
+    /// [`open_turn`]; the caller carries it round to round instead of counting.
+    pub turn_id: u64,
     pub ts_ms: u64,
     pub sub: u16,
     pub role: u8,
@@ -314,14 +326,88 @@ async fn append_message(
     let key = store
         .append(
             channel_id,
+            body.turn_id,
             body.ts_ms,
             body.sub,
             body.role,
             body.kind,
             &body.content,
         )
-        .map_err(FactError::internal)?;
+        .map_err(|e| FactError {
+            // An append into a turn that already closed is a caller that lost
+            // the ordering, not a bad request: nothing about the body is
+            // malformed.
+            error: e,
+            status: StatusCode::CONFLICT,
+        })?;
     Ok(Json(key.into()))
+}
+
+/// The answer to `POST /channels/{id}/turns`: the id every round of this turn
+/// writes under.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct TurnOpened {
+    pub turn_id: u64,
+}
+
+/// `POST /channels/{id}/turns` — open a turn (ADR-0024 §2). The STORE mints the
+/// id: a counter on the caller's side collides across devices, across a retry,
+/// and across two turns one client opened at once.
+async fn open_turn(
+    State(state): State<Arc<MemState>>,
+    Path(channel_id): Path<u64>,
+) -> Result<Json<TurnOpened>, FactError> {
+    let mut store = state.store.lock().await;
+    let turn_id = store.open_turn(channel_id).map_err(FactError::internal)?;
+    Ok(Json(TurnOpened { turn_id }))
+}
+
+/// One record a closing turn asks to keep — a pointer inside the turn.
+#[derive(Deserialize, Serialize, PartialEq, Debug, Clone)]
+pub struct KeptRecord {
+    pub ts_ms: u64,
+    pub sub: u16,
+}
+
+/// Request body of `POST /channels/{id}/turns/{turn}/close` (ADR-0024 §4): the
+/// closing record's own key, its content, and the records to survive.
+///
+/// The keep list is data the caller states, not something k10r infers from the
+/// roles and kinds: a rule over `role`/`kind` would be a second mapping to keep
+/// in step with the first.
+#[derive(Deserialize, Serialize)]
+pub struct CloseTurn {
+    pub ts_ms: u64,
+    pub sub: u16,
+    pub role: u8,
+    pub content: String,
+    pub keep: Vec<KeptRecord>,
+}
+
+/// `POST /channels/{id}/turns/{turn}/close` — write the turn's closing record,
+/// keep the rows it names, purge the rest. 204 on success.
+async fn close_turn(
+    State(state): State<Arc<MemState>>,
+    Path((channel_id, turn_id)): Path<(u64, u64)>,
+    Json(body): Json<CloseTurn>,
+) -> Result<StatusCode, FactError> {
+    let mut store = state.store.lock().await;
+    let keep: Vec<(u64, u16)> = body.keep.iter().map(|k| (k.ts_ms, k.sub)).collect();
+    store
+        .close_turn(
+            channel_id,
+            turn_id,
+            body.ts_ms,
+            body.sub,
+            body.role,
+            &body.content,
+            &keep,
+        )
+        .map_err(|e| FactError {
+            error: e,
+            status: StatusCode::CONFLICT,
+        })?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// The key a message lives under, split into fields (the client needs
@@ -329,6 +415,9 @@ async fn append_message(
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct MessageKeyDto {
     pub channel_id: u64,
+    /// The turn this record belongs to (ADR-0024). Additive on the wire: a
+    /// decoder that predates it ignores it, a delta record replays with it.
+    pub turn_id: u64,
     pub ts_ms: u64,
     pub sub: u16,
 }
@@ -337,6 +426,7 @@ impl From<MessageKey> for MessageKeyDto {
     fn from(k: MessageKey) -> Self {
         Self {
             channel_id: k.channel_id,
+            turn_id: k.turn_id,
             ts_ms: k.ts_ms,
             sub: k.sub,
         }
@@ -356,11 +446,14 @@ pub struct IncrementEntry {
     pub content: String,
 }
 
-/// One conversation turn (ADR-0009 §4): a run of user messages BETWEEN two
-/// replies is one thing said, so the model gets one turn with per-line
-/// attribution rather than a flat record list.
+/// One message as the model reads it (ADR-0009 §4): a run of user messages
+/// BETWEEN two replies is one thing said, so the model gets one message with
+/// per-line attribution rather than a flat record list.
+///
+/// Not the turn axis (ADR-0024): `key.turn_id` names the request that wrote a
+/// record, while this merges records by speaker — a merge can span turns.
 #[derive(Serialize)]
-pub struct TurnDto {
+pub struct ModelMessageDto {
     pub role: &'static str,
     pub text: String,
     pub start_ts: u64,
@@ -371,14 +464,14 @@ pub struct TurnDto {
     pub senders: Vec<u64>,
 }
 
-impl From<mem_core::view::Turn> for TurnDto {
-    fn from(turn: mem_core::view::Turn) -> Self {
+impl From<mem_core::view::ModelMessage> for ModelMessageDto {
+    fn from(message: mem_core::view::ModelMessage) -> Self {
         Self {
-            role: turn.role,
-            text: turn.text,
-            start_ts: turn.start_ts,
-            end_ts: turn.end_ts,
-            senders: turn.senders,
+            role: message.role,
+            text: message.text,
+            start_ts: message.start_ts,
+            end_ts: message.end_ts,
+            senders: message.senders,
         }
     }
 }
@@ -424,9 +517,11 @@ pub struct TailDto {
     /// Appended after the span's records. The branch's answer is the product.
     pub prompt: &'static str,
     /// Span start, EXCLUSIVE: what the caller's summary already covers.
+    pub from_turn: u64,
     pub from_ts: u64,
     pub from_sub: u16,
     /// Span end, INCLUSIVE: the record the operation's product must cover.
+    pub to_turn: u64,
     pub to_ts: u64,
     pub to_sub: u16,
 }
@@ -441,10 +536,14 @@ pub struct SessionDto {
     /// Initialization memory (ADR-0001): the facts touching the user
     /// node, weight-descending. Empty when the node has no facts yet.
     pub head: HeadDto,
+    /// The turn the coverage point falls in (ADR-0024 §7). The pointer names a
+    /// RECORD, and `(ts, sub)` stops being unique across a channel once two
+    /// turns can be open at once, so a reader that resolves the pointer from the
+    /// older two fields alone is guessing which turn it meant.
+    pub coverage_turn: u64,
     pub coverage_ts: u64,
     /// The pointer's same-millisecond tiebreaker (ADR-0008 §2): a coverage
-    /// point names a RECORD, so `ts` alone is not the whole position. Additive
-    /// on the wire — a decoder that only knows `coverage_ts` still works.
+    /// point names a RECORD, so `ts` alone is not the whole position.
     pub coverage_sub: u16,
     pub summary: Option<String>,
     /// A newer node without a summary sits above the coverage point: a
@@ -453,13 +552,15 @@ pub struct SessionDto {
     /// back to the newest node that HAS a summary.
     pub compressing: bool,
     pub increment: Vec<IncrementEntry>,
-    /// The same records as TURNS (ADR-0009 §4) — what the model actually reads:
-    /// user bursts merged, every line `[name(id=N)]`. The raw `increment` stays
-    /// beside it for callers that want the records themselves.
-    pub turns: Vec<TurnDto>,
+    /// The same records as the MESSAGES the model reads (ADR-0009 §4): user
+    /// bursts merged, every line `[name(id=N)]`. The raw `increment` stays
+    /// beside it for callers that want the records themselves. Merging is by
+    /// speaker, not by turn (ADR-0024), so a message can span turns.
+    pub messages: Vec<ModelMessageDto>,
     /// The cut the last compression considered better than the mechanical one
     /// (`(0, 0)` = none reported). A LABEL: the increment is still cut at
     /// `coverage_*`. A later tail operation reads from here.
+    pub suggested_turn: u64,
     pub suggested_ts: u64,
     pub suggested_sub: u16,
     /// The operations the policy asks for on this read (ADR-0008 §4). Empty =
@@ -472,7 +573,7 @@ impl SessionDto {
         p: mem_core::view::Projection,
         format: mem_core::RenderFormat,
         compress: Option<mem_core::CompressionVerdict>,
-        turns: Vec<TurnDto>,
+        messages: Vec<ModelMessageDto>,
     ) -> Self {
         let head = if format.renders_text() {
             HeadDto::Text(mem_core::render::render_head(&p.head, format))
@@ -495,10 +596,12 @@ impl SessionDto {
                     Some(TailDto {
                         name: op.name,
                         prompt: op.prompt,
-                        from_ts: span.0 .0,
-                        from_sub: span.0 .1,
-                        to_ts: span.1 .0,
-                        to_sub: span.1 .1,
+                        from_turn: span.start.turn_id,
+                        from_ts: span.start.ts_ms,
+                        from_sub: span.start.sub,
+                        to_turn: span.end.turn_id,
+                        to_ts: span.end.ts_ms,
+                        to_sub: span.end.sub,
                     })
                 })
                 .collect(),
@@ -507,13 +610,15 @@ impl SessionDto {
         Self {
             format: format.name(),
             head,
-            coverage_ts: p.view.coverage_ts,
-            coverage_sub: p.view.coverage_sub,
+            coverage_turn: p.view.coverage.turn_id,
+            coverage_ts: p.view.coverage.ts_ms,
+            coverage_sub: p.view.coverage.sub,
             summary: p.view.summary,
             compressing: p.view.compressing,
-            suggested_ts: p.view.suggested_ts,
-            suggested_sub: p.view.suggested_sub,
-            turns,
+            suggested_turn: p.view.suggested.turn_id,
+            suggested_ts: p.view.suggested.ts_ms,
+            suggested_sub: p.view.suggested.sub,
+            messages,
             increment: p
                 .view
                 .increment
@@ -611,7 +716,7 @@ async fn fetch_session(
         mem_core::compress::evaluate(&projection.view, assembled, idle_ms, &state.compression);
     if let Some(v) = &verdict {
         channels
-            .open_checkpoint(channel_id, (v.checkpoint_ts, v.checkpoint_sub), &head_ids)
+            .open_checkpoint(channel_id, v.checkpoint, &head_ids)
             .map_err(FactError::internal)?;
     }
     // ADR-0011's first writer: the verdict is a decision, and decisions go to the
@@ -625,12 +730,12 @@ async fn fetch_session(
             .record_verdict(now_ms(), channel_id, verdict)
             .map_err(FactError::internal)?;
     }
-    let turns: Vec<TurnDto> =
-        mem_core::view::turns_of(&channels, channel_id, &projection.view.increment)?
+    let messages: Vec<ModelMessageDto> =
+        mem_core::view::messages_of(&channels, channel_id, &projection.view.increment)?
             .into_iter()
-            .map(TurnDto::from)
+            .map(ModelMessageDto::from)
             .collect();
-    Ok(Json(SessionDto::new(projection, format, verdict, turns)))
+    Ok(Json(SessionDto::new(projection, format, verdict, messages)))
 }
 
 /// k10r's own clock, milliseconds since the epoch — the log's key (ADR-0011: a
@@ -703,8 +808,9 @@ fn assembled_bytes(p: &mem_core::view::Projection) -> usize {
 pub struct AppendCheckpoint {
     pub summary: String,
     /// The last record the summary should really have covered, as a pointer
-    /// (`suggested_ts` + `suggested_sub`). Omitted = the mechanical cut was
-    /// right, which is the common case.
+    /// (`suggested_turn` + `suggested_ts` + `suggested_sub`). Omitted = the
+    /// mechanical cut was right, which is the common case.
+    pub suggested_turn: Option<u64>,
     pub suggested_ts: Option<u64>,
     pub suggested_sub: Option<u16>,
 }
@@ -723,7 +829,7 @@ async fn append_checkpoint(
 ) -> Result<StatusCode, FactError> {
     let mut store = state.store.lock().await;
     let open = store.open_span(channel_id).map_err(FactError::internal)?;
-    let Some((start, end)) = open else {
+    let Some(mem_core::Span { start, end }) = open else {
         return Err(FactError {
             error: "no open compression node for this channel: the pointer comes from the \
                     verdict k10r served, so read the session first"
@@ -737,15 +843,27 @@ async fn append_checkpoint(
     // pointer = the mechanical cut restated, which is "no suggestion".
     let suggested = match (body.suggested_ts, body.suggested_sub) {
         (Some(ts), sub) if ts != 0 => {
-            let point = (ts, sub.unwrap_or(0));
+            let point = mem_core::channel::Pointer {
+                turn_id: body.suggested_turn.unwrap_or(0),
+                ts_ms: ts,
+                sub: sub.unwrap_or(0),
+            };
             if point > start && point <= end {
                 Some(point).filter(|p| *p != end)
             } else {
                 return Err(FactError {
                     error: format!(
-                        "the suggested cut {ts}:{} is outside the span this checkpoint closes \
-                         ({}:{} exclusive .. {}:{} inclusive)",
-                        point.1, start.0, start.1, end.0, end.1
+                        "the suggested cut {}:{}:{} is outside the span this checkpoint closes \
+                         ({}:{}:{} exclusive .. {}:{}:{} inclusive)",
+                        point.turn_id,
+                        point.ts_ms,
+                        point.sub,
+                        start.turn_id,
+                        start.ts_ms,
+                        start.sub,
+                        end.turn_id,
+                        end.ts_ms,
+                        end.sub
                     ),
                     status: StatusCode::BAD_REQUEST,
                 });

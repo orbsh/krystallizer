@@ -11,7 +11,7 @@
     clippy::panic_in_result_fn
 )]
 
-use mem_server::{AppendMessage, PutCode};
+use mem_server::PutCode;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 async fn spawn_server() -> (String, tempfile::TempDir) {
@@ -46,18 +46,17 @@ fn shape(bytes: &[u8]) -> (usize, usize) {
 async fn a_table_leaves_as_a_parquet_file() {
     let (base, _dir) = spawn_server().await;
     let client = reqwest::Client::new();
-    client
-        .post(format!("{base}/channels/7/messages"))
-        .json(&AppendMessage {
-            ts_ms: 1_000,
-            sub: 0,
-            role: 0,
-            kind: mem_core::channel::kind::TEXT,
-            content: "a line the log keeps".into(),
-        })
-        .send()
-        .await
-        .unwrap();
+    post_finished(
+        &client,
+        &base,
+        7,
+        1_000,
+        0,
+        0,
+        mem_core::channel::kind::TEXT,
+        "a line the log keeps",
+    )
+    .await;
 
     let response = client
         .get(format!("{base}/export/messages"))
@@ -80,7 +79,11 @@ async fn a_table_leaves_as_a_parquet_file() {
         .contains("messages.parquet"));
     let body = response.bytes().await.unwrap();
     assert_eq!(&body[..4], b"PAR1", "a Parquet file, header and all");
-    assert_eq!(shape(&body).0, 1, "the one message is in the file");
+    assert_eq!(
+        shape(&body).0,
+        2,
+        "the one message and its turn's closing record"
+    );
 }
 
 /// Every table answers a file — including the fact table, which used to name a gap
@@ -159,18 +162,8 @@ async fn the_export_is_a_snapshot_and_the_store_keeps_writing() {
     let (base, _dir) = spawn_server().await;
     let client = reqwest::Client::new();
     for ts in [1_000u64, 2_000] {
-        client
-            .post(format!("{base}/channels/7/messages"))
-            .json(&AppendMessage {
-                ts_ms: ts,
-                sub: 0,
-                role: 0,
-                kind: mem_core::channel::kind::TEXT,
-                content: format!("line {ts}"),
-            })
-            .send()
-            .await
-            .unwrap();
+        let text = format!("line {ts}");
+        post_finished(&client, &base, 7, ts, 0, 0, mem_core::channel::kind::TEXT, &text).await;
     }
     let first = client
         .get(format!("{base}/export/messages"))
@@ -180,20 +173,19 @@ async fn the_export_is_a_snapshot_and_the_store_keeps_writing() {
         .bytes()
         .await
         .unwrap();
-    assert_eq!(shape(&first).0, 2);
+    assert_eq!(shape(&first).0, 4, "two lines + their closing records");
 
-    client
-        .post(format!("{base}/channels/7/messages"))
-        .json(&AppendMessage {
-            ts_ms: 3_000,
-            sub: 0,
-            role: 0,
-            kind: mem_core::channel::kind::TEXT,
-            content: "a third line".into(),
-        })
-        .send()
-        .await
-        .unwrap();
+    post_finished(
+        &client,
+        &base,
+        7,
+        3_000,
+        0,
+        0,
+        mem_core::channel::kind::TEXT,
+        "a third line",
+    )
+    .await;
     let second = client
         .get(format!("{base}/export/messages"))
         .send()
@@ -204,8 +196,8 @@ async fn the_export_is_a_snapshot_and_the_store_keeps_writing() {
         .unwrap();
     assert_eq!(
         shape(&second).0,
-        3,
-        "the second export sees the third write"
+        6,
+        "the second export sees the third write: three lines + their closing records"
     );
 }
 
@@ -381,4 +373,60 @@ async fn the_reduce_tables_carry_the_watermarks() {
         2,
         "the watermark is the last id issued"
     );
+}
+
+/// One finished exchange over the wire (k10r ADR-0024): open a turn, append the
+/// record, close the turn keeping it. A closed turn's log is its records PLUS
+/// its closing record — which is why a table's row count is turns + records.
+#[allow(clippy::too_many_arguments)]
+async fn post_finished(
+    client: &reqwest::Client,
+    base: &str,
+    channel: u64,
+    ts_ms: u64,
+    sub: u16,
+    role: u8,
+    kind: u8,
+    content: &str,
+) -> mem_server::MessageKeyDto {
+    let opened: serde_json::Value = client
+        .post(format!("{base}/channels/{channel}/turns"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let turn = opened["turn_id"].as_u64().unwrap();
+    let key: mem_server::MessageKeyDto = client
+        .post(format!("{base}/channels/{channel}/messages"))
+        .json(&mem_server::AppendMessage {
+            turn_id: turn,
+            ts_ms,
+            sub,
+            role,
+            kind,
+            content: content.to_string(),
+        })
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let closed = client
+        .post(format!("{base}/channels/{channel}/turns/{turn}/close"))
+        .json(&serde_json::json!({
+            "ts_ms": ts_ms,
+            "sub": sub + 1,
+            "role": role,
+            "content": "",
+            "keep": [{ "ts_ms": ts_ms, "sub": sub }],
+        }))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(closed, reqwest::StatusCode::NO_CONTENT, "closing the turn");
+    key
 }

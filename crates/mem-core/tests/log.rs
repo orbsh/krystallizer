@@ -199,8 +199,11 @@ fn the_verdict_row_carries_the_decision_it_made() {
     let dir = tempdir();
     let mut store = LogStore::open(dir.path()).expect("open");
     let verdict = Verdict {
-        checkpoint_ts: 1_500,
-        checkpoint_sub: 2,
+        checkpoint: mem_core::Pointer {
+            turn_id: 3,
+            ts_ms: 1_500,
+            sub: 2,
+        },
         trigger: Trigger::CacheClock,
         assembled_bytes: 12_345,
         context_bytes: 100_000,

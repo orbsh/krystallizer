@@ -83,6 +83,10 @@ pub mod field {
     pub const EDGE: &str = "edge";
     pub const MSG: &str = "msg";
     pub const TRIGGER: &str = "trigger";
+    /// The turn the split falls in (ADR-0024): the split is a record, and after
+    /// the turn axis a `(ts, sub)` pair names two records when two turns wrote in
+    /// the same millisecond.
+    pub const SPLIT_TURN: &str = "split_turn";
     pub const SPLIT_TS: &str = "split_ts";
     /// The second half of the split pointer (same-millisecond tiebreaker).
     pub const SPLIT_SUB: &str = "split_sub";
@@ -274,12 +278,16 @@ impl LogStore {
         let mut fields = BTreeMap::new();
         fields.insert(field::CHANNEL.to_string(), DynamicValue::UInt(channel_id));
         fields.insert(
+            field::SPLIT_TURN.to_string(),
+            DynamicValue::UInt(verdict.checkpoint.turn_id),
+        );
+        fields.insert(
             field::SPLIT_TS.to_string(),
-            DynamicValue::UInt(verdict.checkpoint_ts),
+            DynamicValue::UInt(verdict.checkpoint.ts_ms),
         );
         fields.insert(
             field::SPLIT_SUB.to_string(),
-            DynamicValue::UInt(u64::from(verdict.checkpoint_sub)),
+            DynamicValue::UInt(u64::from(verdict.checkpoint.sub)),
         );
         fields.insert(
             field::TRIGGER.to_string(),

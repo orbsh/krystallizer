@@ -7,7 +7,9 @@
 //! the budget is a mid band (not 90%), the ceiling is the floor, the
 //! silence that fired the cache clock can never be its own split, ties
 //! resolve to the earlier gap so one corpus always answers identically,
-//! and a span with no internal gap splits at its end.
+//! a span with no TURN BOUNDARY splits at its end (ADR-0024 §7: a
+//! compression covers whole turns, never half of one), and a record is
+//! addressed by `(turn, ts, sub)` rather than by a millisecond.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -16,7 +18,7 @@
     clippy::panic_in_result_fn
 )]
 
-use mem_core::channel::{MessageKey, MessageRow, SessionView};
+use mem_core::channel::{MessageKey, MessageRow, Pointer, SessionView};
 use mem_core::compress::{evaluate, tail_span, Params, Stage, TailOp, Trigger, Verdict};
 
 const PARAMS: Params = Params {
@@ -26,10 +28,11 @@ const PARAMS: Params = Params {
     floor_bytes: 100,
 };
 
-fn entry(ts_ms: u64, content: &str) -> (MessageKey, MessageRow) {
+fn entry(turn_id: u64, ts_ms: u64) -> (MessageKey, MessageRow) {
     (
         MessageKey {
             channel_id: 1,
+            turn_id,
             ts_ms,
             sub: 0,
         },
@@ -38,33 +41,40 @@ fn entry(ts_ms: u64, content: &str) -> (MessageKey, MessageRow) {
             end_ts_ms: 0,
             role: 0,
             kind: 0,
-            content: content.to_string(),
+            content: "x".to_string(),
         },
     )
 }
 
-fn view(ts_list: &[u64]) -> SessionView {
+/// One record per turn — the shape a finished exchange leaves behind.
+fn view(turns: &[(u64, u64)]) -> SessionView {
     SessionView {
-        coverage_ts: 0,
-        coverage_sub: 0,
+        coverage: Pointer::NONE,
         summary: None,
-        suggested_ts: 0,
-        suggested_sub: 0,
+        suggested: Pointer::NONE,
         head: None,
         compressing: false,
-        increment: ts_list.iter().map(|ts| entry(*ts, "x")).collect(),
+        increment: turns.iter().map(|(turn, ts)| entry(*turn, *ts)).collect(),
         read_at: None,
     }
 }
 
-/// Budget fires at the mid band and the split is the LARGEST internal
-/// gap — the span ends at the last record before it.
+fn at(turn_id: u64, ts_ms: u64, sub: u16) -> Pointer {
+    Pointer {
+        turn_id,
+        ts_ms,
+        sub,
+    }
+}
+
+/// Budget fires at the mid band and the split is the LARGEST gap between two
+/// turns — the span ends at the last record before it.
 #[test]
 fn budget_fires_and_splits_at_the_largest_gap() {
-    let v = view(&[100, 200, 900]);
+    let v = view(&[(1, 100), (2, 200), (3, 900)]);
     let verdict = evaluate(&v, 600, None, &PARAMS).expect("budget fired");
     assert_eq!(verdict.trigger, Trigger::Budget);
-    assert_eq!(verdict.checkpoint_ts, 200, "span ends before the 700ms gap");
+    assert_eq!(verdict.checkpoint, at(2, 200, 0), "ends before the 700ms gap");
     assert_eq!(verdict.max_gap_ms, Some(700));
     assert_eq!(verdict.assembled_bytes, 600);
 }
@@ -72,7 +82,7 @@ fn budget_fires_and_splits_at_the_largest_gap() {
 /// Below the mid band nothing fires — 40% of the window is still room.
 #[test]
 fn budget_stays_silent_below_the_mid_band() {
-    let v = view(&[100, 200, 900]);
+    let v = view(&[(1, 100), (2, 200), (3, 900)]);
     assert!(evaluate(&v, 400, None, &PARAMS).is_none());
 }
 
@@ -80,7 +90,7 @@ fn budget_stays_silent_below_the_mid_band() {
 /// summary of it costs more than it saves.
 #[test]
 fn the_floor_silences_every_trigger() {
-    let v = view(&[100, 200, 900]);
+    let v = view(&[(1, 100), (2, 200), (3, 900)]);
     assert!(evaluate(&v, 50, Some(10 * PARAMS.cache_ttl_ms), &PARAMS).is_none());
 }
 
@@ -89,7 +99,7 @@ fn the_floor_silences_every_trigger() {
 /// an idle of zero.
 #[test]
 fn the_cache_clock_needs_a_clock() {
-    let v = view(&[100, 200, 900]);
+    let v = view(&[(1, 100), (2, 200), (3, 900)]);
     assert!(evaluate(&v, 200, None, &PARAMS).is_none());
     let idle = evaluate(&v, 200, Some(59_999), &PARAMS);
     assert!(idle.is_none(), "just under the TTL");
@@ -102,34 +112,44 @@ fn the_cache_clock_needs_a_clock() {
 /// needs to tell the two apart from the corroborated case.
 #[test]
 fn both_signals_are_recorded_as_both() {
-    let v = view(&[100, 200, 900]);
+    let v = view(&[(1, 100), (2, 200), (3, 900)]);
     let verdict = evaluate(&v, 600, Some(90_000), &PARAMS).unwrap();
     assert_eq!(verdict.trigger, Trigger::Both);
 }
 
-/// A span with no internal gap (one record, or every record in one
-/// millisecond) has no topic change to split on, so its END is the
-/// split — not "no verdict".
+/// A span with no turn boundary (one turn, however many rounds) has no topic
+/// change to split on, so its END is the split — not "no verdict".
 #[test]
-fn a_gapless_span_splits_at_its_end() {
-    let single = view(&[900]);
+fn a_span_with_no_turn_boundary_splits_at_its_end() {
+    let single = view(&[(1, 900)]);
     let verdict = evaluate(&single, 600, None, &PARAMS).expect("budget fired");
-    assert_eq!(verdict.checkpoint_ts, 900);
+    assert_eq!(verdict.checkpoint, at(1, 900, 0));
     assert_eq!(verdict.max_gap_ms, None);
 
-    let same_ms = view(&[900, 900, 900]);
-    let verdict = evaluate(&same_ms, 600, None, &PARAMS).unwrap();
-    assert_eq!(verdict.checkpoint_ts, 900, "the last record of the span");
-    assert_eq!(verdict.max_gap_ms, Some(0), "a zero gap was still measured");
+    // Many rounds of ONE turn: nothing inside a turn is a boundary.
+    let one_turn = view(&[(1, 900), (1, 900), (1, 900)]);
+    let verdict = evaluate(&one_turn, 600, None, &PARAMS).unwrap();
+    assert_eq!(verdict.checkpoint, at(1, 900, 0), "the last record of the span");
+    assert_eq!(verdict.max_gap_ms, None);
+}
+
+/// Turns written in the same millisecond still bound the split: the boundary is
+/// the TURN, not the clock, so a zero gap is still measured.
+#[test]
+fn same_millisecond_turns_still_bound_the_split() {
+    let v = view(&[(1, 900), (2, 900), (3, 900)]);
+    let verdict = evaluate(&v, 600, None, &PARAMS).unwrap();
+    assert_eq!(verdict.checkpoint, at(1, 900, 0), "ties go to the earlier turn");
+    assert_eq!(verdict.max_gap_ms, Some(0));
 }
 
 /// Ties go to the EARLIER gap: one corpus must answer identically, and a
 /// later index would depend on iteration order for no benefit.
 #[test]
 fn gap_ties_resolve_to_the_earlier_split() {
-    let v = view(&[100, 500, 900]);
+    let v = view(&[(1, 100), (2, 500), (3, 900)]);
     let verdict = evaluate(&v, 600, None, &PARAMS).unwrap();
-    assert_eq!(verdict.checkpoint_ts, 100);
+    assert_eq!(verdict.checkpoint, at(1, 100, 0));
     assert_eq!(verdict.max_gap_ms, Some(400));
 }
 
@@ -144,7 +164,7 @@ fn an_empty_increment_never_fires() {
 /// read later without the config that produced it.
 #[test]
 fn the_verdict_carries_its_parameter_snapshot() {
-    let v = view(&[100, 200, 900]);
+    let v = view(&[(1, 100), (2, 200), (3, 900)]);
     let verdict = evaluate(&v, 600, Some(70_000), &PARAMS).unwrap();
     assert_eq!(verdict.context_bytes, 1000);
     assert_eq!(verdict.budget_percent, 50);
@@ -153,10 +173,9 @@ fn the_verdict_carries_its_parameter_snapshot() {
 
 /// The verdict a read would carry, for the span cases below (ADR-0020 reads the
 /// span off the verdict, not off a second evaluation).
-fn verdict_at(checkpoint: (u64, u16)) -> Verdict {
+fn verdict_at(checkpoint: Pointer) -> Verdict {
     Verdict {
-        checkpoint_ts: checkpoint.0,
-        checkpoint_sub: checkpoint.1,
+        checkpoint,
         trigger: Trigger::Budget,
         assembled_bytes: 600,
         context_bytes: PARAMS.context_bytes,
@@ -177,10 +196,11 @@ const REVIEW_OP: TailOp = TailOp {
 /// where the caller's summary already ends to the record the policy named.
 #[test]
 fn the_compression_reads_the_span_the_verdict_named() {
-    let mut v = view(&[100, 200, 300]);
-    v.coverage_ts = 100;
-    let span = tail_span(&mem_core::COMPRESS_OP, &v, &verdict_at((300, 1))).unwrap();
-    assert_eq!(span, ((100, 0), (300, 1)));
+    let mut v = view(&[(1, 100), (2, 200), (3, 300)]);
+    v.coverage = at(1, 100, 0);
+    let span = tail_span(&mem_core::COMPRESS_OP, &v, &verdict_at(at(3, 300, 1))).unwrap();
+    assert_eq!(span.start, at(1, 100, 0));
+    assert_eq!(span.end, at(3, 300, 1));
 }
 
 /// A review reads from the cut the last compression SUGGESTED — a model's
@@ -188,30 +208,32 @@ fn the_compression_reads_the_span_the_verdict_named() {
 /// whole reason the suggestion is stored (ADR-0020).
 #[test]
 fn a_review_reads_from_the_suggested_cut_to_the_newest_record() {
-    let mut v = view(&[100, 200, 300, 400]);
-    v.coverage_ts = 100;
-    v.suggested_ts = 200;
-    let span = tail_span(&REVIEW_OP, &v, &verdict_at((300, 0))).unwrap();
-    assert_eq!(span, ((200, 0), (400, 0)));
+    let mut v = view(&[(1, 100), (2, 200), (3, 300), (4, 400)]);
+    v.coverage = at(1, 100, 0);
+    v.suggested = at(2, 200, 0);
+    let span = tail_span(&REVIEW_OP, &v, &verdict_at(at(3, 300, 0))).unwrap();
+    assert_eq!(span.start, at(2, 200, 0));
+    assert_eq!(span.end, at(4, 400, 0));
 }
 
 /// A compression that named no better cut leaves the review reading from the
 /// coverage point: silence from the compressor is not a range.
 #[test]
 fn a_review_falls_back_to_coverage_when_no_cut_was_named() {
-    let mut v = view(&[100, 200, 300]);
-    v.coverage_ts = 100;
-    let span = tail_span(&REVIEW_OP, &v, &verdict_at((300, 0))).unwrap();
-    assert_eq!(span, ((100, 0), (300, 0)));
+    let mut v = view(&[(1, 100), (2, 200), (3, 300)]);
+    v.coverage = at(1, 100, 0);
+    let span = tail_span(&REVIEW_OP, &v, &verdict_at(at(3, 300, 0))).unwrap();
+    assert_eq!(span.start, at(1, 100, 0));
+    assert_eq!(span.end, at(3, 300, 0));
 }
 
 /// Nothing to read means the caller is not asked: a span that does not advance,
 /// and a review with no records to look at.
 #[test]
 fn an_operation_with_nothing_to_read_is_not_asked_for() {
-    let mut v = view(&[100, 200]);
-    v.coverage_ts = 200;
-    assert!(tail_span(&mem_core::COMPRESS_OP, &v, &verdict_at((200, 0))).is_none());
+    let mut v = view(&[(1, 100), (2, 200)]);
+    v.coverage = at(2, 200, 0);
+    assert!(tail_span(&mem_core::COMPRESS_OP, &v, &verdict_at(at(2, 200, 0))).is_none());
     let empty = view(&[]);
-    assert!(tail_span(&REVIEW_OP, &empty, &verdict_at((200, 0))).is_none());
+    assert!(tail_span(&REVIEW_OP, &empty, &verdict_at(at(2, 200, 0))).is_none());
 }

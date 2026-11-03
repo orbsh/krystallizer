@@ -15,8 +15,8 @@ One entity class = one ns (OKM rule). Current state:
 
 | ns  | Entity        | Status                  | ADR      |
 |-----|---------------|-------------------------|----------|
-| 33  | Channel messages | Implemented (minimal slice, 2026-10-09); keyed by turn (ADR-0024), code pending | ADR-0008, ADR-0024 |
-| 34  | Checkpoint (channel pointer → summary + persona snapshot; the pointer names a turn, ADR-0024) | Implemented (minimal slice, 2026-10-09); turn field pending | ADR-0008, ADR-0024 |
+| 33  | Channel messages | Implemented (minimal slice, 2026-10-09; turn axis landed) | ADR-0008, ADR-0024 |
+| 34  | Checkpoint (channel pointer → summary + persona snapshot; the pointer names a turn, ADR-0024) | Implemented (minimal slice, 2026-10-09; turn axis landed) | ADR-0008, ADR-0024 |
 | 35  | Code (delivered scripts) | Implemented (bring-up slice, 2026-10-15) | gravity ADR-0001/0003 |
 | —   | Tasks / task_links DAG | Declared (ADR-0001 — the third interface surface; same graph as the facts) | ADR-0001, ADR-0002 |
 | 36  | Entities (fact graph), including skills (`kind = skill`) | Implemented (2026-10-17; skills 2026-10-26) | ADR-0010, ADR-0015 |
@@ -152,8 +152,10 @@ pub struct MessageKey {
   leaves it out of the model's view — which is how several turns can be open at
   once (an interjection, a turn suspended on a cold call) without any special
   case, and why "not finished" never means "written wrong". The turn closes with
-  ONE `kind = FINAL` record naming the subs to keep (the question, one `TOOL_CALL`
-  row per successful call, the answer); the store collapses the rest itself.
+  ONE `kind = FINAL` record naming the RECORDS to keep (the question, one
+  `TOOL_CALL` row per successful call, the answer); the store collapses the rest
+  itself. The keep list is an argument, not stored data: the rows that survive
+  are their own answer, and nothing reads the list afterwards.
   Compression spans CLOSED turns only, so no checkpoint pointer can ever name a
   row that is about to be purged.
 
