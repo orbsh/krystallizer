@@ -43,19 +43,10 @@ async fn spawn_server() -> (String, TempDir) {
 /// The id it opened under is returned, because a pointer into the log now names
 /// a TURN as well as a millisecond.
 async fn say(client: &reqwest::Client, base: &str, ts_ms: u64, content: &str) -> u64 {
-    let opened: Value = client
-        .post(format!("{base}/channels/3/turns"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let turn = opened["turn_id"].as_u64().unwrap();
-    client
+    // No turn id: this row OPENS the turn, and the answer names the id it got.
+    let key: Value = client
         .post(format!("{base}/channels/3/messages"))
         .json(&json!({
-            "turn_id": turn,
             "ts_ms": ts_ms,
             "sub": 0,
             "role": 0,
@@ -64,7 +55,11 @@ async fn say(client: &reqwest::Client, base: &str, ts_ms: u64, content: &str) ->
         }))
         .send()
         .await
+        .unwrap()
+        .json()
+        .await
         .unwrap();
+    let turn = key["turn_id"].as_u64().unwrap();
     let closed = client
         .post(format!("{base}/channels/3/turns/{turn}/close"))
         .json(&json!({

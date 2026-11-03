@@ -26,8 +26,11 @@ fn the_service_assembly_serves_every_group() {
     let mut stores = open_service(dir.path()).unwrap();
 
     // One finished turn: the log's rows arrive under a turn id (ADR-0024).
-    let turn = stores.channels.open_turn(7).unwrap();
-    stores.channels.append(7, turn, 1000, 0, 0, 0, "hi").unwrap();
+    let turn = stores
+        .channels
+        .append_opening(7, 1000, 0, 0, 0, "hi")
+        .unwrap()
+        .turn_id;
     stores
         .channels
         .close_turn(7, turn, 1000, 1, 0, "", &[(1000, 0)])

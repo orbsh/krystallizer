@@ -111,7 +111,7 @@ in-process 不是第二道门：`InProcessSurface` 在调用方进程内链接�
 | gravity 操作 | gravity 侧名称 | 门 | mem-core 原语 | 状态 |
 |---|---|---|---|---|
 | 轮首取投影（头部是 k10r 渲染的文本，格式由 gravity 配置给出；`struct` 被拒） | `MemorySurface::fetch_session` | `GET /channels/{c}/members/{m}/session?format=` | `ChannelStore::fetch_full` + `render::render_head` | 已落；签名不随指针裁决变动——读取是**那个成员**发出的动作（盖它的游标，答案也是它的投影） |
-| 轮次开启 / 追加 / 收尾——轮次号由存储发，每一轮的行随跑随写，轮次以一条 `kind = FINAL` 记录收尾、点明保留的**记录**，其余由存储收敛（ADR-0024） | `ChannelStore::open_turn` / `append` / `close_turn` | `POST /channels/{c}/turns`、`POST /channels/{c}/messages`、`POST /channels/{c}/turns/{t}/close` | `MessageKey`、`kind::FINAL`、`Collection::purge` | 已落 |
+| 轮次开启 / 追加 / 收尾——轮次号由存储在**第一次写入**时发（写的就是开启这一轮的那一行，即用户那句话），后续每一行都在这个号下写，轮次以一条 `kind = FINAL` 记录收尾、点明保留的**记录**，其余由存储收敛（ADR-0024） | `ChannelStore::append_opening` / `append` / `close_turn` | `POST /channels/{c}/messages`（不带 `turn_id` = 开启，带 = 追加）、`POST /channels/{c}/turns/{t}/close` | `MessageKey`、`kind::FINAL`、`Collection::purge` | 已落 |
 | 压缩落地（摘要 + 它本会选择的切点） | gravity 的尾分支（`compress`） | `POST /channels/{c}/members/{m}/checkpoint` | `ChannelStore::complete_checkpoint` | 2026-10-26 两侧都落（ADR-0017） |
 | 任务进度（一步一 task 行；读随轮首投影，完成在执行点写） | ADR-0003 §3/§4 | 读侧随 `GET /channels/{c}/members/{m}/session`；写侧尚无路由 | 任务顶点 + `task_links` 边，与事实同图 | 已声明——第三个接口面（ADR-0001）；gravity Phase 2.6 |
 | `recall_memory`——长期事实 | 工具面（2026-10-26 落地，gravity ADR-0004） | `POST /memories/{scope}/recall`（落点 + 着陆到的社区，已渲染）与 `GET /memories/{scope}/entities/{name}`（精确入口） | `GraphStore::recall` / `entity_by_name` | 图的门已落（2026-10-20）；工具面 2026-10-26 落地（gravity ADR-0004） |

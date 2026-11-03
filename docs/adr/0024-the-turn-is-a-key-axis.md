@@ -3,7 +3,7 @@
 > **Languages:** [English](0024-the-turn-is-a-key-axis.md) (primary) · [中文](0024-the-turn-is-a-key-axis.zh-CN.md)
 
 **Status:** Accepted (2026-10-31), landed in mem-core and the HTTP surface: the
-key, the two doors (`/channels/{c}/turns`, `…/turns/{t}/close`), the projection's
+key, the doors (`/channels/{c}/messages` opening or appending a turn, `…/turns/{t}/close`), the projection's
 skip of open turns, and the checkpoint's turn. gravity's per-round writes are the
 next step.
 **Date:** 2026-10-31
@@ -57,17 +57,14 @@ Not the caller. A caller-side counter collides across devices, across a retry,
 and across two turns the same client opened; the store already owns the one
 counter that cannot.
 
-It mints from a per-channel counter whose floor is the log's newest turn. The
-log alone is not the mint: a turn that has opened and written nothing is not in
-it, and §1 allows several turns open in one channel at once — a user who
-interjects opens the second before the first has written, and a mint read off
-the log hands both the same id. The floor keeps a reloaded store advancing from
-what was written; an id minted and never written dies with the process that held
-its turn, so it cannot collide with anything the reload can see.
-
-The open writes no record of its own. "Which turns are open" is the requester's
-fact — it holds the id — and a store-side open marker would be a row every
-projection then has to learn to skip.
+It mints at the turn's FIRST WRITE. A turn exists because a user said
+something: the row carrying that sentence and the mint are one call, and the
+store reads `last_turn + 1` inside it — at that moment the previous turn is
+already in the log, so the log is the only evidence the mint needs. Two turns
+starting in one channel therefore cannot be handed one id (they are two writes,
+serialized by the store), and a turn abandoned before its first row consumes
+nothing: the log grows gaps, never repeats. The first row's answer carries the
+id, and the caller writes every later row of that turn under it.
 
 ### 3. Every round is written as it happens
 

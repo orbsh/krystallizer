@@ -203,19 +203,10 @@ async fn post_finished(
     kind: u8,
     content: &str,
 ) -> mem_server::MessageKeyDto {
-    let opened: serde_json::Value = client
-        .post(format!("{base}/channels/{channel}/turns"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let turn = opened["turn_id"].as_u64().unwrap();
     let key: mem_server::MessageKeyDto = client
         .post(format!("{base}/channels/{channel}/messages"))
         .json(&mem_server::AppendMessage {
-            turn_id: turn,
+            turn_id: None,
             ts_ms,
             sub,
             role,
@@ -228,6 +219,7 @@ async fn post_finished(
         .json()
         .await
         .unwrap();
+    let turn = key.turn_id;
     let closed = client
         .post(format!("{base}/channels/{channel}/turns/{turn}/close"))
         .json(&serde_json::json!({

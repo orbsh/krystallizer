@@ -226,7 +226,6 @@ fn build(
         // appended through the message door with the id it answers, and it is
         // closed with ONE record naming the rows that survive. The collapse of
         // the rest is the closing write's own business — no door for it.
-        .route("/channels/{channel_id}/turns", post(open_turn))
         .route(
             "/channels/{channel_id}/turns/{turn_id}/close",
             post(close_turn),
@@ -305,9 +304,12 @@ fn build(
 /// parameters minus `channel_id` (path).
 #[derive(Deserialize, Serialize)]
 pub struct AppendMessage {
-    /// The turn this record belongs to (ADR-0024). The store minted it at
-    /// [`open_turn`]; the caller carries it round to round instead of counting.
-    pub turn_id: u64,
+    /// The turn this record belongs to (ADR-0024). OMITTED, the row OPENS a new
+    /// turn and the store mints the id as part of writing it — a turn exists
+    /// because a user said something, so the first row and the mint are one call.
+    /// Every later row of that turn carries the id the first one returned.
+    #[serde(default)]
+    pub turn_id: Option<u64>,
     pub ts_ms: u64,
     pub sub: u16,
     pub role: u8,
@@ -323,43 +325,33 @@ async fn append_message(
     Json(body): Json<AppendMessage>,
 ) -> Result<Json<MessageKeyDto>, FactError> {
     let mut store = state.store.lock().await;
-    let key = store
-        .append(
+    let written = match body.turn_id {
+        Some(turn_id) => store.append(
             channel_id,
-            body.turn_id,
+            turn_id,
             body.ts_ms,
             body.sub,
             body.role,
             body.kind,
             &body.content,
-        )
-        .map_err(|e| FactError {
-            // An append into a turn that already closed is a caller that lost
-            // the ordering, not a bad request: nothing about the body is
-            // malformed.
-            error: e,
-            status: StatusCode::CONFLICT,
-        })?;
+        ),
+        None => store.append_opening(
+            channel_id,
+            body.ts_ms,
+            body.sub,
+            body.role,
+            body.kind,
+            &body.content,
+        ),
+    };
+    let key = written.map_err(|e| FactError {
+        // An append into a turn that already closed is a caller that lost
+        // the ordering, not a bad request: nothing about the body is
+        // malformed.
+        error: e,
+        status: StatusCode::CONFLICT,
+    })?;
     Ok(Json(key.into()))
-}
-
-/// The answer to `POST /channels/{id}/turns`: the id every round of this turn
-/// writes under.
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
-pub struct TurnOpened {
-    pub turn_id: u64,
-}
-
-/// `POST /channels/{id}/turns` — open a turn (ADR-0024 §2). The STORE mints the
-/// id: a counter on the caller's side collides across devices, across a retry,
-/// and across two turns one client opened at once.
-async fn open_turn(
-    State(state): State<Arc<MemState>>,
-    Path(channel_id): Path<u64>,
-) -> Result<Json<TurnOpened>, FactError> {
-    let mut store = state.store.lock().await;
-    let turn_id = store.open_turn(channel_id).map_err(FactError::internal)?;
-    Ok(Json(TurnOpened { turn_id }))
 }
 
 /// One record a closing turn asks to keep — a pointer inside the turn.

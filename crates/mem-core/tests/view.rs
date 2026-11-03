@@ -53,11 +53,11 @@ fn say_from(
     kind: u8,
     text: &str,
 ) -> mem_core::MessageKey {
-    let turn = stores.channels.open_turn(channel).unwrap();
     let key = stores
         .channels
-        .append_from(channel, turn, ts_ms, sub, sender, end_ts_ms, role, kind, text)
+        .append_opening_from(channel, ts_ms, sub, sender, end_ts_ms, role, kind, text)
         .unwrap();
+    let turn = key.turn_id;
     stores
         .channels
         .close_turn(channel, turn, ts_ms, sub + 1, role, "", &[(ts_ms, sub)])

@@ -715,8 +715,8 @@ async fn the_three_entrances_answer_without_a_query() {
     );
 }
 
-/// One finished exchange over the wire (k10r ADR-0024): open a turn, append the
-/// record, close the turn keeping it.
+/// One finished exchange over the wire (k10r ADR-0024): append the record that
+/// OPENS a turn (the store mints the id there), close the turn keeping it.
 #[allow(clippy::too_many_arguments)]
 async fn post_finished(
     client: &reqwest::Client,
@@ -728,19 +728,12 @@ async fn post_finished(
     kind: u8,
     content: &str,
 ) -> MessageKeyDto {
-    let opened: serde_json::Value = client
-        .post(format!("{base}/channels/{channel}/turns"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let turn = opened["turn_id"].as_u64().unwrap();
     let key: MessageKeyDto = client
         .post(format!("{base}/channels/{channel}/messages"))
         .json(&AppendMessage {
-            turn_id: turn,
+            // Omitted: this row OPENS the turn (the store mints its id as part of
+            // writing it) — a turn exists because this message does.
+            turn_id: None,
             ts_ms,
             sub,
             role,
@@ -753,6 +746,7 @@ async fn post_finished(
         .json()
         .await
         .unwrap();
+    let turn = key.turn_id;
     let closed = client
         .post(format!("{base}/channels/{channel}/turns/{turn}/close"))
         .json(&serde_json::json!({

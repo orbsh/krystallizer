@@ -33,10 +33,10 @@ fn say(
     kind: u8,
     text: &str,
 ) -> mem_core::MessageKey {
-    let turn = store.open_turn(channel).unwrap();
     let key = store
-        .append(channel, turn, ts_ms, sub, role, kind, text)
+        .append_opening(channel, ts_ms, sub, role, kind, text)
         .unwrap();
+    let turn = key.turn_id;
     store
         .close_turn(
             channel,
@@ -61,10 +61,10 @@ fn say_from(
     role: u8,
     text: &str,
 ) -> mem_core::MessageKey {
-    let turn = store.open_turn(channel).unwrap();
     let key = store
-        .append_from(channel, turn, ts_ms, sub, sender, 0, role, kind::TEXT, text)
+        .append_opening_from(channel, ts_ms, sub, sender, 0, role, kind::TEXT, text)
         .unwrap();
+    let turn = key.turn_id;
     store
         .close_turn(
             channel,
@@ -109,25 +109,37 @@ fn key_layout_is_hex_locked() {
     assert_eq!(&buf[24..26], &5u16.to_be_bytes(), "sub");
 }
 
-/// The turn ids the store mints are dense and advancing — and DISTINCT, which the log
-/// alone cannot give: two turns can open in one channel before either has written a
-/// row, and a mint derived from the log would hand them both the same id (ADR-0024 §2
-/// allows several open turns per channel: a user may interject). The mint is a counter
-/// floored by the log, so ids also survive a restart.
+/// A turn EXISTS when its first row lands. The id is read off the log inside the same
+/// call that writes that row (ADR-0024 §2), so two turns starting in one channel are
+/// two turns with distinct ids — a user interjecting gets the next number, not the
+/// number the turn still in flight is using — while a turn abandoned before writing
+/// consumes nothing: the log grows gaps, never repeats.
 #[test]
-fn turn_ids_are_minted_in_order_and_never_repeat() {
+fn turn_ids_are_minted_at_the_first_write() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
-    assert_eq!(store.open_turn(CH).unwrap(), 1, "a fresh channel opens at 1");
-    assert_eq!(
-        store.open_turn(CH).unwrap(),
-        2,
-        "a second turn opened before the first wrote anything is still a second turn"
-    );
-    store.append(CH, 1, 100, 0, role::USER, kind::TEXT, "hi").unwrap();
-    assert_eq!(store.open_turn(CH).unwrap(), 3, "and the counter keeps advancing");
+    let first = store
+        .append_opening(CH, 100, 0, role::USER, kind::TEXT, "one")
+        .unwrap();
+    assert_eq!(first.turn_id, 1, "a fresh channel opens at 1");
+    let second = store
+        .append_opening(CH, 200, 0, role::USER, kind::TEXT, "two")
+        .unwrap();
+    assert_eq!(second.turn_id, 2, "the turn in flight is not reused");
+    // A turn that RESUMES writes under the id it already has — no mint.
+    let resumed = store
+        .append(CH, 1, 300, 1, role::ASSISTANT, kind::TEXT, "reply")
+        .unwrap();
+    assert_eq!(resumed.turn_id, 1);
+    let third = store
+        .append_opening(CH, 400, 0, role::USER, kind::TEXT, "three")
+        .unwrap();
+    assert_eq!(third.turn_id, 3, "and the log is the only input the mint reads");
     // Another channel counts on its own.
-    assert_eq!(store.open_turn(2).unwrap(), 1);
+    let other = store
+        .append_opening(2, 500, 0, role::USER, kind::TEXT, "hi")
+        .unwrap();
+    assert_eq!(other.turn_id, 1);
 }
 
 /// The core contract: a channel's records come back in key order from a plain
@@ -202,9 +214,12 @@ fn an_open_turn_is_invisible_to_the_projection() {
     const CH: u64 = 1;
     say(&mut store, CH, 100, 0, role::USER, kind::TEXT, "finished");
 
-    let turn = store.open_turn(CH).unwrap();
+    let turn = store
+        .append_opening(CH, 200, 0, role::USER, kind::TEXT, "the question")
+        .unwrap()
+        .turn_id;
     store
-        .append(CH, turn, 200, 0, role::USER, kind::TEXT, "the question")
+        .append(CH, turn, 201, 0, role::ASSISTANT, kind::TEXT, "working")
         .unwrap();
     store
         .append(CH, turn, 250, 0, role::ASSISTANT, kind::TOOL_CALL, "…")
@@ -243,7 +258,10 @@ fn closing_a_turn_keeps_what_it_names_and_purges_the_rest() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
 
-    let turn = store.open_turn(CH).unwrap();
+    let turn = store
+        .append_opening(CH, 100, 0, role::USER, kind::TEXT, "question")
+        .unwrap()
+        .turn_id;
     for (ts, sub, role, kind, text) in [
         (100, 0, role::USER, kind::TEXT, "question"),
         (150, 0, role::ASSISTANT, kind::TOOL_CALL, "call 1"),
@@ -334,9 +352,12 @@ fn a_same_millisecond_record_after_the_pointer_stays_in_the_increment() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
 
-    let turn = store.open_turn(CH).unwrap();
+    let turn = store
+        .append_opening(CH, 1000, 0, role::USER, kind::TEXT, "the split record")
+        .unwrap()
+        .turn_id;
     store
-        .append(CH, turn, 1000, 0, role::USER, kind::TEXT, "the split record")
+        .append(CH, turn, 1001, 0, role::ASSISTANT, kind::TEXT, "reply")
         .unwrap();
     store
         .append(CH, turn, 1000, 1, role::TOOL, kind::TOOL_RESULT, "tool_result, same ms")
