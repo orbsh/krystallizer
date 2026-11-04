@@ -734,3 +734,50 @@ fn members_name_their_senders_and_a_rename_rewrites_nothing() {
     assert_eq!(view.increment[0].1.sender, 1, "the id is the stable part");
     assert_eq!(store.member(CH, 1).unwrap().unwrap().display_name, "王先生");
 }
+
+/// A channel is a ROW, and membership is a many-to-many with both directions readable: `members`
+/// (channel → who) already existed, `memberships` (member → which channels) is its mirror. The
+/// write is one commit, so a member and their membership cannot disagree (the junction lesson).
+#[test]
+fn a_channel_is_a_row_and_membership_reads_both_ways() {
+    let (_dir, mut store) = open();
+
+    store.put_channel(7, "private", 1_700_000_000_000).unwrap();
+    store.put_channel(9, "group:ops", 1_700_000_000_100).unwrap();
+    // Re-opening with a new scene is a RENAME, not a second channel.
+    store.put_channel(7, "private:master", 1_700_000_000_200).unwrap();
+
+    // One member in two channels: the fan-out a person with several lines has.
+    store.join(7, 1, "master", 0, 111).unwrap();
+    store.join(9, 1, "master", 0, 222).unwrap();
+    // And a second member in one of them: the many-to-many actually fans in.
+    store.join(9, 2, "k10r", 1, 333).unwrap();
+
+    // channel -> members (the direction that always existed)
+    let in_nine: Vec<u64> = store.members(9).unwrap().iter().map(|(k, _)| k.member_id).collect();
+    assert_eq!(in_nine, vec![1, 2], "membership by channel, in member-id order");
+
+    // member -> channels (the mirror)
+    let ones: Vec<u64> = store.channels_of(1).unwrap().iter().map(|(c, _)| *c).collect();
+    assert_eq!(ones, vec![7, 9], "membership by member, in channel-id order");
+    let twos: Vec<u64> = store.channels_of(2).unwrap().iter().map(|(c, _)| *c).collect();
+    assert_eq!(twos, vec![9]);
+
+    // The channel rows carry the application's own annotation, and the rename stuck.
+    let seven = store.channel(7).unwrap().expect("channel 7 was opened");
+    assert_eq!(seven.scene, "private:master");
+    assert_eq!(seven.created_ms, 1_700_000_000_200);
+    let all: Vec<(u64, String)> = store
+        .channels()
+        .unwrap()
+        .into_iter()
+        .map(|(k, row)| (k.channel_id, row.scene))
+        .collect();
+    assert_eq!(
+        all,
+        vec![(7, "private:master".to_string()), (9, "group:ops".to_string())],
+        "every channel row, in id order"
+    );
+    assert!(store.channel(11).unwrap().is_none(), "an id nobody opened is absence");
+}
+

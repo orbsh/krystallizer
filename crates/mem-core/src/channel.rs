@@ -241,6 +241,56 @@ pub struct MemberRow {
     pub role: u8,
 }
 
+/// A channel itself (ns 45). Until this row exists a channel is only a number
+/// in other tables' key prefixes: nothing says what it IS. The row is the
+/// application's own annotation (`scene`) plus when it was opened — the facts a
+/// caller needs to decide "this is that person's private line" without reading
+/// the log.
+#[derive(KeyEncode, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+#[ok_ns(45)]
+pub struct ChannelKey {
+    pub channel_id: u64,
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(ChannelKey)]
+#[ok_ns(45)]
+#[ok_name("channels")]
+pub struct ChannelRow {
+    /// What the channel is FOR, in the writer's own words ("private", "group",
+    /// a scenario tag). Free text on purpose: the storage layer has no opinion
+    /// about scenes, and a closed enum here would make every new scene a
+    /// migration.
+    pub scene: String,
+    /// The caller's clock when the channel was opened.
+    pub created_ms: u64,
+}
+
+/// The OTHER half of the many-to-many (ns 46): `member → channel`.
+///
+/// `members` answers "who is in this channel" (its key starts with the channel);
+/// this table answers the question `members` structurally cannot — "which
+/// channels does this member have" — as a prefix scan instead of a full read.
+/// Two tables instead of a junction with an empty value because a member row
+/// carries identity (`display_name`, `role`) and a junction's entries carry
+/// nothing; the mirror is what makes both directions O(prefix).
+#[derive(KeyEncode, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+#[ok_ns(46)]
+pub struct MembershipKey {
+    pub member_id: u64,
+    pub channel_id: u64,
+}
+
+#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[ok_ref(MembershipKey)]
+#[ok_ns(46)]
+#[ok_name("memberships")]
+pub struct MembershipRow {
+    /// When this member joined (the caller's clock, from the same write that
+    /// registered them).
+    pub since_ms: u64,
+}
+
 /// Member kinds (ADR-0009 §1). `AGENT` is the assistant side of the
 /// conversation; everyone else is a human participant.
 pub mod member_role {
@@ -318,6 +368,8 @@ pub struct ChannelStore {
     checkpoints: okm_core::Collection<FjallStore, CheckpointKey, CheckpointRow>,
     cursors: okm_core::Collection<FjallStore, CursorKey, CursorRow>,
     members: okm_core::Collection<FjallStore, MemberKey, MemberRow>,
+    channels: okm_core::Collection<FjallStore, ChannelKey, ChannelRow>,
+    memberships: okm_core::Collection<FjallStore, MembershipKey, MembershipRow>,
 }
 
 impl ChannelStore {
@@ -336,7 +388,9 @@ impl ChannelStore {
             messages: <MessageRow as okm_core::Document>::collection(store.clone()),
             checkpoints: <CheckpointRow as okm_core::Document>::collection(store.clone()),
             cursors: <CursorRow as okm_core::Document>::collection(store.clone()),
-            members: <MemberRow as okm_core::Document>::collection(store),
+            members: <MemberRow as okm_core::Document>::collection(store.clone()),
+            channels: <ChannelRow as okm_core::Document>::collection(store.clone()),
+            memberships: <MembershipRow as okm_core::Document>::collection(store),
         })
     }
 
@@ -360,6 +414,14 @@ impl ChannelStore {
                 <MemberRow as Document>::TABLE_NAME,
                 crate::export::ns(MemberRow::NS_PREFIX),
             ),
+            (
+                <ChannelRow as Document>::TABLE_NAME,
+                crate::export::ns(ChannelRow::NS_PREFIX),
+            ),
+            (
+                <MembershipRow as Document>::TABLE_NAME,
+                crate::export::ns(MembershipRow::NS_PREFIX),
+            ),
         ]
     }
 
@@ -374,6 +436,10 @@ impl ChannelStore {
             Some(crate::export::table(&mut self.cursors, path))
         } else if name == <MemberRow as Document>::TABLE_NAME {
             Some(crate::export::table(&mut self.members, path))
+        } else if name == <ChannelRow as Document>::TABLE_NAME {
+            Some(crate::export::table(&mut self.channels, path))
+        } else if name == <MembershipRow as Document>::TABLE_NAME {
+            Some(crate::export::table(&mut self.memberships, path))
         } else {
             None
         }
@@ -391,6 +457,10 @@ impl ChannelStore {
             Some(crate::export::import_table(&mut self.cursors, path))
         } else if name == <MemberRow as Document>::TABLE_NAME {
             Some(crate::export::import_table(&mut self.members, path))
+        } else if name == <ChannelRow as Document>::TABLE_NAME {
+            Some(crate::export::import_table(&mut self.channels, path))
+        } else if name == <MembershipRow as Document>::TABLE_NAME {
+            Some(crate::export::import_table(&mut self.memberships, path))
         } else {
             None
         }
@@ -999,6 +1069,130 @@ impl ChannelStore {
                 },
             )
             .map_err(|e| e.to_string())
+    }
+
+    /// Open (or re-annotate) a channel: the row that makes the id a THING. Idempotent by key —
+    /// the scene is the application's label, so writing it twice with a new scene is a rename,
+    /// not a second channel.
+    pub fn put_channel(&self, channel_id: u64, scene: &str, created_ms: u64) -> Result<(), String> {
+        self.channels
+            .put(
+                &ChannelKey { channel_id },
+                &ChannelRow {
+                    scene: scene.to_string(),
+                    created_ms,
+                },
+            )
+            .map_err(|e| e.to_string())
+    }
+
+    /// One channel's row, if it was opened.
+    pub fn channel(&self, channel_id: u64) -> Result<Option<ChannelRow>, String> {
+        self.channels
+            .get(&ChannelKey { channel_id })
+            .map_err(|e| e.to_string())
+    }
+
+    /// Register a member AND their membership in ONE commit.
+    ///
+    /// Two tables, one fact: `members` is the channel's view of who is in it, `memberships` is the
+    /// member's view of where they are. A commit that landed one and not the other would answer
+    /// "yes" from one side and "no" from the other — the same failure a half-written junction has,
+    /// so it is written the same way (one batch, both rows).
+    pub fn join(
+        &self,
+        channel_id: u64,
+        member_id: u64,
+        display_name: &str,
+        role: u8,
+        since_ms: u64,
+    ) -> Result<(), String> {
+        let mut batch = okm_core::engine::storage::Batch::default();
+        self.members
+            .save_with_prev_into(
+                &mut batch,
+                &MemberKey {
+                    channel_id,
+                    member_id,
+                },
+                &MemberRow {
+                    display_name: display_name.to_string(),
+                    role,
+                },
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+        self.memberships
+            .save_with_prev_into(
+                &mut batch,
+                &MembershipKey {
+                    member_id,
+                    channel_id,
+                },
+                &MembershipRow { since_ms },
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+        self.members
+            .commit_batch(batch)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Which channels this MEMBER is in — the direction `members()` cannot answer (its key starts
+    /// with the channel). One prefix scan over `(member_id, *)`, so a person with many lines costs
+    /// one range read, not a table scan.
+    pub fn channels_of(&mut self, member_id: u64) -> Result<Vec<(u64, MembershipRow)>, String> {
+        let mut prefix = Vec::with_capacity(3 + 8);
+        prefix.extend_from_slice(MembershipRow::NS_PREFIX);
+        write_slot(&mut prefix, PRIMARY_SLOT);
+        let probe = MembershipKey {
+            member_id,
+            channel_id: 0,
+        };
+        probe.encode_prefix_named(&mut prefix, &["member_id"]);
+        let suffixes = self
+            .memberships
+            .store()
+            .scan_suffix(&prefix)
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::with_capacity(suffixes.len());
+        for sfx in &suffixes {
+            let mut full = prefix.clone();
+            full.extend_from_slice(sfx);
+            let key = MembershipKey::decode(&full[3..]);
+            if let Some(row) = self
+                .memberships
+                .get(&key)
+                .map_err(|e| e.to_string())?
+            {
+                out.push((key.channel_id, row));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Every channel row, in id order. The set of channels is small by nature (one per line), and
+    /// this is the call a deployment makes to find "the channel for this person's line".
+    pub fn channels(&mut self) -> Result<Vec<(ChannelKey, ChannelRow)>, String> {
+        let mut prefix = Vec::with_capacity(3);
+        prefix.extend_from_slice(ChannelRow::NS_PREFIX);
+        write_slot(&mut prefix, PRIMARY_SLOT);
+        let suffixes = self
+            .channels
+            .store()
+            .scan_suffix(&prefix)
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::with_capacity(suffixes.len());
+        for sfx in &suffixes {
+            let mut full = prefix.clone();
+            full.extend_from_slice(sfx);
+            let key = ChannelKey::decode(&full[3..]);
+            if let Some(row) = self.channels.get(&key).map_err(|e| e.to_string())? {
+                out.push((key, row));
+            }
+        }
+        out.sort_by_key(|(key, _)| key.channel_id);
+        Ok(out)
     }
 
     /// One member's identity, if registered.
