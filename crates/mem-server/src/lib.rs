@@ -2600,11 +2600,22 @@ fn dynamic_to_json(value: mem_core::DynamicValue) -> serde_json::Value {
 /// ("private", "group:ops", anything); the storage layer has no vocabulary of its own to impose.
 #[derive(Deserialize, Serialize)]
 pub struct OpenChannel {
-    /// The OIDC `client_id` of the owning application ("gravity"): a filter key, written by the
-    /// deployment, never relabelled — see `ChannelRow::app`.
-    pub app: String,
+    /// The OIDC `client_id` of the owning application, as the uuid it is (a text uuid on the
+    /// wire, like a member id): a filter key the deployment writes, never relabelled — see
+    /// `ChannelRow::app_id`.
+    pub app_id: String,
     pub scene: String,
     pub created_ms: u64,
+}
+
+/// An application id is an OIDC `client_id`: a uuid, and on the wire its text, for the same
+/// reason a member id is text — `Uuid7` carries no serde impl, and a JSON number would be the
+/// surrogate ADR-0025 §4 rejects.
+fn parse_app_id(raw: &str) -> Result<mem_core::Uuid7, FactError> {
+    raw.parse::<mem_core::Uuid7>().map_err(|_| FactError {
+        error: format!("`{raw}` is not an app id (a uuid)"),
+        status: StatusCode::BAD_REQUEST,
+    })
 }
 
 /// A member id on the wire is the uuid's TEXT: `Uuid7` carries no serde impl, and a JSON number
@@ -2621,7 +2632,7 @@ fn parse_member_id(raw: &str) -> Result<mem_core::Uuid7, FactError> {
 #[derive(Deserialize, Serialize, PartialEq, Debug, Clone)]
 pub struct ChannelDto {
     pub channel_id: u64,
-    pub app: String,
+    pub app_id: String,
     pub scene: String,
     pub created_ms: u64,
 }
@@ -2630,7 +2641,7 @@ impl From<(u64, mem_core::channel::ChannelRow)> for ChannelDto {
     fn from((channel_id, row): (u64, mem_core::channel::ChannelRow)) -> Self {
         Self {
             channel_id,
-            app: row.app,
+            app_id: row.app_id.to_string(),
             scene: row.scene,
             created_ms: row.created_ms,
         }
@@ -2646,7 +2657,7 @@ async fn open_channel(
 ) -> Result<StatusCode, FactError> {
     let store = state.store.lock().await;
     store
-        .put_channel(channel_id, &body.app, &body.scene, body.created_ms)
+        .put_channel(channel_id, parse_app_id(&body.app_id)?, &body.scene, body.created_ms)
         .map_err(FactError::internal)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2679,7 +2690,10 @@ async fn list_channels(
 ) -> axum::response::Response {
     let mut store = state.store.lock().await;
     let rows = match filter.app.as_deref() {
-        Some(app) => store.channels_of_app(app),
+        Some(raw) => match raw.parse::<mem_core::Uuid7>() {
+            Ok(app_id) => store.channels_of_app(app_id),
+            Err(_) => Err(format!("`{raw}` is not an app id (a uuid)")),
+        },
         None => store.channels(),
     };
     match rows {
@@ -2775,12 +2789,17 @@ async fn list_member_channels(
             // channels, the ones my app owns" — a membership carries no app of its own.
             let mut out = Vec::with_capacity(rows.len());
             for (channel_id, row) in rows {
-                if let Some(app) = filter.app.as_deref() {
-                    let owned = store
-                        .channel(channel_id)
+                if let Some(raw) = filter.app.as_deref() {
+                    let owned = raw
+                        .parse::<mem_core::Uuid7>()
                         .ok()
-                        .flatten()
-                        .is_some_and(|c| c.app == app);
+                        .is_some_and(|app_id| {
+                            store
+                                .channel(channel_id)
+                                .ok()
+                                .flatten()
+                                .is_some_and(|c| c.app_id == app_id)
+                        });
                     if !owned {
                         continue;
                     }

@@ -257,8 +257,9 @@ pub struct ChannelKey {
 #[ok_ref(ChannelKey)]
 #[ok_ns(45)]
 #[ok_name("channels")]
+#[ok_index(by_app { fields(app_id) })]
 pub struct ChannelRow {
-    /// WHICH APPLICATION owns this channel — the OIDC `client_id` question, not
+    /// WHICH APPLICATION owns this channel — the OIDC `client_id` value, not
     /// "which user": `gravity` opens one channel per person and must find exactly
     /// one of its own when it asks, so this is a filter key the deployment writes
     /// and nobody edits by hand.
@@ -266,7 +267,7 @@ pub struct ChannelRow {
     /// Kept apart from `scene` on purpose: a filter key that a human relabels
     /// ("private" one day, "1:1" the next) would make "exactly one" depend on
     /// spelling.
-    pub app: String,
+    pub app_id: Uuid7,
     /// What the channel is FOR, in the writer's own words ("private", "group",
     /// a scenario tag). Free text on purpose: the storage layer has no opinion
     /// about scenes, and a closed enum here would make every new scene a
@@ -1094,7 +1095,7 @@ impl ChannelStore {
     pub fn put_channel(
         &self,
         channel_id: u64,
-        app: &str,
+        app_id: Uuid7,
         scene: &str,
         created_ms: u64,
     ) -> Result<(), String> {
@@ -1102,7 +1103,7 @@ impl ChannelStore {
             .put(
                 &ChannelKey { channel_id },
                 &ChannelRow {
-                    app: app.to_string(),
+                    app_id,
                     scene: scene.to_string(),
                     created_ms,
                 },
@@ -1198,11 +1199,15 @@ impl ChannelStore {
     /// Every channel this APP owns, in id order — the read that answers "which channel is this
     /// person's line" once the caller has narrowed by membership. Filtering here rather than in
     /// the caller keeps the "exactly one" invariant at the storage line that states it.
-    pub fn channels_of_app(&mut self, app: &str) -> Result<Vec<(ChannelKey, ChannelRow)>, String> {
+    pub fn channels_of_app(&mut self, app_id: Uuid7) -> Result<Vec<(ChannelKey, ChannelRow)>, String> {
+        // The filter is equality on the app id, not on a label: the deployment writes the id
+        // once and nothing relabels it, so "exactly one channel for this app" cannot become a
+        // spelling question. `by_app` is declared on the row; the set of channels is small by
+        // nature (one per line across all apps), so the equality pass is the honest read.
         Ok(self
             .channels()?
             .into_iter()
-            .filter(|(_, row)| row.app == app)
+            .filter(|(_, row)| row.app_id == app_id)
             .collect())
     }
 

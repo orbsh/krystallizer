@@ -22,6 +22,7 @@
 )]
 
 pub mod bundle;
+pub mod apps;
 pub mod channel;
 
 /// The identity type: a member id IS a user id (ADR-0025 §4). Re-exported so a caller (the

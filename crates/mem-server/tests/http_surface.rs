@@ -779,7 +779,7 @@ async fn a_channel_and_its_membership_over_the_wire() {
 
     let opened = client
         .post(format!("{base}/channels/7"))
-        .json(&json!({"app": "gravity", "scene": "private", "created_ms": 1_700_000_000_000u64}))
+        .json(&json!({"app_id": "00000000-0000-0000-0000-000000000009", "scene": "private", "created_ms": 1_700_000_000_000u64}))
         .send()
         .await
         .unwrap();
@@ -787,7 +787,7 @@ async fn a_channel_and_its_membership_over_the_wire() {
 
     client
         .post(format!("{base}/channels/9"))
-        .json(&json!({"app": "mudra", "scene": "group:ops", "created_ms": 1_700_000_000_100u64}))
+        .json(&json!({"app_id": "00000000-0000-0000-0000-000000000010", "scene": "group:ops", "created_ms": 1_700_000_000_100u64}))
         .send()
         .await
         .unwrap();
@@ -815,7 +815,7 @@ async fn a_channel_and_its_membership_over_the_wire() {
         .json()
         .await
         .unwrap();
-    assert_eq!(row["app"], "gravity");
+    assert_eq!(row["app_id"], "00000000-0000-0000-0000-000000000009");
     assert_eq!(row["scene"], "private");
     assert_eq!(row["created_ms"], 1_700_000_000_000u64);
 
@@ -856,7 +856,7 @@ async fn a_channel_and_its_membership_over_the_wire() {
     // The query gravity actually makes: this person's channels, the ones my app owns. After the
     // filter exactly one is left — the invariant the channel-per-user shape rests on.
     let owned: Vec<serde_json::Value> = client
-        .get(format!("{base}/members/00000000-0000-0000-0000-000000000001/channels?app=gravity"))
+        .get(format!("{base}/members/00000000-0000-0000-0000-000000000001/channels?app=00000000-0000-0000-0000-000000000009"))
         .send()
         .await
         .unwrap()
@@ -867,7 +867,7 @@ async fn a_channel_and_its_membership_over_the_wire() {
     assert_eq!(owned[0]["channel_id"], 7);
 
     let gravities: Vec<serde_json::Value> = client
-        .get(format!("{base}/channels?app=gravity"))
+        .get(format!("{base}/channels?app=00000000-0000-0000-0000-000000000009"))
         .send()
         .await
         .unwrap()
