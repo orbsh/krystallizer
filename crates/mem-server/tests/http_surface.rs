@@ -778,7 +778,7 @@ async fn a_channel_and_its_membership_over_the_wire() {
 
     let opened = client
         .post(format!("{base}/channels/7"))
-        .json(&json!({"scene": "private", "created_ms": 1_700_000_000_000u64}))
+        .json(&json!({"app": "gravity", "scene": "private", "created_ms": 1_700_000_000_000u64}))
         .send()
         .await
         .unwrap();
@@ -786,7 +786,7 @@ async fn a_channel_and_its_membership_over_the_wire() {
 
     client
         .post(format!("{base}/channels/9"))
-        .json(&json!({"scene": "group:ops", "created_ms": 1_700_000_000_100u64}))
+        .json(&json!({"app": "mudra", "scene": "group:ops", "created_ms": 1_700_000_000_100u64}))
         .send()
         .await
         .unwrap();
@@ -814,6 +814,7 @@ async fn a_channel_and_its_membership_over_the_wire() {
         .json()
         .await
         .unwrap();
+    assert_eq!(row["app"], "gravity");
     assert_eq!(row["scene"], "private");
     assert_eq!(row["created_ms"], 1_700_000_000_000u64);
 
@@ -850,4 +851,28 @@ async fn a_channel_and_its_membership_over_the_wire() {
     assert_eq!(lines.len(), 2, "member -> channels: {lines:?}");
     assert_eq!(lines[0]["channel_id"], 7);
     assert_eq!(lines[0]["since_ms"], 42u64);
+
+    // The query gravity actually makes: this person's channels, the ones my app owns. After the
+    // filter exactly one is left — the invariant the channel-per-user shape rests on.
+    let owned: Vec<serde_json::Value> = client
+        .get(format!("{base}/members/1/channels?app=gravity"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(owned.len(), 1, "exactly one gravity channel for this member: {owned:?}");
+    assert_eq!(owned[0]["channel_id"], 7);
+
+    let gravities: Vec<serde_json::Value> = client
+        .get(format!("{base}/channels?app=gravity"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(gravities.len(), 1, "and the same by app: {gravities:?}");
+    assert_eq!(gravities[0]["channel_id"], 7);
 }

@@ -2596,6 +2596,9 @@ fn dynamic_to_json(value: mem_core::DynamicValue) -> serde_json::Value {
 /// ("private", "group:ops", anything); the storage layer has no vocabulary of its own to impose.
 #[derive(Deserialize, Serialize)]
 pub struct OpenChannel {
+    /// The OIDC `client_id` of the owning application ("gravity"): a filter key, written by the
+    /// deployment, never relabelled — see `ChannelRow::app`.
+    pub app: String,
     pub scene: String,
     pub created_ms: u64,
 }
@@ -2604,6 +2607,7 @@ pub struct OpenChannel {
 #[derive(Deserialize, Serialize, PartialEq, Debug, Clone)]
 pub struct ChannelDto {
     pub channel_id: u64,
+    pub app: String,
     pub scene: String,
     pub created_ms: u64,
 }
@@ -2612,6 +2616,7 @@ impl From<(u64, mem_core::channel::ChannelRow)> for ChannelDto {
     fn from((channel_id, row): (u64, mem_core::channel::ChannelRow)) -> Self {
         Self {
             channel_id,
+            app: row.app,
             scene: row.scene,
             created_ms: row.created_ms,
         }
@@ -2627,7 +2632,7 @@ async fn open_channel(
 ) -> Result<StatusCode, FactError> {
     let store = state.store.lock().await;
     store
-        .put_channel(channel_id, &body.scene, body.created_ms)
+        .put_channel(channel_id, &body.app, &body.scene, body.created_ms)
         .map_err(FactError::internal)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2648,9 +2653,22 @@ async fn read_one_channel(
 
 /// `GET /channels` — every channel row, id order. The set is one per line, so this is a small
 /// answer by nature and the caller does the filtering by scene.
-async fn list_channels(State(state): State<Arc<MemState>>) -> axum::response::Response {
+#[derive(Deserialize)]
+pub struct AppFilter {
+    /// `?app=gravity` — the owning application. Absent means every app's channels.
+    pub app: Option<String>,
+}
+
+async fn list_channels(
+    State(state): State<Arc<MemState>>,
+    Query(filter): Query<AppFilter>,
+) -> axum::response::Response {
     let mut store = state.store.lock().await;
-    match store.channels() {
+    let rows = match filter.app.as_deref() {
+        Some(app) => store.channels_of_app(app),
+        None => store.channels(),
+    };
+    match rows {
         Ok(rows) => Json(
             rows.into_iter()
                 .map(|(key, row)| ChannelDto::from((key.channel_id, row)))
@@ -2729,18 +2747,32 @@ pub struct MembershipDto {
 async fn list_member_channels(
     State(state): State<Arc<MemState>>,
     Path(member_id): Path<u64>,
+    Query(filter): Query<AppFilter>,
 ) -> axum::response::Response {
     let mut store = state.store.lock().await;
     match store.channels_of(member_id) {
-        Ok(rows) => Json(
-            rows.into_iter()
-                .map(|(channel_id, row)| MembershipDto {
+        Ok(rows) => {
+            // The filter is applied to the channel ROW, not the membership: "this member's
+            // channels, the ones my app owns" — a membership carries no app of its own.
+            let mut out = Vec::with_capacity(rows.len());
+            for (channel_id, row) in rows {
+                if let Some(app) = filter.app.as_deref() {
+                    let owned = store
+                        .channel(channel_id)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|c| c.app == app);
+                    if !owned {
+                        continue;
+                    }
+                }
+                out.push(MembershipDto {
                     channel_id,
                     since_ms: row.since_ms,
-                })
-                .collect::<Vec<_>>(),
-        )
-        .into_response(),
+                });
+            }
+            Json(out).into_response()
+        }
         Err(e) => FactError::internal(e).into_response(),
     }
 }

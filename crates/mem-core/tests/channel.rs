@@ -742,10 +742,10 @@ fn members_name_their_senders_and_a_rename_rewrites_nothing() {
 fn a_channel_is_a_row_and_membership_reads_both_ways() {
     let (_dir, mut store) = open();
 
-    store.put_channel(7, "private", 1_700_000_000_000).unwrap();
-    store.put_channel(9, "group:ops", 1_700_000_000_100).unwrap();
+    store.put_channel(7, "gravity", "private", 1_700_000_000_000).unwrap();
+    store.put_channel(9, "mudra", "group:ops", 1_700_000_000_100).unwrap();
     // Re-opening with a new scene is a RENAME, not a second channel.
-    store.put_channel(7, "private:master", 1_700_000_000_200).unwrap();
+    store.put_channel(7, "gravity", "private:master", 1_700_000_000_200).unwrap();
 
     // One member in two channels: the fan-out a person with several lines has.
     store.join(7, 1, "master", 0, 111).unwrap();
@@ -779,5 +779,14 @@ fn a_channel_is_a_row_and_membership_reads_both_ways() {
         "every channel row, in id order"
     );
     assert!(store.channel(11).unwrap().is_none(), "an id nobody opened is absence");
+
+    // The filter that makes "exactly one" checkable: gravity owns one channel here, mudra the other.
+    let gravities: Vec<u64> = store
+        .channels_of_app("gravity")
+        .unwrap()
+        .iter()
+        .map(|(k, _)| k.channel_id)
+        .collect();
+    assert_eq!(gravities, vec![7], "gravity's own channels, and only those");
 }
 

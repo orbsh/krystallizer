@@ -257,6 +257,15 @@ pub struct ChannelKey {
 #[ok_ns(45)]
 #[ok_name("channels")]
 pub struct ChannelRow {
+    /// WHICH APPLICATION owns this channel — the OIDC `client_id` question, not
+    /// "which user": `gravity` opens one channel per person and must find exactly
+    /// one of its own when it asks, so this is a filter key the deployment writes
+    /// and nobody edits by hand.
+    ///
+    /// Kept apart from `scene` on purpose: a filter key that a human relabels
+    /// ("private" one day, "1:1" the next) would make "exactly one" depend on
+    /// spelling.
+    pub app: String,
     /// What the channel is FOR, in the writer's own words ("private", "group",
     /// a scenario tag). Free text on purpose: the storage layer has no opinion
     /// about scenes, and a closed enum here would make every new scene a
@@ -1074,11 +1083,18 @@ impl ChannelStore {
     /// Open (or re-annotate) a channel: the row that makes the id a THING. Idempotent by key —
     /// the scene is the application's label, so writing it twice with a new scene is a rename,
     /// not a second channel.
-    pub fn put_channel(&self, channel_id: u64, scene: &str, created_ms: u64) -> Result<(), String> {
+    pub fn put_channel(
+        &self,
+        channel_id: u64,
+        app: &str,
+        scene: &str,
+        created_ms: u64,
+    ) -> Result<(), String> {
         self.channels
             .put(
                 &ChannelKey { channel_id },
                 &ChannelRow {
+                    app: app.to_string(),
                     scene: scene.to_string(),
                     created_ms,
                 },
@@ -1169,6 +1185,17 @@ impl ChannelStore {
             }
         }
         Ok(out)
+    }
+
+    /// Every channel this APP owns, in id order — the read that answers "which channel is this
+    /// person's line" once the caller has narrowed by membership. Filtering here rather than in
+    /// the caller keeps the "exactly one" invariant at the storage line that states it.
+    pub fn channels_of_app(&mut self, app: &str) -> Result<Vec<(ChannelKey, ChannelRow)>, String> {
+        Ok(self
+            .channels()?
+            .into_iter()
+            .filter(|(_, row)| row.app == app)
+            .collect())
     }
 
     /// Every channel row, in id order. The set of channels is small by nature (one per line), and
