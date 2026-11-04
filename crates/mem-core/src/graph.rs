@@ -86,7 +86,7 @@ pub const FACT_NS: u16 = 37;
 pub const MEMBER_NS: u16 = 42;
 /// The reserved type token that names a user endpoint (ADR-0004's open type
 /// vocabulary: `literal` first, `user` second). A value under it is the wire
-/// reference `member-{channel}-{member}`, parsed into a node at ns 42 —
+/// reference `member-{uuid}`, parsed into a node at ns 42 —
 /// nothing is created on a miss, because a person is registered, never
 /// discovered.
 pub const USER_KIND: &str = "user";
@@ -480,7 +480,7 @@ enum Endpoint {
     /// A corpus entity: ns 36, scoped by the ingest call.
     Entity(u64),
     /// A registered member: ns 42, whose key carries its own channel.
-    User { channel: u64, member: Uuid7 },
+    User { member: Uuid7 },
 }
 
 impl Endpoint {
@@ -501,39 +501,30 @@ impl Endpoint {
                 <EntityRow as Document>::NS_PREFIX,
                 &EntityKey { scope, node_id }.encode(),
             ),
-            Endpoint::User { channel, member } => NodeRef::new(
+            Endpoint::User { member } => NodeRef::new(
                 <MemberRow as Document>::NS_PREFIX,
-                &MemberKey {
-                    channel_id: channel,
-                    member_id: member,
-                }
-                .encode(),
+                &MemberKey { member_id: member }.encode(),
             ),
         }
     }
 }
 
-/// Parse the `user` type token's wire reference `member-{channel}-{member}`.
-/// Numbers only: the syntax is a reference, never a name (a display name is a
-/// row field and renaming must not move a fact).
-fn parse_member_ref(value: &str) -> Option<(u64, Uuid7)> {
-    let rest = value.strip_prefix("member-")?;
-    let (channel, member) = rest.split_once('-')?;
-    Some((channel.parse().ok()?, member.parse::<Uuid7>().ok()?))
+/// Parse the `user` type token's wire reference `member-{uuid}` (ADR-0051: a member is one
+/// identity, so the node is named by the identity alone; a channel lives in the membership row,
+/// not in the person's name). A uuid only: the syntax is a reference, never a name — a display
+/// name is a row field and renaming must not move a fact.
+fn parse_member_ref(value: &str) -> Option<Uuid7> {
+    value.strip_prefix("member-")?.parse::<Uuid7>().ok()
 }
 
-/// A member endpoint's key bytes back to `(channel, member)` — the decode side
-/// of [`MemberKey`]'s `[channel 8B][member 8B]`.
-fn member_from_pkey(pkey: &[u8]) -> Option<(u64, Uuid7)> {
-    // 8 bytes of channel + the 16 bytes of the member id, which IS the user id (ADR-0025 §4):
-    // the identity goes into the node's pkey verbatim, so a node can always be turned back into
-    // the person it names.
-    if pkey.len() != 24 {
+/// A member endpoint's key bytes back to the member id — the decode side of [`MemberKey`]'s
+/// `[member 16B]`. The id IS the user id (ADR-0025 §4): the identity goes into the node's pkey
+/// verbatim, so a node can always be turned back into the person it names.
+fn member_from_pkey(pkey: &[u8]) -> Option<Uuid7> {
+    if pkey.len() != 16 {
         return None;
     }
-    let channel = u64::from_be_bytes(pkey[..8].try_into().ok()?);
-    let member = Uuid7::from_bytes(pkey[8..24].try_into().ok()?);
-    Some((channel, member))
+    Some(Uuid7::from_bytes(pkey.try_into().ok()?))
 }
 
 /// An entity node id out of a ref, or `None` for any other collection — the
@@ -734,7 +725,7 @@ pub enum NodeId {
     Entity { scope: u64, node_id: u64 },
     /// ns 42 — a registered person; the channel is in the key because a member
     /// id is only unique inside its channel.
-    User { channel: u64, member: Uuid7 },
+    User { member: Uuid7 },
 }
 
 impl NodeId {
@@ -756,9 +747,9 @@ impl NodeId {
     }
 
     /// The user identity, `None` for an entity.
-    pub fn user(self) -> Option<(u64, Uuid7)> {
+    pub fn user(self) -> Option<Uuid7> {
         match self {
-            NodeId::User { channel, member } => Some((channel, member)),
+            NodeId::User { member } => Some(member),
             NodeId::Entity { .. } => None,
         }
     }
@@ -768,7 +759,7 @@ impl NodeId {
     pub fn label(self) -> String {
         match self {
             NodeId::Entity { node_id, .. } => format!("n{node_id}"),
-            NodeId::User { channel, member } => format!("u{channel}_{member}"),
+            NodeId::User { member } => format!("u{member}"),
         }
     }
 }
@@ -2093,22 +2084,19 @@ impl GraphStore {
     /// the scope rides along (nothing external is consulted).
     pub fn resolve_ref(&mut self, node: &NodeRef) -> Result<ResolvedNode, IngestError> {
         if node.ns_id() == MEMBER_NS {
-            let (channel, member) = member_from_pkey(&node.pkey).unwrap_or((0, Uuid7::from_bytes([0u8; 16])));
+            let member = member_from_pkey(&node.pkey).unwrap_or(Uuid7::from_bytes([0u8; 16]));
             // An unregistered member is absence (the ref still names the
             // person); a store that cannot answer is not, and it propagates.
             let name = match self.members.as_ref() {
                 Some(members) => members
-                    .get(&MemberKey {
-                        channel_id: channel,
-                        member_id: member,
-                    })
+                    .get(&MemberKey { member_id: member })
                     .map_err(|e| IngestError::Storage(e.to_string()))?
                     .map(|row| row.display_name),
                 None => None,
             }
             .unwrap_or_default();
             return Ok(ResolvedNode {
-                id: NodeId::User { channel, member },
+                id: NodeId::User { member },
                 kind: USER_KIND.to_string(),
                 literal_num: 0,
                 name,
@@ -2192,16 +2180,12 @@ impl GraphStore {
         Ok(out)
     }
 
-    /// One member's node reference (`[42][channel][member]`) — the entry a
-    /// context head starts its traversal from.
-    pub fn user_ref(&self, channel: u64, member: Uuid7) -> NodeRef {
+    /// One member's node reference (`[42][member]`) — the entry a context head starts its
+    /// traversal from.
+    pub fn user_ref(&self, member: Uuid7) -> NodeRef {
         NodeRef::new(
             <MemberRow as Document>::NS_PREFIX,
-            &MemberKey {
-                channel_id: channel,
-                member_id: member,
-            }
-            .encode(),
+            &MemberKey { member_id: member }.encode(),
         )
     }
 
@@ -2426,9 +2410,9 @@ impl GraphStore {
         // registered, never discovered — and no props land on a member row:
         // admin-time identity is not extracted knowledge.
         if term.type_label == USER_KIND {
-            let (channel, member) = parse_member_ref(&term.value).ok_or_else(|| {
+            let member = parse_member_ref(&term.value).ok_or_else(|| {
                 IngestError::Refused(format!(
-                    "user reference `{}` is not member-{{channel}}-{{member}}",
+                    "user reference `{}` is not member-{{uuid}}",
                     term.value
                 ))
             })?;
@@ -2438,10 +2422,7 @@ impl GraphStore {
                 )
             })?;
             let known = members
-                .get(&MemberKey {
-                    channel_id: channel,
-                    member_id: member,
-                })
+                .get(&MemberKey { member_id: member })
                 .map_err(|e| IngestError::Storage(e.to_string()))?
                 .is_some();
             if !known {
@@ -2450,7 +2431,7 @@ impl GraphStore {
                     term.value
                 )));
             }
-            return Ok(Endpoint::User { channel, member });
+            return Ok(Endpoint::User { member });
         }
         if let Some((node_id, _)) = self.entity_by_name(scope, &term.value)? {
             self.merge_props(scope, node_id, &term.props)?;

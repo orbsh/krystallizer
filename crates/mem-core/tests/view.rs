@@ -120,7 +120,7 @@ fn an_empty_projection_is_empty_not_wrong() {
 fn head_is_both_directions_deduplicated() {
     let (_d, mut stores) = open();
     // The reference spells the member id as the uuid it is (ADR-0025 §4).
-    let user_ref = format!("member-7-{}", m(1));
+    let user_ref = format!("member-{}", m(1));
     let scope = DEFAULT_SCOPE;
     // "{user_ref}" resolves first → node 1 (the default user node).
     stores
@@ -214,7 +214,7 @@ fn role_codes_map_to_llm_roles() {
 /// traversal answers; after one, the graph may move and the head must not.
 #[test]
 fn the_head_is_frozen_at_the_compression() {
-    let user_ref = format!("member-7-{}", m(1));
+    let user_ref = format!("member-{}", m(1));
     let (_d, mut stores) = open();
     let scope = DEFAULT_SCOPE;
     stores
@@ -279,15 +279,15 @@ fn conversation_merges_a_user_burst_and_keeps_the_replys_end() {
     let ch = 7u64;
     stores
         .channels
-        .put_member(ch, m(10), "小王", mem_core::member_role::HUMAN)
+        .put_member(m(10), "小王", mem_core::member_role::HUMAN)
         .unwrap();
     stores
         .channels
-        .put_member(ch, m(11), "小李", mem_core::member_role::HUMAN)
+        .put_member(m(11), "小李", mem_core::member_role::HUMAN)
         .unwrap();
     stores
         .channels
-        .put_member(ch, m(2), "k10r", mem_core::member_role::AGENT)
+        .put_member(m(2), "k10r", mem_core::member_role::AGENT)
         .unwrap();
 
     say_from(&mut stores, ch, 1_000, 0, m(10), 0, role::USER, kind::TEXT, "在吗");
@@ -344,13 +344,13 @@ fn the_default_member_is_seeded_on_first_touch() {
     let (_d, mut stores) = open();
     let ch = 9u64;
     assert!(
-        stores.channels.member(ch, m(1)).unwrap().is_none(),
+        stores.channels.member(m(1)).unwrap().is_none(),
         "nothing yet"
     );
     say(&mut stores, ch, 10, 0, role::USER, kind::TEXT, "hi");
     let seeded = stores
         .channels
-        .member(ch, m(1))
+        .member(m(1))
         .expect("no store failure")
         .expect("member 1 seeded");
     assert_eq!(seeded.display_name, mem_core::channel::DEFAULT_MEMBER_NAME);
@@ -364,18 +364,26 @@ fn the_default_member_is_seeded_on_first_touch() {
 }
 
 /// The head is EVERY member's facts, not one user node's (ADR-0009 §1): a
-/// member's facts hang on `member-{channel}-{id}`, so two members bring two sets,
+/// member's facts hang on `member-{id}`, so two members bring two sets,
 /// deduplicated by edge id and sorted by weight.
 #[test]
 fn the_head_comes_from_every_member_of_the_channel() {
     let (_d, mut stores) = open();
     let scope = DEFAULT_SCOPE;
     for (member, name, drink) in [(m(10), "小王", "美式"), (m(11), "小李", "拿铁")] {
+        // The head asks the RELATION who is in the channel (ADR-0051): a person needs both an
+        // identity row and a membership row, which `join` writes in one commit.
         stores
             .channels
-            .put_member(7, member, name, mem_core::member_role::HUMAN)
+            .join(
+                7, // the channel `projection()` assembles
+                member,
+                name,
+                mem_core::member_role::HUMAN,
+                0,
+            )
             .unwrap();
-        let node = mem_core::channel::member_node(7, member);
+        let node = mem_core::channel::member_node(member);
         stores
             .graph
             .ingest(
@@ -389,7 +397,7 @@ fn the_head_comes_from_every_member_of_the_channel() {
 
     let p = projection(&mut stores);
     let names: Vec<String> = p.head.iter().map(|f| f.src.name.clone()).collect();
-    let expected = vec![format!("member-7-{}", m(10)), format!("member-7-{}", m(11))];
+    let expected = vec![format!("member-{}", m(10)), format!("member-{}", m(11))];
     assert_eq!(
         names,
         expected,

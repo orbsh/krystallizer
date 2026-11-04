@@ -769,7 +769,7 @@ async fn read_channel(
         // An unregistered sender is absence, not a failure: the entry falls
         // back to the id-derived name.
         let sender_name = match store
-            .member(channel_id, row.sender)
+            .member(row.sender)
             .map_err(FactError::internal)?
         {
             Some(member) => member.display_name,
@@ -2008,9 +2008,10 @@ pub struct EntityDto {
     /// The corpus entity's id — present when the endpoint is an entity node
     /// (ns 36), absent for a user node (identity is not scoped to the corpus).
     pub node_id: Option<u64>,
-    /// The user endpoint, `[channel, member]` (ADR-0014), when this endpoint is
-    /// a person instead of a corpus entity.
-    pub user: Option<(u64, String)>,
+    /// The user endpoint — the member id as its uuid text, when this endpoint is a person
+    /// instead of a corpus entity. No channel: an identity is global (ADR-0051), and which
+    /// channel the fact was written on is the fact's own key.
+    pub user: Option<String>,
     pub kind: String,
     pub literal_num: i64,
     pub name: String,
@@ -2363,7 +2364,7 @@ impl From<mem_core::graph::FactView> for FactViewDto {
     fn from(v: mem_core::graph::FactView) -> Self {
         let node = |n: mem_core::graph::ResolvedNode| EntityDto {
             node_id: n.id.entity_id(),
-            user: n.id.user().map(|(c, m)| (c, m.to_string())),
+            user: n.id.user().map(|m| m.to_string()),
             kind: n.kind,
             literal_num: n.literal_num,
             name: n.name,

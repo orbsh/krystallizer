@@ -2,10 +2,9 @@
 
 > **Languages:** [English](0025-a-channel-is-a-row.md) (primary) · [中文](0025-a-channel-is-a-row.zh-CN.md)
 
-**Status:** Accepted (2026-11-04). §§1–3 landed in mem-core and the HTTP surface
-(`channels` ns 45, `memberships` ns 46, four doors, `?app=`). §4 is the decision on
-identity; its key migration (`member_id` `u64` → `Uuid7`) is the change in flight, and
-the decision is final regardless of that schedule.
+**Status:** Accepted (2026-11-04). All four sections are implemented: `apps` ns 43,
+`channels` ns 45 with `app_id`, `members` ns 42 keyed by the member id alone, `memberships`
+ns 46 with `by_member`, and the four doors.
 **Date:** 2026-11-04
 
 ## Context
@@ -28,61 +27,61 @@ had no shape for it.
 
 ## Decision
 
-**1. A channel is a row** (`channels`, ns 45): `[channel_id]` → `{ app, scene, created_ms }`.
+**1. A channel is a row** (`channels`, ns 45): `[channel_id]` → `{ app_id, scene, created_ms }`.
 
-- `app` answers *which application owns this channel* — the OIDC `client_id` question. It is
-  written by the deployment and never relabelled, because it is a filter key: the "exactly
-  one" invariant above is checked against it.
+- `app_id` answers *which application owns this channel* — the OIDC `client_id`, as the `Uuid7`
+  it is, pointing at the `apps` table (ns 43: `[app_id]` → `{ name, created_ms }`). Written by
+  the deployment and never relabelled, because it is a filter key: the "exactly one" invariant
+  is checked against it. Free text cannot serve — `"gravity"` in two spellings would be two
+  applications.
 - `scene` answers *what the channel is for*, in the writer's own words (`private`,
   `group:ops`). Free text on purpose. A closed enum would make every new scene a migration.
 
-The two are separate fields because they have different owners and different lifetimes: a
-key the machine filters on must not change when a human renames a label.
+The two are separate fields because they have different owners and different lifetimes: a key
+the machine filters on must not change when a human renames a label.
 
-**2. Membership is two tables, written in one commit** (`members`, `memberships`).
+**2. Identity is global; membership is the relation** (`members` ns 42, `memberships` ns 46).
 
-`members` (existing, keyed `[channel_id][member_id]`) answers "who is in this channel" and
-carries the channel-scoped identity row: `display_name`, `role`. `memberships` (ns 46, keyed
-`[member_id][channel_id]`) is its mirror and answers "which channels this member has" as one
-prefix scan. `join()` writes both rows in a single batch and commits once.
+`members` is keyed `[member_id]` alone and carries `{ display_name, role }` — ONE row per
+person, whatever channels they are in. Slicing it by channel was the first cut, and it made
+"who is this uuid" unanswerable without naming a channel first.
 
-**3. Reads are filtered at the storage line.** `channels_of_app(app)`,
-`channels_of(member)`, and the doors `GET /channels?app=`, `GET /members/{id}/channels?app=`.
-The membership row carries no app of its own: the filter is applied to the channel row that
-the membership names.
+`memberships` is keyed `[channel_id][member_id]` → `{ member_id, nickname, since_ms }`, with
+`by_member` declared over the member column. The channel leads because the channel is the
+container: deleting one purges its relationships as a single key range, while "which channels
+is this person in" is the index's job. `nickname` is the per-channel name, empty meaning "use
+the identity's `display_name`" — the same "empty means absent" rule the checkpoint summary
+uses, since `DocumentEncode` has no `Option<T>`. `join()` writes the identity row and the
+relationship row in one batch and commits once.
+
+**3. Reads are filtered at the storage line.** `channels_of_app(app_id)` (equality on the app
+id), `channels_of(member_id)` (the `by_member` index, fetch-back per hit), `members(channel_id)`
+(prefix over the relationship), and the doors `GET /channels?app=`,
+`GET /members/{id}/channels?app=`. The relationship carries no app of its own: the filter is
+applied to the channel row it names.
 
 **4. The member id IS the user id, and it is a `Uuid7`.** prism mints it; k10r stores the
-same value in `MemberKey`, `MembershipKey`, `CursorKey` and the message log's sender. No
-numeric surrogate, no hash of the uuid: an id in a log that cannot be turned back into the
-identity it names is a dead end for every later question ("who wrote this"), and `Uuid7` is a
-fixed-width 128-bit value, so the key layout stays fixed-width — only wider. The member row
-remains channel-scoped: the same user in two channels is two rows, each with its own
-`display_name` and `role`. That is why the row is not called a user.
+same value in `MemberKey`, `MembershipKey`, `CursorKey`, the message log's sender and the
+graph's `member-{uuid}` node name. No numeric surrogate, no hash of the uuid: an id in a log
+that cannot be turned back into the identity it names is a dead end for every later question
+("who wrote this"), and `Uuid7` is a fixed-width 128-bit value, so the key layout stays
+fixed-width — only wider.
 
 ## Why not a junction
 
-Channel and member ARE a many-to-many, and okm's `Junction` (okm ADR-0015) is exactly the
-carrier for one — so the difference is not the direction, it is the PAYLOAD.
+A many-to-many relationship is an ordinary table, and okm has ordinary tables: a key made of
+the two identities plus whatever columns the relationship owns. `memberships` is exactly that,
+so no junction carrier exists here — okm's `Junction` was retired (ADR-0051 there) after the
+same conclusion was verified against its own test suite.
 
-A junction entry has a key and no value: `link(a, b)` writes two entries in one batch (one
-under each endpoint's ns) and both are empty-valued. ADR-0015 says what that costs: "The
-entry value is empty — it cannot carry relation attributes (join time, role, permission), the
-classic need of a SQL junction table". Every pair here carries data — the name this person
-has IN THIS channel (`display_name`), whether they are a person or the agent (`role`), when
-they joined (`since_ms`) — and an empty entry has nowhere to put it.
+What the plain table buys, over a carrier that stores an empty pair:
 
-So the choice is a junction plus a side document addressed by the endpoint pair (one join =
-three writes, one fact stated twice) or two document tables (two rows that ARE the data, one
-of them keyed so its order IS the reverse index). The data has to live in a table either way,
-so the second shape has one representation fewer.
-
-What is worth taking from the junction, and is taken: the double write is ONE commit, so
-neither direction can exist alone. `join()` is that commit.
-
-(An earlier revision of this section argued that "the reverse query needs an index anyway".
-Withdrawn: a junction is bidirectionally materialized, so its reverse is a prefix scan, and
-the mirror table's read has to fetch the channel row per hit just the same — that was never
-where the two paths divide.)
+- **the relationship can carry data** — `since_ms`, and the per-channel `nickname`;
+- **the reverse direction is a declared index**, maintained by `put`/`purge` in the same batch
+  and rebuildable by `rebuild_faces`, instead of a second hand-written entry;
+- **the rows are rows**: they take part in indexes, reduce and the changelog, which junction
+  entries were excluded from;
+- **one write path**: `put` and `purge`. Nothing to pair with an `unlink`.
 
 ## Alternatives rejected
 
@@ -94,6 +93,9 @@ where the two paths divide.)
 - **A numeric `uid` column on prism's user row.** A second identity for the same person, with
   a conversion at every boundary and two numbers to keep in step. `Uuid7` is already
   fixed-width, which was the only argument for a number.
+- **A channel-scoped member key** (`members` keyed `[channel_id][member_id]`). It makes the
+  same person two rows with two names, and leaves "who is this uuid" unanswerable without a
+  channel. Rejected once identity became global: the channel belongs to the relationship.
 - **Filtering in the caller.** The invariant would then be stated twice — once in each
   application — instead of at the storage line that owns the rows.
 
@@ -110,5 +112,15 @@ This ADR is the terminal state. The changes it records:
    *from*, not what a channel belongs to.
 4. **`owner` renamed to `app`** (`7df7508`), and kept apart from `scene`. The rejected name is
    recorded above rather than in a later patch to this ADR.
-5. **`member_id`: `u64` → `Uuid7`** (in flight): the first cut used a numeric member id, and
+5. **`member_id`: `u64` → `Uuid7`** (`19966bf`): the first cut used a numeric member id, and
    the chain device → user → channel could not carry prism's identity through it.
+6. **An app table** (`25c5c16`): `app` started as a `String` on the channel row and became
+   the `Uuid7` `app_id` pointing at `apps`. A filter key spelled by hand made "the one
+   gravity channel" depend on a spelling.
+7. **The member stops being channel-scoped, and the mirror table disappears** (this change):
+   the first cut keyed `members` by `[channel_id][member_id]` and kept `memberships` as its
+   mirror, with `since_ms` as the only thing a relationship could carry. Identity is global,
+   so the channel prefix left the member key; the relationship then became a table in its own
+   right — `{ nickname, since_ms }` plus a `by_member` index — which is what made the mirror
+   unnecessary. The graph followed: a member node is `member-{uuid}`, no longer
+   `member-{channel}-{uuid}`.

@@ -142,7 +142,7 @@ pub fn conversation(
 /// from its own projection and must not scan twice.
 pub fn messages_of(
     channels: &ChannelStore,
-    channel_id: u64,
+    _channel_id: u64,
     rows: &[(crate::channel::MessageKey, crate::channel::MessageRow)],
 ) -> Result<Vec<ModelMessage>, IngestError> {
     let mut messages: Vec<ModelMessage> = Vec::new();
@@ -156,7 +156,7 @@ pub fn messages_of(
         // An unregistered sender is absence, not a failure: the line falls
         // back to the id-derived name.
         let name = match channels
-            .member(channel_id, row.sender)
+            .member(row.sender)
             .map_err(IngestError::Storage)?
         {
             Some(member) => member.display_name,
@@ -202,7 +202,7 @@ pub fn member_memory(
     let mut seen = BTreeSet::new();
     let mut head: Vec<FactView> = Vec::new();
     for (key, _) in members {
-        let name = crate::channel::member_node(channel_id, key.member_id);
+        let name = crate::channel::member_node(key.member_id);
         let Some((node, _)) = graph.entity_by_name(scope, &name)? else {
             continue; // no facts hang on this member yet
         };

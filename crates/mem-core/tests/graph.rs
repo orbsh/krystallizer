@@ -1395,7 +1395,7 @@ fn a_rewrite_does_not_leave_the_fact_in_the_ranking_twice() {
 //
 // A person reaches the graph as a NODE of the identity collection (ns 42), not
 // as an entity row: the `user` type token's value is the wire reference
-// `member-{channel}-{member}`, parsed into a ref, validated against the
+// `member-{uuid}`, parsed into a ref, validated against the
 // registered members, and never created on a miss.
 
 #[test]
@@ -1404,13 +1404,13 @@ fn a_user_endpoint_is_a_node_of_the_identity_collection() {
     let mut stores = mem_core::open_service(dir.path()).unwrap();
     stores
         .channels
-        .put_member(1, m(1), "orbit", mem_core::channel::member_role::AGENT)
+        .put_member(m(1), "orbit", mem_core::channel::member_role::AGENT)
         .unwrap();
     let graph = &mut stores.graph;
 
     // The wire reference spells the member id as the uuid it is (ADR-0025 §4), so the literal is
     // built from the same helper the store formats with rather than typed by hand.
-    let reference = format!("member-1-{}", m(1));
+    let reference = format!("member-{}", m(1));
     let fact = tuple(&format!(
         r#"["{reference}","user",{{}},"PREFERS",{{}},"coffee","drink",{{}}]"#
     ));
@@ -1421,7 +1421,7 @@ fn a_user_endpoint_is_a_node_of_the_identity_collection() {
 
     // The person is a NODE: the traversal from the member ref finds the fact,
     // and the fact resolves that endpoint through the identity row.
-    let user = graph.user_ref(1, m(1));
+    let user = graph.user_ref(m(1));
     assert_eq!(graph.out_edges_of(&user).unwrap(), vec![edge_id]);
     let view = graph.fact_view(edge_id).unwrap().unwrap();
     assert_eq!(
@@ -1429,7 +1429,7 @@ fn a_user_endpoint_is_a_node_of_the_identity_collection() {
         "the display name comes from the row"
     );
     assert_eq!(view.src.kind, "user");
-    assert_eq!(view.src.id.user(), Some((1, m(1))));
+    assert_eq!(view.src.id.user(), Some(m(1)));
     assert_eq!(
         view.src.id.entity_id(),
         None,
@@ -1448,7 +1448,7 @@ fn a_user_endpoint_is_a_node_of_the_identity_collection() {
     // A rename touches the ROW and nothing else: same edge id, new name.
     stores
         .channels
-        .put_member(1, m(1), "orbit2", mem_core::channel::member_role::AGENT)
+        .put_member(m(1), "orbit2", mem_core::channel::member_role::AGENT)
         .unwrap();
     let renamed = graph.fact_view(edge_id).unwrap().unwrap();
     assert_eq!(renamed.src.name, "orbit2");
@@ -1461,7 +1461,7 @@ fn an_unregistered_user_reference_is_refused_and_creates_nothing() {
     let mut stores = mem_core::open_service(dir.path()).unwrap();
     let graph = &mut stores.graph;
 
-    let ghost = tuple(r#"["member-1-9","user",{},"LIKES",{},"tea","drink",{}]"#);
+    let ghost = tuple(r#"["member-00000000-0000-0000-0000-000000000009","user",{},"LIKES",{},"tea","drink",{}]"#);
     assert!(matches!(
         graph.ingest(1, &ghost),
         Err(IngestError::Refused(_))

@@ -16,32 +16,33 @@
 
 ## Decision
 
-**1. 频道是一行记录**（`channels`，ns 45）：`[channel_id]` → `{ app, scene, created_ms }`。
+**1. 频道是一行**（`channels`，ns 45）：`[channel_id]` → `{ app_id, scene, created_ms }`。
 
-- `app` 回答**哪个应用拥有这个频道**——OIDC 的 `client_id` 语义。由部署写入，永不改标，因为它是过滤键：上面那个「恰好一条」的不变量就靠它校验。
-- `scene` 回答**这个频道是干什么的**，用写入方自己的话（`private`、`group:ops`）。刻意是自由文本；用闭合枚举会让每个新场景变成一次迁移。
+- `app_id` 回答「这个频道属于哪个应用」——OIDC 的 `client_id`，就是那个 `Uuid7`，指向 `apps` 表（ns 43：`[app_id]` → `{ name, created_ms }`）。部署时写定、永不改标，因为它是过滤键：「恰好一个」这个不变量按它来校验。自由文本顶不住——`"gravity"` 两种拼法就是两个应用。
+- `scene` 回答「这个频道是干什么的」，用写它的那些人的话（`private`、`group:ops`）。故意留成自由文本：一个封闭枚举会把每个新场景都变成一次迁移。
 
-两者分开，因为归属方和生命周期不同：机器过滤的键，不能因为人改了个标签就变。
+两者分开，是因为拥有者和生命周期不同：机器用来过滤的键，不能在有人改标签时跟着变。
 
-**2. 成员关系是两张表，一次提交写入**（`members`、`memberships`）。
+**2. 身份是全局的，成员关系是那张关系表**（`members` ns 42，`memberships` ns 46）。
 
-`members`（既有，键 `[channel_id][member_id]`）回答「谁在这个频道里」，并携带频道内的身份行：`display_name`、`role`。`memberships`（ns 46，键 `[member_id][channel_id]`）是它的镜像，回答「这个成员有哪些频道」，一次前缀扫描。`join()` 在一个 batch 里写两行，只提交一次。
+`members` 的键只有 `[member_id]`，行上是 `{ display_name, role }`——一个人一行，不管他在几个频道里。按频道切分是第一版的做法，它让「这个 uuid 是谁」必须先说出一个频道才答得上来。
 
-**3. 过滤在存储层做。** `channels_of_app(app)`、`channels_of(member)`，以及门 `GET /channels?app=`、`GET /members/{id}/channels?app=`。成员关系行自身没有 app：过滤施加在它指向的频道行上。
+`memberships` 的键是 `[channel_id][member_id]` → `{ member_id, nickname, since_ms }`，并在成员列上声明 `by_member` 索引。频道在前是因为频道是容器：删一个频道就是一段键区间的事；而「这个人在哪些频道」是索引的活。`nickname` 是频道内的名字，空 = 用身份的 `display_name`——与 checkpoint 摘要同一条「空即不存在」的规矩，因为 `DocumentEncode` 没有 `Option<T>`。`join()` 在一个批里写身份行与关系行，提交一次。
 
-**4. 成员 id 就是用户 id，类型是 `Uuid7`。** 由 prism 铸造；k10r 把同一个值放进 `MemberKey`、`MembershipKey`、`CursorKey` 和消息日志的 sender。不铸数字代理键、不对 uuid 取哈希：日志里一个回不到身份的 id，会让之后每个「这是谁写的」都无解；而 `Uuid7` 是 128 位定宽值，键布局仍然定宽——只是更宽。成员行仍然是频道内身份：同一个人在两个频道里是两行，各自有自己的 `display_name` 和 `role`。这也是它不叫 user 的原因。
+**3. 读在存储层收口。** `channels_of_app(app_id)`（按 app id 等值）、`channels_of(member_id)`（走 `by_member` 索引，每条命中一次回表）、`members(channel_id)`（关系表上的前缀扫描），以及两个门 `GET /channels?app=`、`GET /members/{id}/channels?app=`。关系行自己没有 app：过滤落在它指向的那条频道行上。
+
+**4. 成员 id 就是用户 id，类型 `Uuid7`。** prism 铸造，k10r 原样存进 `MemberKey`、`MembershipKey`、`CursorKey`、消息日志的 sender，以及图里 `member-{uuid}` 的节点名。不用数字代理键，不哈希 uuid：日志里一个回不到身份的 id，对之后每一个「这是谁写的」都是死路；而 `Uuid7` 是 128 位定宽值，键布局照旧定宽，只是更宽。
 
 ## 为什么不用 junction
 
-频道与成员确实是多对多，`Junction`（okm ADR-0015）也正是为多对多做的——所以差别不在方向，在**载荷**。
+多对多就是一张普通的表，而 okm 有普通的表：两个身份组成的键，加上关系自有的那些列。`memberships` 就是这样一张表，所以这里没有 junction 这个载体——okm 那边在同一个结论被它自己的测试验证之后，已经把 `Junction` 退役了（那边 ADR-0051）。
 
-junction 的一条条目只有键、没有值：`link(a, b)` 在一个 batch 里写两条（各端点 ns 各一条），两条的值都是空。ADR-0015 把代价说得很清楚：「The entry value is empty — it cannot carry relation attributes (join time, role, permission), the classic need of a SQL junction table」。而这条关系每一对都带数据：这个人在**这个频道里**叫什么（`display_name`）、他是人还是 agent（`role`）、什么时候进来的（`since_ms`）——空值的条目没有地方放它们。
+普通表比「存一对空键」的载体多出四样：
 
-于是只有两种形状：junction 加一张按端点对寻址的侧文档（一次 join 三次写入，同一件事两个表示），或者两张文档表（两行，行本身就是数据，其中一张的键序就是反向索引）。数据终归要落在某张表里，所以后者少一个表示。
-
-值得从 junction 学、也确实学了的那一点：双写是**一次**提交，两个方向不可能只存在一个。`join()` 就是那次提交。
-
-（本节早先写过「反向查询无论如何需要索引」，撤回：junction 本来就双向物化，反向是一次前缀扫描；镜像表的读同样要在命中后回查频道行，那一点从来不是两条路的分界。）
+- **关系能带数据**——`since_ms`，以及每频道的 `nickname`；
+- **反向方向是声明索引**，由 `put`/`purge` 在同一个 batch 里维护，`rebuild_faces` 能重建，而不是再手写一条条目；
+- **行就是行**：参与索引、reduce 与变更流，而 junction 条目是被排除在外的；
+- **只有一条写路径**：`put` 与 `purge`，没有需要配对的 `link`/`unlink`。
 
 ## Alternatives rejected
 
@@ -59,3 +60,5 @@ junction 的一条条目只有键、没有值：`link(a, b)` 在一个 batch 里
 3. **`owner` 曾被提为 device id**——撤回：device 是 prism 解析的**起点**，不是频道的归属。
 4. **`owner` 改名 `app`**（`7df7508`），并与 `scene` 分开。被否决的名字记在这里，而不是日后在本 ADR 上打补丁。
 5. **`member_id`：`u64` → `Uuid7`**（进行中）：最初的实现用数字成员 id，device → user → channel 这条链没法把 prism 的身份带过去。
+6. **app 变成一张表**（`25c5c16`）：`app` 起初是频道行上的 `String`，现在是 `Uuid7` 的 `app_id`，指向 `apps`。手写的过滤键会让「gravity 那唯一一个频道」取决于拼法。
+7. **成员不再按频道切分，镜像表随之消失**（本次改动）：第一版把 `members` 的键做成 `[channel_id][member_id]`，并留 `memberships` 当镜像，关系只能装 `since_ms`。身份是全局的，频道前缀离开成员键之后，关系自己成了一张表——`{ nickname, since_ms }` 加 `by_member` 索引——镜像也就不需要了。图跟着改：成员节点是 `member-{uuid}`，不再是 `member-{channel}-{uuid}`。

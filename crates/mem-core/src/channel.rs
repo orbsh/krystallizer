@@ -216,7 +216,7 @@ pub struct CursorRow {
     pub read_at: u64,
 }
 
-/// A member of one channel (ns 42) — the IDENTITY layer (ADR-0009 §1): the
+/// A member (ns 42) — the IDENTITY layer (ADR-0009 §1, ADR-0025 §4): the
 /// deterministic mapping `member_id → display name + role tag` that the
 /// serialization path uses to prepend `[display-name]` to each message. The
 /// SEMANTIC layer (preferences, history, relationship) lives in the graph as
@@ -224,7 +224,6 @@ pub struct CursorRow {
 #[derive(KeyEncode, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 #[ok_ns(42)]
 pub struct MemberKey {
-    pub channel_id: u64,
     pub member_id: Uuid7,
 }
 
@@ -288,15 +287,25 @@ pub struct ChannelRow {
 #[derive(KeyEncode, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 #[ok_ns(46)]
 pub struct MembershipKey {
-    pub member_id: Uuid7,
     pub channel_id: u64,
+    pub member_id: Uuid7,
 }
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
 #[ok_ref(MembershipKey)]
 #[ok_ns(46)]
 #[ok_name("memberships")]
+#[ok_index(by_member { fields(member_id) })]
 pub struct MembershipRow {
+    /// The member id as a COLUMN, not only as a key segment: the `by_member` index is declared
+    /// over a row field, and this is the field that makes "which channels does this person
+    /// belong to" a prefix scan instead of a walk.
+    pub member_id: Uuid7,
+    /// The name this person goes by IN THIS CHANNEL. Empty = use the identity's
+    /// `display_name` (the same "empty means absent" rule the checkpoint summary follows);
+    /// `DocumentEncode` has no `Option<T>`, and inventing one for a display detail would be a
+    /// codec change for a cosmetic need.
+    pub nickname: String,
     /// When this member joined (the caller's clock, from the same write that
     /// registered them).
     pub since_ms: u64,
@@ -355,8 +364,8 @@ pub mod checkpoint_field {
 /// presentation — renaming a member must not move a single fact). The channel is
 /// in the name because member 7 of channel 2 is a different person from member 7
 /// of channel 3, and a scope can hold many channels.
-pub fn member_node(channel_id: u64, member_id: Uuid7) -> String {
-    format!("member-{channel_id}-{member_id}")
+pub fn member_node(member_id: Uuid7) -> String {
+    format!("member-{member_id}")
 }
 
 /// The member whose projection the reads assemble. Single-member shape
@@ -728,16 +737,33 @@ impl ChannelStore {
     /// with the default name, so a log never carries a message nobody owns.
     fn ensure_member(&mut self, channel_id: u64) -> Result<(), String> {
         let key = MemberKey {
-            channel_id,
             member_id: default_member(),
         };
         if self.members.get(&key).map_err(|e| e.to_string())?.is_none() {
-            self.put_member(
-                channel_id,
-                default_member(),
-                DEFAULT_MEMBER_NAME,
-                member_role::HUMAN,
-            )?;
+            self.put_member(default_member(), DEFAULT_MEMBER_NAME, member_role::HUMAN)?;
+        }
+        // The channel still needs its own relationship row: identity is global, membership is
+        // not (ADR-0051).
+        let joined = MembershipKey {
+            channel_id,
+            member_id: default_member(),
+        };
+        if self
+            .memberships
+            .get(&joined)
+            .map_err(|e| e.to_string())?
+            .is_none()
+        {
+            self.memberships
+                .put(
+                    &joined,
+                    &MembershipRow {
+                        member_id: default_member(),
+                        nickname: String::new(),
+                        since_ms: 0,
+                    },
+                )
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
     }
@@ -1070,17 +1096,13 @@ impl ChannelStore {
     /// rename re-attributes every past message without rewriting one.
     pub fn put_member(
         &mut self,
-        channel_id: u64,
         member_id: Uuid7,
         display_name: &str,
         role: u8,
     ) -> Result<(), String> {
         self.members
             .put(
-                &MemberKey {
-                    channel_id,
-                    member_id,
-                },
+                &MemberKey { member_id },
                 &MemberRow {
                     display_name: display_name.to_string(),
                     role,
@@ -1136,10 +1158,7 @@ impl ChannelStore {
         self.members
             .save_with_prev_into(
                 &mut batch,
-                &MemberKey {
-                    channel_id,
-                    member_id,
-                },
+                &MemberKey { member_id },
                 &MemberRow {
                     display_name: display_name.to_string(),
                     role,
@@ -1151,10 +1170,14 @@ impl ChannelStore {
             .save_with_prev_into(
                 &mut batch,
                 &MembershipKey {
-                    member_id,
                     channel_id,
+                    member_id,
                 },
-                &MembershipRow { since_ms },
+                &MembershipRow {
+                    member_id,
+                    nickname: String::new(),
+                    since_ms,
+                },
                 None,
             )
             .map_err(|e| e.to_string())?;
@@ -1163,36 +1186,21 @@ impl ChannelStore {
             .map_err(|e| e.to_string())
     }
 
-    /// Which channels this MEMBER is in — the direction `members()` cannot answer (its key starts
-    /// with the channel). One prefix scan over `(member_id, *)`, so a person with many lines costs
-    /// one range read, not a table scan.
+    /// Which channels this MEMBER is in — the direction the primary key cannot answer (it starts
+    /// with the channel). Answered by the declared `by_member` index: a prefix scan over the
+    /// index, a fetch-back per hit. The reverse of a container read costs one hop, which is what
+    /// a secondary index is (ADR-0051).
     pub fn channels_of(&mut self, member_id: Uuid7) -> Result<Vec<(u64, MembershipRow)>, String> {
-        let mut prefix = Vec::with_capacity(3 + 8);
-        prefix.extend_from_slice(MembershipRow::NS_PREFIX);
-        write_slot(&mut prefix, PRIMARY_SLOT);
-        let probe = MembershipKey {
-            member_id,
-            channel_id: 0,
-        };
-        probe.encode_prefix_named(&mut prefix, &["member_id"]);
-        let suffixes = self
+        let probe: &[u8] = member_id.as_bytes();
+        let hits = self
             .memberships
-            .store()
-            .scan_suffix(&prefix)
+            .scan::<__OkmIndex_MembershipRow_by_member>(probe)
             .map_err(|e| e.to_string())?;
-        let mut out = Vec::with_capacity(suffixes.len());
-        for sfx in &suffixes {
-            let mut full = prefix.clone();
-            full.extend_from_slice(sfx);
-            let key = MembershipKey::decode(&full[3..]);
-            if let Some(row) = self
-                .memberships
-                .get(&key)
-                .map_err(|e| e.to_string())?
-            {
-                out.push((key.channel_id, row));
-            }
-        }
+        let mut out: Vec<(u64, MembershipRow)> = hits
+            .into_iter()
+            .filter_map(|(key, row)| row.map(|r| (key.decoded.channel_id, r)))
+            .collect();
+        out.sort_by_key(|(channel_id, _)| *channel_id);
         Ok(out)
     }
 
@@ -1236,42 +1244,41 @@ impl ChannelStore {
     }
 
     /// One member's identity, if registered.
-    pub fn member(&self, channel_id: u64, member_id: Uuid7) -> Result<Option<MemberRow>, String> {
+    pub fn member(&self, member_id: Uuid7) -> Result<Option<MemberRow>, String> {
         self.members
-            .get(&MemberKey {
-                channel_id,
-                member_id,
-            })
+            .get(&MemberKey { member_id })
             .map_err(|e| e.to_string())
     }
 
-    /// Every member of one channel, in member-id order (prefix scan — only the
-    /// channel's key range is read).
+    /// Every member of one channel, in member-id order. The RELATIONSHIP table answers this now:
+    /// the channel's key prefix lists its rows, and each row's member id fetches the identity.
     pub fn members(&mut self, channel_id: u64) -> Result<Vec<(MemberKey, MemberRow)>, String> {
-        let mut prefix = Vec::with_capacity(3 + 8);
-        prefix.extend_from_slice(MemberRow::NS_PREFIX);
+        let mut prefix = Vec::with_capacity(4 + 8);
+        prefix.extend_from_slice(MembershipRow::NS_PREFIX);
         write_slot(&mut prefix, PRIMARY_SLOT);
-        let probe = MemberKey {
+        let probe = MembershipKey {
             channel_id,
             member_id: nil_member(),
         };
         probe.encode_prefix_named(&mut prefix, &["channel_id"]);
         let suffixes = self
-            .members
+            .memberships
             .store()
             .scan_suffix(&prefix)
             .map_err(|e| e.to_string())?;
         let mut out = Vec::with_capacity(suffixes.len());
         for sfx in &suffixes {
-            let mut full = prefix.clone();
-            full.extend_from_slice(sfx);
-            let key = MemberKey::decode(&full[3..]);
-            // A member row that vanished between the scan and the read is
-            // absence; a store that cannot answer is not, and it propagates.
+            let member_id = Uuid7::from_bytes(
+                sfx[..16]
+                    .try_into()
+                    .map_err(|_| "a membership key without a member id".to_string())?,
+            );
+            let key = MemberKey { member_id };
             if let Some(row) = self.members.get(&key).map_err(|e| e.to_string())? {
                 out.push((key, row));
             }
         }
+        out.sort_by_key(|(key, _)| key.member_id);
         Ok(out)
     }
 

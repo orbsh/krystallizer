@@ -244,7 +244,8 @@ async fn member_checkpoints_are_independent() {
 /// default is the line form, and `format=struct` hands the same answer back
 /// as data for a consumer that assembles it itself.
 ///
-/// A member's facts hang on the node named `member-{channel}-{id}`
+/// A member's facts hang on the node named `member-{uuid}` — one node per person, whatever
+/// channel the fact was written on.
 /// (ADR-0009 §1), so a fact written on channel 7's member 1 node is exactly
 /// what that channel's head must show.
 #[tokio::test]
@@ -255,7 +256,7 @@ async fn session_carries_the_head_block_and_named_roles() {
     let status = client
         .post(format!("{base}/memories/1"))
         .json(&json!([[
-            "member-7-00000000-0000-0000-0000-000000000001",
+            "member-00000000-0000-0000-0000-000000000001",
             "person",
             {},
             "PREFERS",
@@ -285,7 +286,7 @@ async fn session_carries_the_head_block_and_named_roles() {
         .as_str()
         .expect("the head is rendered text, not data");
     assert!(
-        head.contains("member-7-00000000-0000-0000-0000-000000000001 (person) -[PREFERS]-> 简洁"),
+        head.contains("member-00000000-0000-0000-0000-000000000001 (person) -[PREFERS]-> 简洁"),
         "the head renders the member node's fact: {head}"
     );
     assert!(head.contains("w="), "the line carries its counters: {head}");
@@ -312,7 +313,7 @@ async fn session_carries_the_head_block_and_named_roles() {
     let facts = structured["head"].as_array().unwrap();
     assert_eq!(facts.len(), 1, "the user node's one fact");
     assert_eq!(facts[0]["kind"], "PREFERS");
-    assert_eq!(facts[0]["src"]["name"], "member-7-00000000-0000-0000-0000-000000000001");
+    assert_eq!(facts[0]["src"]["name"], "member-00000000-0000-0000-0000-000000000001");
     assert_eq!(facts[0]["dst"]["name"], "简洁");
     assert_eq!(facts[0]["src"]["node_id"], 1, "the default user node");
 

@@ -703,30 +703,35 @@ fn members_name_their_senders_and_a_rename_rewrites_nothing() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
     store
-        .put_member(CH, m(1), "小王", mem_core::member_role::HUMAN)
+        .join(CH, m(1), "小王", mem_core::member_role::HUMAN, 10)
         .unwrap();
     store
-        .put_member(CH, m(2), "k10r", mem_core::member_role::AGENT)
-        .unwrap();
-    store
-        .put_member(2, m(1), "别人", mem_core::member_role::HUMAN)
+        .join(CH, m(2), "k10r", mem_core::member_role::AGENT, 11)
         .unwrap();
 
-    assert_eq!(store.member(CH, m(1)).unwrap().unwrap().display_name, "小王");
+    // One identity row per PERSON: the name and the role are global (ADR-0051).
+    assert_eq!(store.member(m(1)).unwrap().unwrap().display_name, "小王");
     assert_eq!(
-        store.member(CH, m(2)).unwrap().unwrap().role,
+        store.member(m(2)).unwrap().unwrap().role,
         mem_core::member_role::AGENT
     );
-    assert!(store.member(CH, m(9)).unwrap().is_none());
+    assert!(store.member(m(9)).unwrap().is_none());
 
+    // The RELATION is per channel: this channel lists its two, and a second channel sees only
+    // what joined it while the person keeps the one name.
     let members = store.members(CH).unwrap();
     assert_eq!(
-        members.len(),
-        2,
-        "channel-scoped: the other channel's row is not here"
+        members
+            .iter()
+            .map(|(key, _)| key.member_id)
+            .collect::<Vec<_>>(),
+        vec![m(1), m(2)]
     );
-    assert_eq!(members[0].0.member_id, m(1));
-    assert_eq!(members[1].0.member_id, m(2));
+    store
+        .join(2, m(1), "小王", mem_core::member_role::HUMAN, 12)
+        .unwrap();
+    assert_eq!(store.members(2).unwrap().len(), 1);
+    assert_eq!(store.channels_of(m(1)).unwrap().len(), 2);
 
     say_from(&mut store, CH, 100, 0, m(1), role::USER, "你好");
     let view = store.fetch_full(CH, m(1)).unwrap();
@@ -737,11 +742,11 @@ fn members_name_their_senders_and_a_rename_rewrites_nothing() {
     );
 
     store
-        .put_member(CH, m(1), "王先生", mem_core::member_role::HUMAN)
+        .put_member(m(1), "王先生", mem_core::member_role::HUMAN)
         .unwrap();
     let view = store.fetch_full(CH, m(1)).unwrap();
     assert_eq!(view.increment[0].1.sender, m(1), "the id is the stable part");
-    assert_eq!(store.member(CH, m(1)).unwrap().unwrap().display_name, "王先生");
+    assert_eq!(store.member(m(1)).unwrap().unwrap().display_name, "王先生");
 }
 
 /// A channel is a ROW, and membership is a many-to-many with both directions readable: `members`
