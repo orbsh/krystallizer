@@ -763,3 +763,91 @@ async fn post_finished(
     assert_eq!(closed, reqwest::StatusCode::NO_CONTENT, "closing the turn");
     key
 }
+
+/// The channel doors: a channel is a row with the application's own scene, membership is
+/// registered in one commit, and both directions are readable over HTTP — including the
+/// mirror that says which lines a member has.
+#[tokio::test]
+async fn a_channel_and_its_membership_over_the_wire() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    // Nobody opened it yet: absence, not an empty channel.
+    let unopened = client.get(format!("{base}/channels/7")).send().await.unwrap();
+    assert_eq!(unopened.status(), reqwest::StatusCode::NOT_FOUND);
+
+    let opened = client
+        .post(format!("{base}/channels/7"))
+        .json(&json!({"scene": "private", "created_ms": 1_700_000_000_000u64}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(opened.status(), reqwest::StatusCode::NO_CONTENT);
+
+    client
+        .post(format!("{base}/channels/9"))
+        .json(&json!({"scene": "group:ops", "created_ms": 1_700_000_000_100u64}))
+        .send()
+        .await
+        .unwrap();
+
+    // One member in two channels, one channel with two members.
+    for (channel, member, name, role) in [
+        (7u64, 1u64, "master", 0u8),
+        (9, 1, "master", 0),
+        (9, 2, "k10r", 1),
+    ] {
+        let joined = client
+            .post(format!("{base}/channels/{channel}/members"))
+            .json(&json!({"member_id": member, "display_name": name, "role": role, "since_ms": 42u64}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(joined.status(), reqwest::StatusCode::NO_CONTENT);
+    }
+
+    let row: serde_json::Value = client
+        .get(format!("{base}/channels/7"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(row["scene"], "private");
+    assert_eq!(row["created_ms"], 1_700_000_000_000u64);
+
+    let all: Vec<serde_json::Value> = client
+        .get(format!("{base}/channels"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 2, "both channels, in id order: {all:?}");
+    assert_eq!(all[0]["channel_id"], 7);
+
+    let in_nine: Vec<serde_json::Value> = client
+        .get(format!("{base}/channels/9/members"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(in_nine.len(), 2, "channel -> members: {in_nine:?}");
+    assert_eq!(in_nine[1]["display_name"], "k10r");
+
+    let lines: Vec<serde_json::Value> = client
+        .get(format!("{base}/members/1/channels"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(lines.len(), 2, "member -> channels: {lines:?}");
+    assert_eq!(lines[0]["channel_id"], 7);
+    assert_eq!(lines[0]["since_ms"], 42u64);
+}

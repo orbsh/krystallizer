@@ -242,6 +242,20 @@ fn build(
             "/channels/{channel_id}/members/{member_id}/checkpoint",
             post(append_checkpoint),
         )
+        // THE CHANNEL IS A ROW (ADR-0024's axis, and the many-to-many around it): a channel
+        // carries the application's own scene annotation, membership reads from both sides, and
+        // a member's lines are one prefix scan. A caller that only has an id can now ask what it
+        // IS instead of inferring it from the log.
+        .route("/channels", get(list_channels))
+        .route(
+            "/channels/{channel_id}",
+            get(read_one_channel).post(open_channel),
+        )
+        .route(
+            "/channels/{channel_id}/members",
+            post(add_member).get(list_channel_members),
+        )
+        .route("/members/{member_id}/channels", get(list_member_channels))
         .route("/code/{scope}", post(put_code))
         .route("/export", get(export_bundle))
         .route("/export/{table}", get(export_table))
@@ -2575,5 +2589,158 @@ fn dynamic_to_json(value: mem_core::DynamicValue) -> serde_json::Value {
                 .map(|(name, value)| (name, dynamic_to_json(value)))
                 .collect(),
         ),
+    }
+}
+
+/// `POST /channels/{id}` — open or re-annotate a channel. The scene is the APPLICATION's word
+/// ("private", "group:ops", anything); the storage layer has no vocabulary of its own to impose.
+#[derive(Deserialize, Serialize)]
+pub struct OpenChannel {
+    pub scene: String,
+    pub created_ms: u64,
+}
+
+/// One channel row on the wire.
+#[derive(Deserialize, Serialize, PartialEq, Debug, Clone)]
+pub struct ChannelDto {
+    pub channel_id: u64,
+    pub scene: String,
+    pub created_ms: u64,
+}
+
+impl From<(u64, mem_core::channel::ChannelRow)> for ChannelDto {
+    fn from((channel_id, row): (u64, mem_core::channel::ChannelRow)) -> Self {
+        Self {
+            channel_id,
+            scene: row.scene,
+            created_ms: row.created_ms,
+        }
+    }
+}
+
+/// `POST /channels/{id}` — write the row that makes the id a thing. 204: the row is the answer,
+/// and a caller that renames a scene is doing exactly what it asked for.
+async fn open_channel(
+    State(state): State<Arc<MemState>>,
+    Path(channel_id): Path<u64>,
+    Json(body): Json<OpenChannel>,
+) -> Result<StatusCode, FactError> {
+    let store = state.store.lock().await;
+    store
+        .put_channel(channel_id, &body.scene, body.created_ms)
+        .map_err(FactError::internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /channels/{id}` — what that channel IS. Absent = nobody opened it, which is a 404 and
+/// not an empty channel.
+async fn read_one_channel(
+    State(state): State<Arc<MemState>>,
+    Path(channel_id): Path<u64>,
+) -> axum::response::Response {
+    let store = state.store.lock().await;
+    match store.channel(channel_id) {
+        Ok(Some(row)) => Json(ChannelDto::from((channel_id, row))).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => FactError::internal(e).into_response(),
+    }
+}
+
+/// `GET /channels` — every channel row, id order. The set is one per line, so this is a small
+/// answer by nature and the caller does the filtering by scene.
+async fn list_channels(State(state): State<Arc<MemState>>) -> axum::response::Response {
+    let mut store = state.store.lock().await;
+    match store.channels() {
+        Ok(rows) => Json(
+            rows.into_iter()
+                .map(|(key, row)| ChannelDto::from((key.channel_id, row)))
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(e) => FactError::internal(e).into_response(),
+    }
+}
+
+/// `POST /channels/{id}/members` — register a member AND their membership in one commit (the
+/// double write is the store's, so a caller cannot land one half).
+#[derive(Deserialize, Serialize)]
+pub struct AddMember {
+    pub member_id: u64,
+    pub display_name: String,
+    pub role: u8,
+    pub since_ms: u64,
+}
+
+async fn add_member(
+    State(state): State<Arc<MemState>>,
+    Path(channel_id): Path<u64>,
+    Json(body): Json<AddMember>,
+) -> Result<StatusCode, FactError> {
+    let store = state.store.lock().await;
+    store
+        .join(
+            channel_id,
+            body.member_id,
+            &body.display_name,
+            body.role,
+            body.since_ms,
+        )
+        .map_err(FactError::internal)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// One member as the channel sees them — the identity layer's row (ADR-0009 §1).
+#[derive(Deserialize, Serialize, PartialEq, Debug, Clone)]
+pub struct MemberDto {
+    pub member_id: u64,
+    pub display_name: String,
+    pub role: u8,
+}
+
+/// `GET /channels/{id}/members` — who is in this channel, member-id order.
+async fn list_channel_members(
+    State(state): State<Arc<MemState>>,
+    Path(channel_id): Path<u64>,
+) -> axum::response::Response {
+    let mut store = state.store.lock().await;
+    match store.members(channel_id) {
+        Ok(rows) => Json(
+            rows.into_iter()
+                .map(|(key, row)| MemberDto {
+                    member_id: key.member_id,
+                    display_name: row.display_name,
+                    role: row.role,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(e) => FactError::internal(e).into_response(),
+    }
+}
+
+/// One membership as the MEMBER sees it: which channel, and since when.
+#[derive(Deserialize, Serialize, PartialEq, Debug, Clone)]
+pub struct MembershipDto {
+    pub channel_id: u64,
+    pub since_ms: u64,
+}
+
+/// `GET /members/{id}/channels` — the mirror direction: this member's lines, channel-id order.
+async fn list_member_channels(
+    State(state): State<Arc<MemState>>,
+    Path(member_id): Path<u64>,
+) -> axum::response::Response {
+    let mut store = state.store.lock().await;
+    match store.channels_of(member_id) {
+        Ok(rows) => Json(
+            rows.into_iter()
+                .map(|(channel_id, row)| MembershipDto {
+                    channel_id,
+                    since_ms: row.since_ms,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(e) => FactError::internal(e).into_response(),
     }
 }
