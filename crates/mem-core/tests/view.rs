@@ -21,6 +21,15 @@ use mem_core::graph::FactTuple;
 use mem_core::view::{assemble, role_name, Projection, DEFAULT_SCOPE};
 use mem_core::{open_service, ServiceStores};
 
+/// A member id in these tests: the identity IS a uuid (ADR-0025 §4), so a small ordinal is spelled
+/// as one — the same value the production path carries, not a test-only number.
+fn m(n: u8) -> mem_core::Uuid7 {
+    let mut bytes = [0u8; 16];
+    bytes[15] = n;
+    mem_core::Uuid7::from_bytes(bytes)
+}
+
+
 fn tuple(text: &str) -> FactTuple {
     FactTuple::from_json(text).expect("the tuple decodes")
 }
@@ -47,7 +56,7 @@ fn say_from(
     channel: u64,
     ts_ms: u64,
     sub: u16,
-    sender: u64,
+    sender: mem_core::Uuid7,
     end_ts_ms: u64,
     role: u8,
     kind: u8,
@@ -79,7 +88,7 @@ fn say(
         channel,
         ts_ms,
         sub,
-        mem_core::DEFAULT_MEMBER,
+        m(1),
         0,
         role,
         kind,
@@ -88,7 +97,7 @@ fn say(
 }
 
 fn projection(stores: &mut ServiceStores) -> Projection {
-    assemble(&mut stores.channels, &mut stores.graph, 7, 1, DEFAULT_SCOPE)
+    assemble(&mut stores.channels, &mut stores.graph, 7, m(1), DEFAULT_SCOPE)
         .expect("the projection assembles")
 }
 
@@ -110,13 +119,15 @@ fn an_empty_projection_is_empty_not_wrong() {
 #[test]
 fn head_is_both_directions_deduplicated() {
     let (_d, mut stores) = open();
+    // The reference spells the member id as the uuid it is (ADR-0025 §4).
+    let user_ref = format!("member-7-{}", m(1));
     let scope = DEFAULT_SCOPE;
-    // "member-7-1" resolves first → node 1 (the default user node).
+    // "{user_ref}" resolves first → node 1 (the default user node).
     stores
         .graph
         .ingest(
             scope,
-            &tuple(r#"["member-7-1","person",{},"PREFERS",{},"简洁","style",{}]"#),
+            &tuple(&format!(r#"["{user_ref}","person",{{}},"PREFERS",{{}},"简洁","style",{{}}]"#)),
         )
         .unwrap();
     // Same node as the TAIL: an incoming edge.
@@ -124,7 +135,7 @@ fn head_is_both_directions_deduplicated() {
         .graph
         .ingest(
             scope,
-            &tuple(r#"["k10r","system",{},"OWNED_BY",{},"member-7-1","person",{}]"#),
+            &tuple(&format!(r#"["k10r","system",{{}},"OWNED_BY",{{}},"{user_ref}","person",{{}}]"#)),
         )
         .unwrap();
     // A second outgoing edge.
@@ -132,7 +143,7 @@ fn head_is_both_directions_deduplicated() {
         .graph
         .ingest(
             scope,
-            &tuple(r#"["member-7-1","person",{},"WRITES",{},"Rust","language",{}]"#),
+            &tuple(&format!(r#"["{user_ref}","person",{{}},"WRITES",{{}},"Rust","language",{{}}]"#)),
         )
         .unwrap();
 
@@ -203,13 +214,14 @@ fn role_codes_map_to_llm_roles() {
 /// traversal answers; after one, the graph may move and the head must not.
 #[test]
 fn the_head_is_frozen_at_the_compression() {
+    let user_ref = format!("member-7-{}", m(1));
     let (_d, mut stores) = open();
     let scope = DEFAULT_SCOPE;
     stores
         .graph
         .ingest(
             scope,
-            &tuple(r#"["member-7-1","person",{},"PREFERS",{},"简洁","style",{}]"#),
+            &tuple(&format!(r#"["{user_ref}","person",{{}},"PREFERS",{{}},"简洁","style",{{}}]"#)),
         )
         .unwrap();
 
@@ -246,7 +258,7 @@ fn the_head_is_frozen_at_the_compression() {
         .graph
         .ingest(
             scope,
-            &tuple(r#"["member-7-1","person",{},"PREFERS",{},"浓咖啡","drink",{}]"#),
+            &tuple(&format!(r#"["{user_ref}","person",{{}},"PREFERS",{{}},"浓咖啡","drink",{{}}]"#)),
         )
         .unwrap();
 
@@ -267,35 +279,35 @@ fn conversation_merges_a_user_burst_and_keeps_the_replys_end() {
     let ch = 7u64;
     stores
         .channels
-        .put_member(ch, 10, "小王", mem_core::member_role::HUMAN)
+        .put_member(ch, m(10), "小王", mem_core::member_role::HUMAN)
         .unwrap();
     stores
         .channels
-        .put_member(ch, 11, "小李", mem_core::member_role::HUMAN)
+        .put_member(ch, m(11), "小李", mem_core::member_role::HUMAN)
         .unwrap();
     stores
         .channels
-        .put_member(ch, 2, "k10r", mem_core::member_role::AGENT)
+        .put_member(ch, m(2), "k10r", mem_core::member_role::AGENT)
         .unwrap();
 
-    say_from(&mut stores, ch, 1_000, 0, 10, 0, role::USER, kind::TEXT, "在吗");
-    say_from(&mut stores, ch, 1_050, 0, 11, 0, role::USER, kind::TEXT, "问个事");
+    say_from(&mut stores, ch, 1_000, 0, m(10), 0, role::USER, kind::TEXT, "在吗");
+    say_from(&mut stores, ch, 1_050, 0, m(11), 0, role::USER, kind::TEXT, "问个事");
     // The reply is keyed by its FIRST token and ends 4 s later.
     say_from(
         &mut stores,
         ch,
         1_100,
         0,
-        2,
+        m(2),
         5_000,
         role::ASSISTANT,
         kind::TEXT,
         "在，你说",
     );
     // Typed while that reply was still streaming.
-    say_from(&mut stores, ch, 1_200, 0, 10, 0, role::USER, kind::TEXT, "急");
+    say_from(&mut stores, ch, 1_200, 0, m(10), 0, role::USER, kind::TEXT, "急");
 
-    let turns = mem_core::view::conversation(&mut stores.channels, ch, 1).unwrap();
+    let turns = mem_core::view::conversation(&mut stores.channels, ch, m(1)).unwrap();
     assert_eq!(
         turns.len(),
         3,
@@ -303,14 +315,14 @@ fn conversation_merges_a_user_burst_and_keeps_the_replys_end() {
     );
     assert_eq!(turns[0].role, "user");
     assert_eq!(
-        turns[0].text, "[小王(id=10)] 在吗\n[小李(id=11)] 问个事",
+        turns[0].text, format!("[小王(id={})] 在吗\n[小李(id={})] 问个事", m(10), m(11)),
         "one turn, attributed per line, ids for the model to look up"
     );
-    assert_eq!(turns[0].senders, vec![10, 11]);
+    assert_eq!(turns[0].senders, vec![m(10), m(11)]);
     assert_eq!((turns[0].start_ts, turns[0].end_ts), (1_000, 1_050));
 
     assert_eq!(turns[1].role, "assistant");
-    assert_eq!(turns[1].text, "[k10r(id=2)] 在，你说");
+    assert_eq!(turns[1].text, format!("[k10r(id={})] 在，你说", m(2)));
     assert_eq!(
         (turns[1].start_ts, turns[1].end_ts),
         (1_100, 5_000),
@@ -318,7 +330,7 @@ fn conversation_merges_a_user_burst_and_keeps_the_replys_end() {
     );
 
     assert_eq!(turns[2].role, "user");
-    assert_eq!(turns[2].text, "[小王(id=10)] 急");
+    assert_eq!(turns[2].text, format!("[小王(id={})] 急", m(10)));
     assert!(
         turns[2].start_ts < turns[1].end_ts,
         "it arrived inside the reply's span — visible, not reordered away"
@@ -332,22 +344,22 @@ fn the_default_member_is_seeded_on_first_touch() {
     let (_d, mut stores) = open();
     let ch = 9u64;
     assert!(
-        stores.channels.member(ch, 1).unwrap().is_none(),
+        stores.channels.member(ch, m(1)).unwrap().is_none(),
         "nothing yet"
     );
     say(&mut stores, ch, 10, 0, role::USER, kind::TEXT, "hi");
     let seeded = stores
         .channels
-        .member(ch, 1)
+        .member(ch, m(1))
         .expect("no store failure")
         .expect("member 1 seeded");
     assert_eq!(seeded.display_name, mem_core::channel::DEFAULT_MEMBER_NAME);
     assert_eq!(seeded.role, mem_core::member_role::HUMAN);
 
-    let turns = mem_core::view::conversation(&mut stores.channels, ch, 1).unwrap();
+    let turns = mem_core::view::conversation(&mut stores.channels, ch, m(1)).unwrap();
     assert_eq!(
         turns[0].text,
-        format!("[{}(id=1)] hi", mem_core::channel::DEFAULT_MEMBER_NAME)
+        format!("[{}(id={})] hi", mem_core::channel::DEFAULT_MEMBER_NAME, m(1))
     );
 }
 
@@ -358,7 +370,7 @@ fn the_default_member_is_seeded_on_first_touch() {
 fn the_head_comes_from_every_member_of_the_channel() {
     let (_d, mut stores) = open();
     let scope = DEFAULT_SCOPE;
-    for (member, name, drink) in [(10u64, "小王", "美式"), (11u64, "小李", "拿铁")] {
+    for (member, name, drink) in [(m(10), "小王", "美式"), (m(11), "小李", "拿铁")] {
         stores
             .channels
             .put_member(7, member, name, mem_core::member_role::HUMAN)
@@ -376,10 +388,11 @@ fn the_head_comes_from_every_member_of_the_channel() {
     }
 
     let p = projection(&mut stores);
-    let names: Vec<&str> = p.head.iter().map(|f| f.src.name.as_str()).collect();
+    let names: Vec<String> = p.head.iter().map(|f| f.src.name.clone()).collect();
+    let expected = vec![format!("member-7-{}", m(10)), format!("member-7-{}", m(11))];
     assert_eq!(
         names,
-        vec!["member-7-10", "member-7-11"],
+        expected,
         "both members' facts, in member-id order at equal weight"
     );
     assert_eq!(p.head[0].dst.name, "美式");

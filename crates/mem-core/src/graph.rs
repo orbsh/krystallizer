@@ -58,6 +58,7 @@
 //! it bumps are the caller's clock riding the call (`ts_ms`), because a
 //! read without a clock is served but not counted.
 
+use okm_core::Uuid7;
 use crate::channel::{MemberKey, MemberRow};
 use crate::code::{CodeKey, CodeRow};
 use crate::embedding::Embedder;
@@ -479,7 +480,7 @@ enum Endpoint {
     /// A corpus entity: ns 36, scoped by the ingest call.
     Entity(u64),
     /// A registered member: ns 42, whose key carries its own channel.
-    User { channel: u64, member: u64 },
+    User { channel: u64, member: Uuid7 },
 }
 
 impl Endpoint {
@@ -515,20 +516,23 @@ impl Endpoint {
 /// Parse the `user` type token's wire reference `member-{channel}-{member}`.
 /// Numbers only: the syntax is a reference, never a name (a display name is a
 /// row field and renaming must not move a fact).
-fn parse_member_ref(value: &str) -> Option<(u64, u64)> {
+fn parse_member_ref(value: &str) -> Option<(u64, Uuid7)> {
     let rest = value.strip_prefix("member-")?;
     let (channel, member) = rest.split_once('-')?;
-    Some((channel.parse().ok()?, member.parse().ok()?))
+    Some((channel.parse().ok()?, member.parse::<Uuid7>().ok()?))
 }
 
 /// A member endpoint's key bytes back to `(channel, member)` — the decode side
 /// of [`MemberKey`]'s `[channel 8B][member 8B]`.
-fn member_from_pkey(pkey: &[u8]) -> Option<(u64, u64)> {
-    if pkey.len() != 16 {
+fn member_from_pkey(pkey: &[u8]) -> Option<(u64, Uuid7)> {
+    // 8 bytes of channel + the 16 bytes of the member id, which IS the user id (ADR-0025 §4):
+    // the identity goes into the node's pkey verbatim, so a node can always be turned back into
+    // the person it names.
+    if pkey.len() != 24 {
         return None;
     }
     let channel = u64::from_be_bytes(pkey[..8].try_into().ok()?);
-    let member = u64::from_be_bytes(pkey[8..].try_into().ok()?);
+    let member = Uuid7::from_bytes(pkey[8..24].try_into().ok()?);
     Some((channel, member))
 }
 
@@ -730,7 +734,7 @@ pub enum NodeId {
     Entity { scope: u64, node_id: u64 },
     /// ns 42 — a registered person; the channel is in the key because a member
     /// id is only unique inside its channel.
-    User { channel: u64, member: u64 },
+    User { channel: u64, member: Uuid7 },
 }
 
 impl NodeId {
@@ -752,7 +756,7 @@ impl NodeId {
     }
 
     /// The user identity, `None` for an entity.
-    pub fn user(self) -> Option<(u64, u64)> {
+    pub fn user(self) -> Option<(u64, Uuid7)> {
         match self {
             NodeId::User { channel, member } => Some((channel, member)),
             NodeId::Entity { .. } => None,
@@ -2089,7 +2093,7 @@ impl GraphStore {
     /// the scope rides along (nothing external is consulted).
     pub fn resolve_ref(&mut self, node: &NodeRef) -> Result<ResolvedNode, IngestError> {
         if node.ns_id() == MEMBER_NS {
-            let (channel, member) = member_from_pkey(&node.pkey).unwrap_or((0, 0));
+            let (channel, member) = member_from_pkey(&node.pkey).unwrap_or((0, Uuid7::from_bytes([0u8; 16])));
             // An unregistered member is absence (the ref still names the
             // person); a store that cannot answer is not, and it propagates.
             let name = match self.members.as_ref() {
@@ -2190,7 +2194,7 @@ impl GraphStore {
 
     /// One member's node reference (`[42][channel][member]`) — the entry a
     /// context head starts its traversal from.
-    pub fn user_ref(&self, channel: u64, member: u64) -> NodeRef {
+    pub fn user_ref(&self, channel: u64, member: Uuid7) -> NodeRef {
         NodeRef::new(
             <MemberRow as Document>::NS_PREFIX,
             &MemberKey {

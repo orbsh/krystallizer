@@ -62,7 +62,7 @@ async fn a_summary_lands_on_the_served_split() {
     assert_eq!(verdict["to_ts"], 2_000, "the span's last record");
 
     let status = client
-        .post(format!("{base}/channels/7/members/1/checkpoint"))
+        .post(format!("{base}/channels/7/members/00000000-0000-0000-0000-000000000001/checkpoint"))
         .json(&serde_json::json!({ "summary": "the first two messages" }))
         .send()
         .await
@@ -104,8 +104,8 @@ async fn append_three(base: &str, client: &reqwest::Client, channel: u64) {
 
 async fn session(base: &str, client: &reqwest::Client, channel: u64, ts: Option<u64>) -> Value {
     let url = match ts {
-        Some(ts) => format!("{base}/channels/{channel}/members/1/session?ts_ms={ts}"),
-        None => format!("{base}/channels/{channel}/members/1/session"),
+        Some(ts) => format!("{base}/channels/{channel}/members/00000000-0000-0000-0000-000000000001/session?ts_ms={ts}"),
+        None => format!("{base}/channels/{channel}/members/00000000-0000-0000-0000-000000000001/session"),
     };
     let response = client.get(url).send().await.unwrap();
     assert!(response.status().is_success(), "{}", response.status());

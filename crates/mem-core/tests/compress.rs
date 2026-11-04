@@ -21,6 +21,15 @@
 use mem_core::channel::{MessageKey, MessageRow, Pointer, SessionView};
 use mem_core::compress::{evaluate, tail_span, Params, Stage, TailOp, Trigger, Verdict};
 
+/// A member id in these tests: the identity IS a uuid (ADR-0025 §4), so a small ordinal is spelled
+/// as one — the same value the production path carries, not a test-only number.
+fn m(n: u8) -> mem_core::Uuid7 {
+    let mut bytes = [0u8; 16];
+    bytes[15] = n;
+    mem_core::Uuid7::from_bytes(bytes)
+}
+
+
 const PARAMS: Params = Params {
     context_bytes: 1000,
     budget_percent: 50,
@@ -37,7 +46,7 @@ fn entry(turn_id: u64, ts_ms: u64) -> (MessageKey, MessageRow) {
             sub: 0,
         },
         MessageRow {
-            sender: 0,
+            sender: m(0),
             end_ts_ms: 0,
             role: 0,
             kind: 0,

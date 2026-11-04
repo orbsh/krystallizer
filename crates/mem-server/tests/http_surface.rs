@@ -77,7 +77,7 @@ async fn append_fetch_checkpoint_flow() {
 
     // Fresh channel: projection == the full log (no checkpoint yet).
     let session: serde_json::Value = client
-        .get(format!("{base}/channels/7/members/1/session"))
+        .get(format!("{base}/channels/7/members/00000000-0000-0000-0000-000000000001/session"))
         .send()
         .await
         .unwrap()
@@ -104,7 +104,7 @@ async fn append_fetch_checkpoint_flow() {
     // A checkpoint with nothing behind it is refused: the coverage point comes
     // from the verdict k10r served, so a bare summary is the caller's bug.
     let status = client
-        .post(format!("{base}/channels/7/members/1/checkpoint"))
+        .post(format!("{base}/channels/7/members/00000000-0000-0000-0000-000000000001/checkpoint"))
         .json(&AppendCheckpoint {
             summary: "greeting done".into(),
             suggested_turn: None,
@@ -121,7 +121,7 @@ async fn append_fetch_checkpoint_flow() {
         "no verdict was served, so there is no coverage point to land on"
     );
     let unchanged: serde_json::Value = client
-        .get(format!("{base}/channels/7/members/1/session"))
+        .get(format!("{base}/channels/7/members/00000000-0000-0000-0000-000000000001/session"))
         .send()
         .await
         .unwrap()
@@ -145,7 +145,7 @@ async fn channels_are_isolated() {
     }
     for ch in [1u64, 2] {
         let session: serde_json::Value = client
-            .get(format!("{base}/channels/{ch}/members/1/session"))
+            .get(format!("{base}/channels/{ch}/members/00000000-0000-0000-0000-000000000001/session"))
             .send()
             .await
             .unwrap()
@@ -177,7 +177,7 @@ async fn member_checkpoints_are_independent() {
 
     // Member 1 reads (the verdict is theirs), then lands the summary.
     let read: serde_json::Value = client
-        .get(format!("{base}/channels/9/members/1/session"))
+        .get(format!("{base}/channels/9/members/00000000-0000-0000-0000-000000000001/session"))
         .send()
         .await
         .unwrap()
@@ -196,7 +196,7 @@ async fn member_checkpoints_are_independent() {
         "member 1 has a verdict"
     );
     let status = client
-        .post(format!("{base}/channels/9/members/1/checkpoint"))
+        .post(format!("{base}/channels/9/members/00000000-0000-0000-0000-000000000001/checkpoint"))
         .json(&AppendCheckpoint {
             summary: "m1".into(),
             suggested_turn: None,
@@ -210,7 +210,7 @@ async fn member_checkpoints_are_independent() {
     assert_eq!(status, reqwest::StatusCode::NO_CONTENT);
 
     let s1: serde_json::Value = client
-        .get(format!("{base}/channels/9/members/1/session"))
+        .get(format!("{base}/channels/9/members/00000000-0000-0000-0000-000000000001/session"))
         .send()
         .await
         .unwrap()
@@ -223,7 +223,7 @@ async fn member_checkpoints_are_independent() {
     // so member 2 sees the same coverage and summary — what stays per member is
     // the read cursor, not the compression.
     let s2: serde_json::Value = client
-        .get(format!("{base}/channels/9/members/2/session"))
+        .get(format!("{base}/channels/9/members/00000000-0000-0000-0000-000000000002/session"))
         .send()
         .await
         .unwrap()
@@ -255,7 +255,7 @@ async fn session_carries_the_head_block_and_named_roles() {
     let status = client
         .post(format!("{base}/memories/1"))
         .json(&json!([[
-            "member-7-1",
+            "member-7-00000000-0000-0000-0000-000000000001",
             "person",
             {},
             "PREFERS",
@@ -273,7 +273,7 @@ async fn session_carries_the_head_block_and_named_roles() {
     post_finished(&client, &base, 7, 1000, 0, role::USER, 0, "hi").await;
 
     let session: serde_json::Value = client
-        .get(format!("{base}/channels/7/members/1/session"))
+        .get(format!("{base}/channels/7/members/00000000-0000-0000-0000-000000000001/session"))
         .send()
         .await
         .unwrap()
@@ -285,7 +285,7 @@ async fn session_carries_the_head_block_and_named_roles() {
         .as_str()
         .expect("the head is rendered text, not data");
     assert!(
-        head.contains("member-7-1 (person) -[PREFERS]-> 简洁"),
+        head.contains("member-7-00000000-0000-0000-0000-000000000001 (person) -[PREFERS]-> 简洁"),
         "the head renders the member node's fact: {head}"
     );
     assert!(head.contains("w="), "the line carries its counters: {head}");
@@ -301,7 +301,7 @@ async fn session_carries_the_head_block_and_named_roles() {
     // `struct` is the SAME answer as data: the head becomes the fact array,
     // and the increment stays structural either way.
     let structured: serde_json::Value = client
-        .get(format!("{base}/channels/7/members/1/session?format=struct"))
+        .get(format!("{base}/channels/7/members/00000000-0000-0000-0000-000000000001/session?format=struct"))
         .send()
         .await
         .unwrap()
@@ -312,14 +312,14 @@ async fn session_carries_the_head_block_and_named_roles() {
     let facts = structured["head"].as_array().unwrap();
     assert_eq!(facts.len(), 1, "the user node's one fact");
     assert_eq!(facts[0]["kind"], "PREFERS");
-    assert_eq!(facts[0]["src"]["name"], "member-7-1");
+    assert_eq!(facts[0]["src"]["name"], "member-7-00000000-0000-0000-0000-000000000001");
     assert_eq!(facts[0]["dst"]["name"], "简洁");
     assert_eq!(facts[0]["src"]["node_id"], 1, "the default user node");
 
     // An unknown representation is the caller's bug, never a silent fallback
     // to another one.
     let bad = client
-        .get(format!("{base}/channels/7/members/1/session?format=json"))
+        .get(format!("{base}/channels/7/members/00000000-0000-0000-0000-000000000001/session?format=json"))
         .send()
         .await
         .unwrap();
@@ -350,7 +350,7 @@ async fn the_session_gives_turns_and_the_channel_gives_rows() {
     }
 
     let session: serde_json::Value = client
-        .get(format!("{base}/channels/7/members/1/session"))
+        .get(format!("{base}/channels/7/members/00000000-0000-0000-0000-000000000001/session"))
         .send()
         .await
         .unwrap()
@@ -360,9 +360,10 @@ async fn the_session_gives_turns_and_the_channel_gives_rows() {
     let turns = session["messages"].as_array().unwrap();
     assert_eq!(turns.len(), 2, "two user lines merged into one turn");
     assert_eq!(turns[0]["role"], "user");
+    // The attribution prints the member id, and the member id is the user uuid (ADR-0025 §4).
     assert_eq!(
         turns[0]["text"],
-        "[master(id=1)] 在吗\n[master(id=1)] 问个事"
+        "[master(id=00000000-0000-0000-0000-000000000001)] 在吗\n[master(id=00000000-0000-0000-0000-000000000001)] 问个事"
     );
     assert_eq!(turns[1]["role"], "assistant");
     assert_eq!(
@@ -793,9 +794,9 @@ async fn a_channel_and_its_membership_over_the_wire() {
 
     // One member in two channels, one channel with two members.
     for (channel, member, name, role) in [
-        (7u64, 1u64, "master", 0u8),
-        (9, 1, "master", 0),
-        (9, 2, "k10r", 1),
+        (7u64, "00000000-0000-0000-0000-000000000001", "master", 0u8),
+        (9, "00000000-0000-0000-0000-000000000001", "master", 0),
+        (9, "00000000-0000-0000-0000-000000000002", "k10r", 1),
     ] {
         let joined = client
             .post(format!("{base}/channels/{channel}/members"))
@@ -841,7 +842,7 @@ async fn a_channel_and_its_membership_over_the_wire() {
     assert_eq!(in_nine[1]["display_name"], "k10r");
 
     let lines: Vec<serde_json::Value> = client
-        .get(format!("{base}/members/1/channels"))
+        .get(format!("{base}/members/00000000-0000-0000-0000-000000000001/channels"))
         .send()
         .await
         .unwrap()
@@ -855,7 +856,7 @@ async fn a_channel_and_its_membership_over_the_wire() {
     // The query gravity actually makes: this person's channels, the ones my app owns. After the
     // filter exactly one is left — the invariant the channel-per-user shape rests on.
     let owned: Vec<serde_json::Value> = client
-        .get(format!("{base}/members/1/channels?app=gravity"))
+        .get(format!("{base}/members/00000000-0000-0000-0000-000000000001/channels?app=gravity"))
         .send()
         .await
         .unwrap()

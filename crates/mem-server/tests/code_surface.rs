@@ -111,7 +111,7 @@ async fn code_and_channel_share_one_database_without_seeing_each_other() {
     post_finished(&client, &base, 7, 1000, 0, 0, 0, "hi").await;
 
     let session: serde_json::Value = client
-        .get(format!("{base}/channels/7/members/1/session"))
+        .get(format!("{base}/channels/7/members/00000000-0000-0000-0000-000000000001/session"))
         .send()
         .await
         .unwrap()

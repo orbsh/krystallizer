@@ -20,6 +20,15 @@ use mem_core::{EntityKey, EntityRow, Facts, RenderFormat, LITERAL_KIND};
 use okm_core::obj_dynamic::DynamicValue;
 use okm_core::{Document, KeyEncode, NodeRef, Vector};
 
+/// A member id in these tests: the identity IS a uuid (ADR-0025 §4), so a small ordinal is spelled
+/// as one — the same value the production path carries, not a test-only number.
+fn m(n: u8) -> mem_core::Uuid7 {
+    let mut bytes = [0u8; 16];
+    bytes[15] = n;
+    mem_core::Uuid7::from_bytes(bytes)
+}
+
+
 fn tuple(text: &str) -> FactTuple {
     FactTuple::from_json(text).expect("the tuple decodes")
 }
@@ -1395,11 +1404,16 @@ fn a_user_endpoint_is_a_node_of_the_identity_collection() {
     let mut stores = mem_core::open_service(dir.path()).unwrap();
     stores
         .channels
-        .put_member(1, 1, "orbit", mem_core::channel::member_role::AGENT)
+        .put_member(1, m(1), "orbit", mem_core::channel::member_role::AGENT)
         .unwrap();
     let graph = &mut stores.graph;
 
-    let fact = tuple(r#"["member-1-1","user",{},"PREFERS",{},"coffee","drink",{}]"#);
+    // The wire reference spells the member id as the uuid it is (ADR-0025 §4), so the literal is
+    // built from the same helper the store formats with rather than typed by hand.
+    let reference = format!("member-1-{}", m(1));
+    let fact = tuple(&format!(
+        r#"["{reference}","user",{{}},"PREFERS",{{}},"coffee","drink",{{}}]"#
+    ));
     let edge_id = match graph.ingest(1, &fact).unwrap() {
         IngestOutcome::Linked { edge_id } => edge_id,
         other => panic!("expected a link, got {other:?}"),
@@ -1407,7 +1421,7 @@ fn a_user_endpoint_is_a_node_of_the_identity_collection() {
 
     // The person is a NODE: the traversal from the member ref finds the fact,
     // and the fact resolves that endpoint through the identity row.
-    let user = graph.user_ref(1, 1);
+    let user = graph.user_ref(1, m(1));
     assert_eq!(graph.out_edges_of(&user).unwrap(), vec![edge_id]);
     let view = graph.fact_view(edge_id).unwrap().unwrap();
     assert_eq!(
@@ -1415,7 +1429,7 @@ fn a_user_endpoint_is_a_node_of_the_identity_collection() {
         "the display name comes from the row"
     );
     assert_eq!(view.src.kind, "user");
-    assert_eq!(view.src.id.user(), Some((1, 1)));
+    assert_eq!(view.src.id.user(), Some((1, m(1))));
     assert_eq!(
         view.src.id.entity_id(),
         None,
@@ -1424,17 +1438,17 @@ fn a_user_endpoint_is_a_node_of_the_identity_collection() {
 
     // No entity row was created for the person: the identity layer is not
     // extracted knowledge, so the landing index never contains it.
-    assert!(graph.entity_by_name(1, "member-1-1").unwrap().is_none());
+    assert!(graph.entity_by_name(1, &reference).unwrap().is_none());
     assert!(graph
         .scope_entities(1)
         .unwrap()
         .iter()
-        .all(|(_, row)| row.name != "member-1-1"));
+        .all(|(_, row)| row.name != reference));
 
     // A rename touches the ROW and nothing else: same edge id, new name.
     stores
         .channels
-        .put_member(1, 1, "orbit2", mem_core::channel::member_role::AGENT)
+        .put_member(1, m(1), "orbit2", mem_core::channel::member_role::AGENT)
         .unwrap();
     let renamed = graph.fact_view(edge_id).unwrap().unwrap();
     assert_eq!(renamed.src.name, "orbit2");

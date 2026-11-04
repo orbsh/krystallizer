@@ -12,9 +12,18 @@
     clippy::panic_in_result_fn
 )]
 
-use mem_core::channel::{kind, role, ChannelStore, Pointer, DEFAULT_MEMBER};
+use mem_core::channel::{kind, role, ChannelStore, Pointer};
 use okm_core::KeyEncode;
 use tempfile::tempdir;
+
+/// A member id in these tests: the identity IS a uuid (ADR-0025 §4), so a small ordinal is spelled
+/// as one — the same value the production path carries, not a test-only number.
+fn m(n: u8) -> mem_core::Uuid7 {
+    let mut bytes = [0u8; 16];
+    bytes[15] = n;
+    mem_core::Uuid7::from_bytes(bytes)
+}
+
 
 fn open() -> (tempfile::TempDir, ChannelStore) {
     let dir = tempdir().unwrap();
@@ -57,7 +66,7 @@ fn say_from(
     channel: u64,
     ts_ms: u64,
     sub: u16,
-    sender: u64,
+    sender: mem_core::Uuid7,
     role: u8,
     text: &str,
 ) -> mem_core::MessageKey {
@@ -165,7 +174,7 @@ fn fetch_returns_entries_in_key_order() {
     // A second channel's row: must NOT leak into CH's projection.
     say(&mut store, 2, 1500, 0, role::USER, kind::TEXT, "other channel");
 
-    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
+    let view = store.fetch_full(CH, m(1)).unwrap();
     assert_eq!(view.coverage, Pointer::NONE, "no checkpoint yet");
     assert!(view.summary.is_none());
     let texts: Vec<&str> = view
@@ -195,10 +204,10 @@ fn returned_keys_round_trip_to_rows() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
     say(&mut store, CH, 10, 0, role::USER, kind::TEXT, "hello");
-    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
+    let view = store.fetch_full(CH, m(1)).unwrap();
     assert_eq!(view.increment.len(), 1);
     let (key, row) = &view.increment[0];
-    let got = store.fetch_full(CH, DEFAULT_MEMBER).unwrap(); // read path stable
+    let got = store.fetch_full(CH, m(1)).unwrap(); // read path stable
     assert_eq!(got.increment[0].1, *row);
     assert_eq!(key.channel_id, CH);
     assert_eq!(row.role, role::USER);
@@ -225,7 +234,7 @@ fn an_open_turn_is_invisible_to_the_projection() {
         .append(CH, turn, 250, 0, role::ASSISTANT, kind::TOOL_CALL, "…")
         .unwrap();
 
-    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
+    let view = store.fetch_full(CH, m(1)).unwrap();
     let texts: Vec<&str> = view
         .increment
         .iter()
@@ -236,7 +245,7 @@ fn an_open_turn_is_invisible_to_the_projection() {
     store
         .close_turn(CH, turn, 300, 0, role::ASSISTANT, "", &[(200, 0)])
         .unwrap();
-    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
+    let view = store.fetch_full(CH, m(1)).unwrap();
     let texts: Vec<&str> = view
         .increment
         .iter()
@@ -293,7 +302,7 @@ fn closing_a_turn_keeps_what_it_names_and_purges_the_rest() {
         vec!["question", "call 1", "call 2", "answer"],
         "the two tool RESULTS were purged; the closing record is not shown"
     );
-    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
+    let view = store.fetch_full(CH, m(1)).unwrap();
     assert_eq!(view.increment.len(), 4, "the projection reads the same four");
 
     // A row appended after the turn closed would never be purged, so it is
@@ -317,7 +326,7 @@ fn checkpoint_coverage_splits_the_projection() {
     store
         .append_checkpoint(CH, at(2, 20, 0), "m1 and m2 were about testing", &[])
         .unwrap();
-    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
+    let view = store.fetch_full(CH, m(1)).unwrap();
     assert_eq!(view.coverage, at(2, 20, 0));
     assert_eq!(
         view.summary.as_deref(),
@@ -338,7 +347,7 @@ fn checkpoint_coverage_splits_the_projection() {
     store
         .append_checkpoint(CH, at(3, 30, 0), "everything so far", &[])
         .unwrap();
-    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
+    let view = store.fetch_full(CH, m(1)).unwrap();
     assert_eq!(view.coverage, at(3, 30, 0));
     assert!(view.increment.is_empty());
 }
@@ -381,7 +390,7 @@ fn a_same_millisecond_record_after_the_pointer_stays_in_the_increment() {
     store
         .append_checkpoint(CH, at(1, 1000, 0), "up to the split", &[])
         .unwrap();
-    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
+    let view = store.fetch_full(CH, m(1)).unwrap();
     let texts: Vec<&str> = view
         .increment
         .iter()
@@ -397,7 +406,7 @@ fn a_same_millisecond_record_after_the_pointer_stays_in_the_increment() {
     store
         .append_checkpoint(CH, at(1, 1000, 1), "now the burst is in", &[])
         .unwrap();
-    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
+    let view = store.fetch_full(CH, m(1)).unwrap();
     assert_eq!(view.coverage.sub, 1);
     let texts: Vec<&str> = view
         .increment
@@ -421,7 +430,7 @@ fn two_turns_in_the_same_millisecond_are_two_positions() {
     store
         .append_checkpoint(CH, at(1, 1000, 0), "turn 1 only", &[])
         .unwrap();
-    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
+    let view = store.fetch_full(CH, m(1)).unwrap();
     assert_eq!(view.coverage, at(1, 1000, 0));
     let texts: Vec<&str> = view
         .increment
@@ -447,7 +456,7 @@ fn channels_are_isolated() {
         .append_checkpoint(1, at(1, 100, 0), "ch1 summary", &[])
         .unwrap();
 
-    let v2 = store.fetch_full(2, DEFAULT_MEMBER).unwrap();
+    let v2 = store.fetch_full(2, m(1)).unwrap();
     assert_eq!(v2.coverage, Pointer::NONE, "ch2 has no checkpoint");
     assert!(v2.summary.is_none());
     assert_eq!(v2.increment.len(), 1);
@@ -465,36 +474,36 @@ fn the_read_at_stamps_advances_and_never_rewinds() {
     say(&mut store, CH, 100, 0, role::USER, kind::TEXT, "m1");
 
     assert_eq!(
-        store.read_at(CH, DEFAULT_MEMBER).unwrap(),
+        store.read_at(CH, m(1)).unwrap(),
         None,
         "never read"
     );
-    assert_eq!(store.fetch_full(CH, DEFAULT_MEMBER).unwrap().read_at, None);
+    assert_eq!(store.fetch_full(CH, m(1)).unwrap().read_at, None);
 
-    store.note_read(CH, DEFAULT_MEMBER, 1_000).unwrap();
-    assert_eq!(store.read_at(CH, DEFAULT_MEMBER).unwrap(), Some(1_000));
+    store.note_read(CH, m(1), 1_000).unwrap();
+    assert_eq!(store.read_at(CH, m(1)).unwrap(), Some(1_000));
     assert_eq!(
-        store.fetch_full(CH, DEFAULT_MEMBER).unwrap().read_at,
+        store.fetch_full(CH, m(1)).unwrap().read_at,
         Some(1_000),
         "the projection carries it, so the engine needs no second read"
     );
 
-    store.note_read(CH, DEFAULT_MEMBER, 900).unwrap();
+    store.note_read(CH, m(1), 900).unwrap();
     assert_eq!(
-        store.read_at(CH, DEFAULT_MEMBER).unwrap(),
+        store.read_at(CH, m(1)).unwrap(),
         Some(1_000),
         "an older read must not move the clock backwards"
     );
-    store.note_read(CH, DEFAULT_MEMBER, 2_000).unwrap();
-    assert_eq!(store.read_at(CH, DEFAULT_MEMBER).unwrap(), Some(2_000));
+    store.note_read(CH, m(1), 2_000).unwrap();
+    assert_eq!(store.read_at(CH, m(1)).unwrap(), Some(2_000));
 
     assert_eq!(
-        store.read_at(CH, 2).unwrap(),
+        store.read_at(CH, m(2)).unwrap(),
         None,
         "another member's cursor is its own"
     );
     assert_eq!(
-        store.read_at(2, DEFAULT_MEMBER).unwrap(),
+        store.read_at(2, m(1)).unwrap(),
         None,
         "another channel's"
     );
@@ -517,7 +526,7 @@ fn a_compression_opens_a_node_and_completes_it() {
     }
 
     store.open_checkpoint(CH, at(2, 200, 0), &[7, 8]).unwrap();
-    let open_view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
+    let open_view = store.fetch_full(CH, m(1)).unwrap();
     assert_eq!(
         open_view.coverage,
         Pointer::NONE,
@@ -534,7 +543,7 @@ fn a_compression_opens_a_node_and_completes_it() {
         store.complete_checkpoint(CH, "m1 and m2", None).unwrap(),
         Some(at(2, 200, 0))
     );
-    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
+    let view = store.fetch_full(CH, m(1)).unwrap();
     assert_eq!(view.coverage, at(2, 200, 0));
     assert_eq!(view.summary.as_deref(), Some("m1 and m2"));
     assert!(!view.compressing);
@@ -558,7 +567,7 @@ fn nodes_accumulate_and_the_read_follows_the_newest_complete_one() {
         .unwrap();
     store.open_checkpoint(CH, at(3, 900, 0), &[2]).unwrap();
 
-    let v = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
+    let v = store.fetch_full(CH, m(1)).unwrap();
     assert_eq!(v.coverage, at(2, 200, 0), "the open node does not move the read");
     assert_eq!(v.summary.as_deref(), Some("first summary"));
     assert!(v.compressing);
@@ -570,7 +579,7 @@ fn nodes_accumulate_and_the_read_follows_the_newest_complete_one() {
             .unwrap(),
         Some(at(3, 900, 0))
     );
-    let v = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
+    let v = store.fetch_full(CH, m(1)).unwrap();
     assert_eq!(v.coverage, at(3, 900, 0));
     assert_eq!(v.summary.as_deref(), Some("second summary"));
     assert_eq!(v.head, Some(vec![2]), "the new node carries its own head");
@@ -591,7 +600,7 @@ fn re_opening_the_same_pointer_is_the_same_node() {
         store.complete_checkpoint(CH, "once", None).unwrap(),
         Some(at(1, 100, 0))
     );
-    let v = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
+    let v = store.fetch_full(CH, m(1)).unwrap();
     assert_eq!(v.summary.as_deref(), Some("once"));
     assert!(!v.compressing, "one node, completed once");
 }
@@ -617,7 +626,7 @@ fn a_compression_records_the_cut_it_would_have_chosen() {
         "the node still closes where the verdict said"
     );
 
-    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
+    let view = store.fetch_full(CH, m(1)).unwrap();
     assert_eq!(view.coverage, at(4, 900, 0), "coverage unchanged");
     assert_eq!(
         view.suggested,
@@ -669,7 +678,7 @@ fn a_compression_records_the_cut_it_would_have_chosen() {
     // A suggestion equal to the node's own pointer is the mechanical cut
     // restated — stored as none, so nothing downstream reads a range of zero.
     store.complete_checkpoint(CH, "t", Some(at(3, 900, 0))).unwrap();
-    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
+    let view = store.fetch_full(CH, m(1)).unwrap();
     assert_eq!(view.suggested, Pointer::NONE);
 }
 
@@ -681,7 +690,7 @@ fn a_summary_without_an_open_node_is_refused() {
     const CH: u64 = 1;
     say(&mut store, CH, 100, 0, role::USER, kind::TEXT, "m1");
     assert_eq!(store.complete_checkpoint(CH, "orphan", None).unwrap(), None);
-    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
+    let view = store.fetch_full(CH, m(1)).unwrap();
     assert_eq!(view.coverage, Pointer::NONE);
     assert!(view.summary.is_none());
 }
@@ -694,21 +703,21 @@ fn members_name_their_senders_and_a_rename_rewrites_nothing() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
     store
-        .put_member(CH, 1, "小王", mem_core::member_role::HUMAN)
+        .put_member(CH, m(1), "小王", mem_core::member_role::HUMAN)
         .unwrap();
     store
-        .put_member(CH, 2, "k10r", mem_core::member_role::AGENT)
+        .put_member(CH, m(2), "k10r", mem_core::member_role::AGENT)
         .unwrap();
     store
-        .put_member(2, 1, "别人", mem_core::member_role::HUMAN)
+        .put_member(2, m(1), "别人", mem_core::member_role::HUMAN)
         .unwrap();
 
-    assert_eq!(store.member(CH, 1).unwrap().unwrap().display_name, "小王");
+    assert_eq!(store.member(CH, m(1)).unwrap().unwrap().display_name, "小王");
     assert_eq!(
-        store.member(CH, 2).unwrap().unwrap().role,
+        store.member(CH, m(2)).unwrap().unwrap().role,
         mem_core::member_role::AGENT
     );
-    assert!(store.member(CH, 9).unwrap().is_none());
+    assert!(store.member(CH, m(9)).unwrap().is_none());
 
     let members = store.members(CH).unwrap();
     assert_eq!(
@@ -716,23 +725,23 @@ fn members_name_their_senders_and_a_rename_rewrites_nothing() {
         2,
         "channel-scoped: the other channel's row is not here"
     );
-    assert_eq!(members[0].0.member_id, 1);
-    assert_eq!(members[1].0.member_id, 2);
+    assert_eq!(members[0].0.member_id, m(1));
+    assert_eq!(members[1].0.member_id, m(2));
 
-    say_from(&mut store, CH, 100, 0, 1, role::USER, "你好");
-    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
-    assert_eq!(view.increment[0].1.sender, 1);
+    say_from(&mut store, CH, 100, 0, m(1), role::USER, "你好");
+    let view = store.fetch_full(CH, m(1)).unwrap();
+    assert_eq!(view.increment[0].1.sender, m(1));
     assert_eq!(
         view.increment[0].1.content, "你好",
         "the log stores raw text"
     );
 
     store
-        .put_member(CH, 1, "王先生", mem_core::member_role::HUMAN)
+        .put_member(CH, m(1), "王先生", mem_core::member_role::HUMAN)
         .unwrap();
-    let view = store.fetch_full(CH, DEFAULT_MEMBER).unwrap();
-    assert_eq!(view.increment[0].1.sender, 1, "the id is the stable part");
-    assert_eq!(store.member(CH, 1).unwrap().unwrap().display_name, "王先生");
+    let view = store.fetch_full(CH, m(1)).unwrap();
+    assert_eq!(view.increment[0].1.sender, m(1), "the id is the stable part");
+    assert_eq!(store.member(CH, m(1)).unwrap().unwrap().display_name, "王先生");
 }
 
 /// A channel is a ROW, and membership is a many-to-many with both directions readable: `members`
@@ -748,19 +757,19 @@ fn a_channel_is_a_row_and_membership_reads_both_ways() {
     store.put_channel(7, "gravity", "private:master", 1_700_000_000_200).unwrap();
 
     // One member in two channels: the fan-out a person with several lines has.
-    store.join(7, 1, "master", 0, 111).unwrap();
-    store.join(9, 1, "master", 0, 222).unwrap();
+    store.join(7, m(1), "master", 0, 111).unwrap();
+    store.join(9, m(1), "master", 0, 222).unwrap();
     // And a second member in one of them: the many-to-many actually fans in.
-    store.join(9, 2, "k10r", 1, 333).unwrap();
+    store.join(9, m(2), "k10r", 1, 333).unwrap();
 
     // channel -> members (the direction that always existed)
-    let in_nine: Vec<u64> = store.members(9).unwrap().iter().map(|(k, _)| k.member_id).collect();
-    assert_eq!(in_nine, vec![1, 2], "membership by channel, in member-id order");
+    let in_nine: Vec<mem_core::Uuid7> = store.members(9).unwrap().iter().map(|(k, _)| k.member_id).collect();
+    assert_eq!(in_nine, vec![m(1), m(2)], "membership by channel, in member-id order");
 
     // member -> channels (the mirror)
-    let ones: Vec<u64> = store.channels_of(1).unwrap().iter().map(|(c, _)| *c).collect();
+    let ones: Vec<u64> = store.channels_of(m(1)).unwrap().iter().map(|(c, _)| *c).collect();
     assert_eq!(ones, vec![7, 9], "membership by member, in channel-id order");
-    let twos: Vec<u64> = store.channels_of(2).unwrap().iter().map(|(c, _)| *c).collect();
+    let twos: Vec<u64> = store.channels_of(m(2)).unwrap().iter().map(|(c, _)| *c).collect();
     assert_eq!(twos, vec![9]);
 
     // The channel rows carry the application's own annotation, and the rename stuck.

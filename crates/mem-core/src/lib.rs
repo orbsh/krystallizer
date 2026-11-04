@@ -23,6 +23,10 @@
 
 pub mod bundle;
 pub mod channel;
+
+/// The identity type: a member id IS a user id (ADR-0025 §4). Re-exported so a caller (the
+/// HTTP surface, the applications) can name the type without depending on okm directly.
+pub use okm_core::Uuid7;
 pub mod code;
 pub mod compress;
 pub mod config;
@@ -54,7 +58,7 @@ pub const KEYSPACE_MEMORY: &str = "memory";
 pub use channel::{
     kind, member_node, member_role, role, ChannelStore, CheckpointKey, CheckpointRow, CursorKey,
     CursorRow, MemberKey, MemberRow, MessageKey, MessageRow, Pointer, SessionView, Span,
-    DEFAULT_MEMBER,
+    default_member,
 };
 pub use code::{code_id_of_name, code_name, CodeKey, CodeRow, CODE_KIND};
 pub use compress::{

@@ -19,6 +19,15 @@
 use mem_core::{open_service, CodeRow, EntityRow, FactTuple};
 use okm_core::{Document, KeyEncode};
 
+/// A member id in these tests: the identity IS a uuid (ADR-0025 §4), so a small ordinal is spelled
+/// as one — the same value the production path carries, not a test-only number.
+fn m(n: u8) -> mem_core::Uuid7 {
+    let mut bytes = [0u8; 16];
+    bytes[15] = n;
+    mem_core::Uuid7::from_bytes(bytes)
+}
+
+
 /// Every group comes off one call and serves reads/writes.
 #[test]
 fn the_service_assembly_serves_every_group() {
@@ -51,7 +60,7 @@ fn the_service_assembly_serves_every_group() {
     assert_eq!(
         stores
             .channels
-            .fetch_full(7, mem_core::DEFAULT_MEMBER)
+            .fetch_full(7, m(1))
             .unwrap()
             .increment
             .len(),

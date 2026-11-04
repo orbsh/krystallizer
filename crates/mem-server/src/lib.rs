@@ -467,7 +467,7 @@ pub struct ModelMessageDto {
     /// typed mid-generation is visible inside its span.
     pub end_ts: u64,
     /// The member ids this turn speaks for, in line order.
-    pub senders: Vec<u64>,
+    pub senders: Vec<String>,
 }
 
 impl From<mem_core::view::ModelMessage> for ModelMessageDto {
@@ -477,7 +477,7 @@ impl From<mem_core::view::ModelMessage> for ModelMessageDto {
             text: message.text,
             start_ts: message.start_ts,
             end_ts: message.end_ts,
-            senders: message.senders,
+            senders: message.senders.iter().map(ToString::to_string).collect(),
         }
     }
 }
@@ -489,7 +489,7 @@ impl From<mem_core::view::ModelMessage> for ModelMessageDto {
 pub struct ChannelEntry {
     pub key: MessageKeyDto,
     /// The member id the row was written with (never absent).
-    pub sender: u64,
+    pub sender: String,
     /// Its display name at read time; a rename re-labels history here.
     pub sender_name: String,
     pub role: Option<String>,
@@ -686,9 +686,10 @@ fn parse_format(raw: Option<&str>) -> Result<mem_core::RenderFormat, FactError> 
 /// graph) — both are needed to answer this door.
 async fn fetch_session(
     State(state): State<Arc<MemState>>,
-    Path((channel_id, member_id)): Path<(u64, u64)>,
+    Path((channel_id, member_raw)): Path<(u64, String)>,
     Query(query): Query<SessionQuery>,
 ) -> Result<Json<SessionDto>, FactError> {
+    let member_id = parse_member_id(&member_raw)?;
     let format = parse_format(query.format.as_deref())?;
     let mut channels = state.store.lock().await;
     let mut graph = state.graph.lock().await;
@@ -777,7 +778,7 @@ async fn read_channel(
         entries.push(ChannelEntry {
             key: MessageKeyDto::from(key),
             sender_name,
-            sender: row.sender,
+            sender: row.sender.to_string(),
             role: mem_core::view::role_name(row.role).map(str::to_string),
             kind: row.kind,
             end_ts_ms: row.end_ts_ms,
@@ -830,9 +831,12 @@ pub struct AppendCheckpoint {
 /// coverage point here would make k10r guess what it is supposed to own.
 async fn append_checkpoint(
     State(state): State<Arc<MemState>>,
-    Path((channel_id, _member_id)): Path<(u64, u64)>,
+    Path((channel_id, member_raw)): Path<(u64, String)>,
     Json(body): Json<AppendCheckpoint>,
 ) -> Result<StatusCode, FactError> {
+    // The checkpoint write is channel-scoped, but the door still NAMES a member: a segment that is
+    // not an id is a caller error here, not something to ignore.
+    parse_member_id(&member_raw)?;
     let mut store = state.store.lock().await;
     let open = store.open_span(channel_id).map_err(FactError::internal)?;
     let Some(mem_core::Span { start, end }) = open else {
@@ -2006,7 +2010,7 @@ pub struct EntityDto {
     pub node_id: Option<u64>,
     /// The user endpoint, `[channel, member]` (ADR-0014), when this endpoint is
     /// a person instead of a corpus entity.
-    pub user: Option<(u64, u64)>,
+    pub user: Option<(u64, String)>,
     pub kind: String,
     pub literal_num: i64,
     pub name: String,
@@ -2359,7 +2363,7 @@ impl From<mem_core::graph::FactView> for FactViewDto {
     fn from(v: mem_core::graph::FactView) -> Self {
         let node = |n: mem_core::graph::ResolvedNode| EntityDto {
             node_id: n.id.entity_id(),
-            user: n.id.user(),
+            user: n.id.user().map(|(c, m)| (c, m.to_string())),
             kind: n.kind,
             literal_num: n.literal_num,
             name: n.name,
@@ -2603,6 +2607,16 @@ pub struct OpenChannel {
     pub created_ms: u64,
 }
 
+/// A member id on the wire is the uuid's TEXT: `Uuid7` carries no serde impl, and a JSON number
+/// would be the surrogate ADR-0025 §4 rejects. A path segment that is not a uuid is a caller
+/// error, not a store error — 400, with the value named.
+fn parse_member_id(raw: &str) -> Result<mem_core::Uuid7, FactError> {
+    raw.parse::<mem_core::Uuid7>().map_err(|_| FactError {
+        error: format!("`{raw}` is not a member id (a uuid)"),
+        status: StatusCode::BAD_REQUEST,
+    })
+}
+
 /// One channel row on the wire.
 #[derive(Deserialize, Serialize, PartialEq, Debug, Clone)]
 pub struct ChannelDto {
@@ -2683,7 +2697,7 @@ async fn list_channels(
 /// double write is the store's, so a caller cannot land one half).
 #[derive(Deserialize, Serialize)]
 pub struct AddMember {
-    pub member_id: u64,
+    pub member_id: String,
     pub display_name: String,
     pub role: u8,
     pub since_ms: u64,
@@ -2695,10 +2709,11 @@ async fn add_member(
     Json(body): Json<AddMember>,
 ) -> Result<StatusCode, FactError> {
     let store = state.store.lock().await;
+    let member_id = parse_member_id(&body.member_id)?;
     store
         .join(
             channel_id,
-            body.member_id,
+            member_id,
             &body.display_name,
             body.role,
             body.since_ms,
@@ -2710,7 +2725,7 @@ async fn add_member(
 /// One member as the channel sees them — the identity layer's row (ADR-0009 §1).
 #[derive(Deserialize, Serialize, PartialEq, Debug, Clone)]
 pub struct MemberDto {
-    pub member_id: u64,
+    pub member_id: String,
     pub display_name: String,
     pub role: u8,
 }
@@ -2725,7 +2740,7 @@ async fn list_channel_members(
         Ok(rows) => Json(
             rows.into_iter()
                 .map(|(key, row)| MemberDto {
-                    member_id: key.member_id,
+                    member_id: key.member_id.to_string(),
                     display_name: row.display_name,
                     role: row.role,
                 })
@@ -2746,9 +2761,13 @@ pub struct MembershipDto {
 /// `GET /members/{id}/channels` — the mirror direction: this member's lines, channel-id order.
 async fn list_member_channels(
     State(state): State<Arc<MemState>>,
-    Path(member_id): Path<u64>,
+    Path(raw): Path<String>,
     Query(filter): Query<AppFilter>,
 ) -> axum::response::Response {
+    let member_id = match parse_member_id(&raw) {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
     let mut store = state.store.lock().await;
     match store.channels_of(member_id) {
         Ok(rows) => {

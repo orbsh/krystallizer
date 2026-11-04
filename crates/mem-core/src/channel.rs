@@ -32,7 +32,8 @@
 //! log in conversation order with no sort step (ADR-0024).
 
 use okm_core::{
-    write_slot, Document, DocumentEncode, FjallStore, KeyEncode, VirtualStorage, PRIMARY_SLOT,
+    write_slot, Document, DocumentEncode, FjallStore, KeyEncode, Uuid7, VirtualStorage,
+    PRIMARY_SLOT,
 };
 
 /// Append-only message log (ns 33 — the channel-log band, next to flat
@@ -101,9 +102,9 @@ impl Pointer {
 #[ok_ns(33)]
 #[ok_name("messages")]
 pub struct MessageRow {
-    /// Who said it: a member id (ns 42). ALWAYS set — a single-user channel
-    /// still has its user, seeded as member 1 (ADR-0009 §1).
-    pub sender: u64,
+    /// Who said it: the member id — which IS the user id (ADR-0025 §4), a `Uuid7`. ALWAYS set:
+    /// a single-user channel still has its user, seeded as the default member (ADR-0009 §1).
+    pub sender: Uuid7,
     pub role: u8,
     pub kind: u8,
     /// The record's END: the completion clock. `0` = instant (a user message
@@ -198,7 +199,7 @@ impl Span {
 #[ok_ns(39)]
 pub struct CursorKey {
     pub channel_id: u64,
-    pub member_id: u64,
+    pub member_id: Uuid7,
 }
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
@@ -224,7 +225,7 @@ pub struct CursorRow {
 #[ok_ns(42)]
 pub struct MemberKey {
     pub channel_id: u64,
-    pub member_id: u64,
+    pub member_id: Uuid7,
 }
 
 #[derive(DocumentEncode, Clone, PartialEq, Debug)]
@@ -286,7 +287,7 @@ pub struct ChannelRow {
 #[derive(KeyEncode, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 #[ok_ns(46)]
 pub struct MembershipKey {
-    pub member_id: u64,
+    pub member_id: Uuid7,
     pub channel_id: u64,
 }
 
@@ -353,14 +354,21 @@ pub mod checkpoint_field {
 /// presentation — renaming a member must not move a single fact). The channel is
 /// in the name because member 7 of channel 2 is a different person from member 7
 /// of channel 3, and a scope can hold many channels.
-pub fn member_node(channel_id: u64, member_id: u64) -> String {
+pub fn member_node(channel_id: u64, member_id: Uuid7) -> String {
     format!("member-{channel_id}-{member_id}")
 }
 
 /// The member whose projection the reads assemble. Single-member shape
 /// (ADR-0008 §5: the single-user form needs nothing extra); the id is
 /// fixed so callers need not thread it through Phase 0's turn loop.
-pub const DEFAULT_MEMBER: u64 = 1;
+pub fn default_member() -> Uuid7 {
+    Uuid7::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
+}
+
+/// The nil uuid — the value a prefix scan puts where the field is NOT being filtered on.
+fn nil_member() -> Uuid7 {
+    Uuid7::from_bytes([0u8; 16])
+}
 
 /// The name member 1 is seeded with on a channel's first touch. One constant so
 /// the attribution bracket reads the same everywhere; change it and every
@@ -511,7 +519,7 @@ impl ChannelStore {
         channel_id: u64,
         ts_ms: u64,
         sub: u16,
-        sender: u64,
+        sender: Uuid7,
         end_ts_ms: u64,
         role: u8,
         kind: u8,
@@ -570,7 +578,7 @@ impl ChannelStore {
             turn_id,
             ts_ms,
             sub,
-            DEFAULT_MEMBER,
+            default_member(),
             0,
             role,
             kind,
@@ -587,7 +595,7 @@ impl ChannelStore {
         turn_id: u64,
         ts_ms: u64,
         sub: u16,
-        sender: u64,
+        sender: Uuid7,
         end_ts_ms: u64,
         role: u8,
         kind: u8,
@@ -664,7 +672,7 @@ impl ChannelStore {
             .put(
                 &closing,
                 &MessageRow {
-                    sender: DEFAULT_MEMBER,
+                    sender: default_member(),
                     role,
                     kind: kind::FINAL,
                     end_ts_ms: 0,
@@ -720,12 +728,12 @@ impl ChannelStore {
     fn ensure_member(&mut self, channel_id: u64) -> Result<(), String> {
         let key = MemberKey {
             channel_id,
-            member_id: DEFAULT_MEMBER,
+            member_id: default_member(),
         };
         if self.members.get(&key).map_err(|e| e.to_string())?.is_none() {
             self.put_member(
                 channel_id,
-                DEFAULT_MEMBER,
+                default_member(),
                 DEFAULT_MEMBER_NAME,
                 member_role::HUMAN,
             )?;
@@ -738,7 +746,7 @@ impl ChannelStore {
     /// it, and the pointer the increment is cut at. Nodes below it are history
     /// (invisible to the read); a node above it with an empty summary is a
     /// compression in flight.
-    pub fn fetch_full(&mut self, channel_id: u64, member_id: u64) -> Result<SessionView, String> {
+    pub fn fetch_full(&mut self, channel_id: u64, member_id: Uuid7) -> Result<SessionView, String> {
         self.ensure_member(channel_id)?;
         let nodes = self.checkpoints_of(channel_id)?;
         let complete = nodes.iter().rfind(|(_, row)| !row.summary.is_empty());
@@ -1022,7 +1030,7 @@ impl ChannelStore {
     pub fn note_read(
         &mut self,
         channel_id: u64,
-        member_id: u64,
+        member_id: Uuid7,
         read_at: u64,
     ) -> Result<(), String> {
         let key = CursorKey {
@@ -1045,7 +1053,7 @@ impl ChannelStore {
 
     /// The caller's clock at that member's last read — the cache clock's
     /// observable (ADR-0008 §3).
-    pub fn read_at(&self, channel_id: u64, member_id: u64) -> Result<Option<u64>, String> {
+    pub fn read_at(&self, channel_id: u64, member_id: Uuid7) -> Result<Option<u64>, String> {
         Ok(self
             .cursors
             .get(&CursorKey {
@@ -1062,7 +1070,7 @@ impl ChannelStore {
     pub fn put_member(
         &mut self,
         channel_id: u64,
-        member_id: u64,
+        member_id: Uuid7,
         display_name: &str,
         role: u8,
     ) -> Result<(), String> {
@@ -1118,7 +1126,7 @@ impl ChannelStore {
     pub fn join(
         &self,
         channel_id: u64,
-        member_id: u64,
+        member_id: Uuid7,
         display_name: &str,
         role: u8,
         since_ms: u64,
@@ -1157,7 +1165,7 @@ impl ChannelStore {
     /// Which channels this MEMBER is in — the direction `members()` cannot answer (its key starts
     /// with the channel). One prefix scan over `(member_id, *)`, so a person with many lines costs
     /// one range read, not a table scan.
-    pub fn channels_of(&mut self, member_id: u64) -> Result<Vec<(u64, MembershipRow)>, String> {
+    pub fn channels_of(&mut self, member_id: Uuid7) -> Result<Vec<(u64, MembershipRow)>, String> {
         let mut prefix = Vec::with_capacity(3 + 8);
         prefix.extend_from_slice(MembershipRow::NS_PREFIX);
         write_slot(&mut prefix, PRIMARY_SLOT);
@@ -1223,7 +1231,7 @@ impl ChannelStore {
     }
 
     /// One member's identity, if registered.
-    pub fn member(&self, channel_id: u64, member_id: u64) -> Result<Option<MemberRow>, String> {
+    pub fn member(&self, channel_id: u64, member_id: Uuid7) -> Result<Option<MemberRow>, String> {
         self.members
             .get(&MemberKey {
                 channel_id,
@@ -1240,7 +1248,7 @@ impl ChannelStore {
         write_slot(&mut prefix, PRIMARY_SLOT);
         let probe = MemberKey {
             channel_id,
-            member_id: 0,
+            member_id: nil_member(),
         };
         probe.encode_prefix_named(&mut prefix, &["channel_id"]);
         let suffixes = self

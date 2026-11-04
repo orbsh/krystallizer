@@ -79,7 +79,7 @@ async fn say(client: &reqwest::Client, base: &str, ts_ms: u64, content: &str) ->
 
 async fn session(client: &reqwest::Client, base: &str) -> Value {
     client
-        .get(format!("{base}/channels/3/members/1/session"))
+        .get(format!("{base}/channels/3/members/00000000-0000-0000-0000-000000000001/session"))
         .send()
         .await
         .unwrap()
@@ -158,7 +158,7 @@ async fn the_cut_a_pass_chooses_is_recorded_beside_the_summary() {
 
     // The pass says the conversation really breaks after the first message.
     let status = client
-        .post(format!("{base}/channels/3/members/1/checkpoint"))
+        .post(format!("{base}/channels/3/members/00000000-0000-0000-0000-000000000001/checkpoint"))
         .json(&json!({
             "summary": "they said hi",
             "suggested_turn": 1,
@@ -210,7 +210,7 @@ async fn a_cut_outside_the_span_is_refused_rather_than_stored() {
     // Beyond the node the pass was told to cover: the summary cannot have
     // reached it, so a later pass would read a range that never existed.
     let beyond = client
-        .post(format!("{base}/channels/3/members/1/checkpoint"))
+        .post(format!("{base}/channels/3/members/00000000-0000-0000-0000-000000000001/checkpoint"))
         .json(&json!({ "summary": "s", "suggested_turn": 4, "suggested_ts": to + 1000 }))
         .send()
         .await
@@ -227,7 +227,7 @@ async fn a_cut_outside_the_span_is_refused_rather_than_stored() {
     assert_eq!(view["summary"], Value::Null, "the summary did not land");
     assert_eq!(view["suggested_ts"], 0);
     let ok = client
-        .post(format!("{base}/channels/3/members/1/checkpoint"))
+        .post(format!("{base}/channels/3/members/00000000-0000-0000-0000-000000000001/checkpoint"))
         .json(&json!({ "summary": "landed", "suggested_turn": 1, "suggested_ts": 100 }))
         .send()
         .await

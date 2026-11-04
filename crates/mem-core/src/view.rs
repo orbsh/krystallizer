@@ -22,6 +22,7 @@
 //! with a visited policy. Deeper walks are the caller's composition over
 //! the graph's own reads (ADR-0003).
 
+use okm_core::Uuid7;
 use crate::channel::{role, ChannelStore, SessionView};
 use crate::graph::{FactView, GraphStore, IngestError};
 use std::collections::BTreeSet;
@@ -68,7 +69,7 @@ pub fn assemble(
     channels: &mut ChannelStore,
     graph: &mut GraphStore,
     channel_id: u64,
-    member_id: u64,
+    member_id: Uuid7,
     scope: u64,
 ) -> Result<Projection, IngestError> {
     let view = channels
@@ -116,7 +117,7 @@ pub struct ModelMessage {
     /// user typed mid-generation is visible as having arrived inside the span.
     pub end_ts: u64,
     /// The member ids this turn speaks for, in line order.
-    pub senders: Vec<u64>,
+    pub senders: Vec<Uuid7>,
 }
 
 /// The projection as the messages the LLM reads — its side of the channel.
@@ -129,7 +130,7 @@ pub struct ModelMessage {
 pub fn conversation(
     channels: &mut ChannelStore,
     channel_id: u64,
-    member_id: u64,
+    member_id: Uuid7,
 ) -> Result<Vec<ModelMessage>, IngestError> {
     let view = channels
         .fetch_full(channel_id, member_id)
