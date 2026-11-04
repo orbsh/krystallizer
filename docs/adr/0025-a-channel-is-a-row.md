@@ -61,18 +61,28 @@ remains channel-scoped: the same user in two channels is two rows, each with its
 
 ## Why not a junction
 
-okm's `Junction` (okm ADR-0015) is the right carrier for a bare many-to-many, and it is not
-right here, for two reasons that both come from the same property — a junction entry's value
-is EMPTY:
+Channel and member ARE a many-to-many, and okm's `Junction` (okm ADR-0015) is exactly the
+carrier for one — so the difference is not the direction, it is the PAYLOAD.
 
-- The channel-scoped identity row (`display_name`, `role`) has to live somewhere, and putting
-  it next to the junction means two writes for one fact.
-- The reverse query needs an index either way. A junction's two entries give the direction it
-  was asked for, but pairing them with a channel ROW still means a second lookup per hit;
-  the mirror table makes the second direction a prefix scan.
+A junction entry has a key and no value: `link(a, b)` writes two entries in one batch (one
+under each endpoint's ns) and both are empty-valued. ADR-0015 says what that costs: "The
+entry value is empty — it cannot carry relation attributes (join time, role, permission), the
+classic need of a SQL junction table". Every pair here carries data — the name this person
+has IN THIS channel (`display_name`), whether they are a person or the agent (`role`), when
+they joined (`since_ms`) — and an empty entry has nowhere to put it.
 
-What is worth copying from the junction, and is copied: the double write is ONE commit, so
+So the choice is a junction plus a side document addressed by the endpoint pair (one join =
+three writes, one fact stated twice) or two document tables (two rows that ARE the data, one
+of them keyed so its order IS the reverse index). The data has to live in a table either way,
+so the second shape has one representation fewer.
+
+What is worth taking from the junction, and is taken: the double write is ONE commit, so
 neither direction can exist alone. `join()` is that commit.
+
+(An earlier revision of this section argued that "the reverse query needs an index anyway".
+Withdrawn: a junction is bidirectionally materialized, so its reverse is a prefix scan, and
+the mirror table's read has to fetch the channel row per hit just the same — that was never
+where the two paths divide.)
 
 ## Alternatives rejected
 

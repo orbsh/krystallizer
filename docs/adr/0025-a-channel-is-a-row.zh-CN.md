@@ -33,12 +33,15 @@
 
 ## 为什么不用 junction
 
-okm 的 `Junction`（okm ADR-0015）是裸多对多的正确载体，这里不合适，两个理由来自同一个性质——junction 条目的值是**空**的：
+频道与成员确实是多对多，`Junction`（okm ADR-0015）也正是为多对多做的——所以差别不在方向，在**载荷**。
 
-- 频道内的身份行（`display_name`、`role`）总得有地方放，放在 junction 旁边就是一个事实两次写。
-- 反向查询无论如何需要索引。junction 的两条条目给的是它被问的那个方向，但要把结果配上频道**行**，每个命中还要再查一次；镜像表让第二个方向直接是一次前缀扫描。
+junction 的一条条目只有键、没有值：`link(a, b)` 在一个 batch 里写两条（各端点 ns 各一条），两条的值都是空。ADR-0015 把代价说得很清楚：「The entry value is empty — it cannot carry relation attributes (join time, role, permission), the classic need of a SQL junction table」。而这条关系每一对都带数据：这个人在**这个频道里**叫什么（`display_name`）、他是人还是 agent（`role`）、什么时候进来的（`since_ms`）——空值的条目没有地方放它们。
 
-值得从 junction 学的、也确实学了的那一点：双写是**一次**提交，所以两个方向不可能只存在一个。`join()` 就是那次提交。
+于是只有两种形状：junction 加一张按端点对寻址的侧文档（一次 join 三次写入，同一件事两个表示），或者两张文档表（两行，行本身就是数据，其中一张的键序就是反向索引）。数据终归要落在某张表里，所以后者少一个表示。
+
+值得从 junction 学、也确实学了的那一点：双写是**一次**提交，两个方向不可能只存在一个。`join()` 就是那次提交。
+
+（本节早先写过「反向查询无论如何需要索引」，撤回：junction 本来就双向物化，反向是一次前缀扫描；镜像表的读同样要在命中后回查频道行，那一点从来不是两条路的分界。）
 
 ## Alternatives rejected
 
