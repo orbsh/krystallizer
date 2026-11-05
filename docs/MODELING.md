@@ -85,6 +85,30 @@ Current standing:
   okm ADR-0017). The weight secondary index is the edge collection's
   `weight` declared field's face (ADR-0005, ADR-0010 §1).
 
+## Reading a container: typed prefixes
+
+A container read — this channel's messages, this scope's nodes, this member's channels — is a **primary-key prefix scan**, and it has one spelling: build the probe with the key's own builder and hand it to `Collection::scan_keys`.
+
+```rust
+let probe = MembershipKey::prefix().channel_id(channel_id).finish();
+for key in memberships.scan_keys(&probe) { … }      // key: MembershipKey, already decoded
+```
+
+- The builder is emitted by the `KeyEncode` derive **in the consumer's crate** (okm ADR-0049): its field methods exist only in declaration order, so inserting a field into the key breaks the old call instead of silently changing what it constrains; `finish()` is available at every depth and stopping early IS the probe (`PrefixProbe::empty()` is the whole table).
+- What comes back is the **decoded key**, not bytes: okm hands the key segment to `K::decode`. An entry whose length disagrees with the declaration is reported as `Corrupt` rather than skipped — stricter than the hand-rolled read it replaces.
+- For the row call `get(&key)`; for key and row together call `scan(&probe)`, which returns `PrefixKey<K>` (`decoded` is the whole key) plus `Option<R>` — okm has already fetched back, and `None` means the row went away between the scan and the read.
+- Do **not** write `store().scan_suffix(prefix)` with `Key::decode(&full[3..])`: header width, a one-byte primary slot against a two-byte index slot, and where the suffix starts are all internals of the key layout; writing them at the call site copies the layout, and the copy drifts when the layout changes. Sentinels that filled the probe's empty fields (`nil_member()`) go away with it.
+- The GRAPH's edge-id recovery does not slice bytes at the call site either: `Graph::max_edge_id()` is one reverse step into the primary slot (`None` = no edges), and `next_edge` is that plus one. No exception is left in the container read.
+
+An **index entry's bytes** are `[ns 2B][slot 2B][index fields…][full primary key]`. `by_member` therefore:
+
+    [ns][0x3001][member_id 16B][channel_id 8B][member_id 16B]
+                 ↑ from the row's payload    ↑ from the primary key
+
+The first `member_id` is a **column on the row** (a generated impl sources index fields from the document); the last two are the **primary key**. They are independent storage locations, so a writer can disagree with itself; `scan` decodes the tail (the entry's last 24 bytes = the whole primary key), which is why `PrefixKey<MembershipKey>.decoded` gives both `channel_id` and `member_id` with no manual slicing.
+
+**A field already in the key must not be copied into a payload column to be indexed.** The copy saves no bytes (both copies still sit in the entry — 40 B) and it introduces an error class nothing checks: column disagreeing with key. When that reverse read is needed, hand-write an access method that reads the field off `key` (`KvIndex::encode_named` receives both key and document) and shorten the tail with `key(...)` (`taken` semantics: prefix fields trustworthy, the rest zero-filled) — the entry drops to 24 B. `memberships.member_id` is still the copied-column shape today; that is the pending item for this rule.
+
 ## Hex stability
 
 Key layouts are locked by each suite's own hex test — `key_layout_is_hex_locked`

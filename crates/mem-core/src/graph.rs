@@ -1084,22 +1084,12 @@ impl GraphStore {
             .collect::<Result<Vec<_>, _>>()?
             .last()
             .map_or(1, |k| k.node_id.saturating_add(1));
-        // `[ns 2B][0x00]` — the primary slot is a fixed face, one byte
-        // (okm ADR-0030), so the header is 3 bytes.
-        let mut pk_prefix = Vec::with_capacity(3);
-        pk_prefix.extend_from_slice(<EntityRow as Document>::NS_PREFIX);
-        write_slot(&mut pk_prefix, PRIMARY_SLOT);
-        let mut edge_prefix = pk_prefix.clone();
-        edge_prefix[0..2].copy_from_slice(Facts::NS_PREFIX);
-        let next_edge = store
-            .scan_suffix(&edge_prefix)
+        // Edge ids come off the graph's own primary slot: the maximum is the
+        // last key, one reverse step inside okm, instead of collecting the
+        // whole id table here and slicing its bytes.
+        let next_edge = Graph::<FjallStore, Facts>::new(store.clone())
+            .max_edge_id()
             .map_err(|e| e.to_string())?
-            .last()
-            .and_then(|sfx| {
-                <[u8; 8]>::try_from(sfx.as_slice())
-                    .ok()
-                    .map(u64::from_be_bytes)
-            })
             .map_or(1, |id| id.saturating_add(1));
         Ok(Self {
             entities,
@@ -1351,21 +1341,10 @@ impl GraphStore {
             .collect::<Result<Vec<_>, _>>()?
             .last()
             .map_or(1, |k| k.node_id.saturating_add(1));
-        let mut pk_prefix = Vec::with_capacity(3);
-        pk_prefix.extend_from_slice(<EntityRow as Document>::NS_PREFIX);
-        write_slot(&mut pk_prefix, PRIMARY_SLOT);
-        let mut edge_prefix = pk_prefix;
-        edge_prefix[0..2].copy_from_slice(Facts::NS_PREFIX);
         let next_edge = self
-            .store
-            .scan_suffix(&edge_prefix)
+            .facts()
+            .max_edge_id()
             .map_err(|e| e.to_string())?
-            .last()
-            .and_then(|sfx| {
-                <[u8; 8]>::try_from(sfx.as_slice())
-                    .ok()
-                    .map(u64::from_be_bytes)
-            })
             .map_or(1, |id| id.saturating_add(1));
         self.next_node = next_node;
         self.next_edge = next_edge;
@@ -1670,19 +1649,10 @@ impl GraphStore {
     /// the primary-key prefix `[scope]`, so no other scope's rows are
     /// touched.
     pub fn scope_entities(&mut self, scope: u64) -> Result<Vec<(u64, EntityRow)>, IngestError> {
-        let mut prefix = Vec::with_capacity(3 + 8);
-        prefix.extend_from_slice(<EntityRow as Document>::NS_PREFIX);
-        write_slot(&mut prefix, PRIMARY_SLOT);
-        prefix.extend_from_slice(&scope.to_be_bytes());
-        let suffixes = self
-            .store
-            .scan_suffix(&prefix)
-            .map_err(|e| IngestError::Storage(e.to_string()))?;
-        let mut out = Vec::with_capacity(suffixes.len());
-        for sfx in &suffixes {
-            let mut full = prefix.clone();
-            full.extend_from_slice(sfx);
-            let key = EntityKey::decode(&full[3..]);
+        let probe = EntityKey::prefix().scope(scope).finish();
+        let mut out = Vec::new();
+        for key in self.entities.scan_keys(&probe) {
+            let key = key.map_err(|e| IngestError::Storage(e.to_string()))?;
             // A node that vanished between the scan and the read is absence; a
             // store that cannot answer is not, and it propagates.
             if let Some(row) = self
@@ -2005,19 +1975,10 @@ impl GraphStore {
     /// the boolean, so a node without a row is a node without a vector — the
     /// `Option`/sentinel the row used to carry is carried by the table now.
     fn scope_vectors(&self, scope: u64) -> Result<HashMap<u64, Vector<f32>>, IngestError> {
-        let mut prefix = Vec::with_capacity(3 + 8);
-        prefix.extend_from_slice(<NodeVector as Document>::NS_PREFIX);
-        write_slot(&mut prefix, PRIMARY_SLOT);
-        prefix.extend_from_slice(&scope.to_be_bytes());
-        let suffixes = self
-            .store
-            .scan_suffix(&prefix)
-            .map_err(|e| IngestError::Storage(e.to_string()))?;
-        let mut out = HashMap::with_capacity(suffixes.len());
-        for sfx in &suffixes {
-            let mut full = prefix.clone();
-            full.extend_from_slice(sfx);
-            let key = EntityKey::decode(&full[3..]);
+        let probe = EntityKey::prefix().scope(scope).finish();
+        let mut out = HashMap::new();
+        for key in self.vectors.scan_keys(&probe) {
+            let key = key.map_err(|e| IngestError::Storage(e.to_string()))?;
             match self
                 .vectors
                 .get(&key)

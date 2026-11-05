@@ -73,6 +73,30 @@ okm 的纪律：查询只走声明过的路径——没有通用全表扫描的�
   ADR-0017）。weight 二级索引 = 边 collection 的 `weight` 声明字段的面
   （ADR-0005、ADR-0010 §1）。
 
+## 读一个容器：类型化前缀
+
+容器的读——这个频道的消息、这个 scope 的节点、这个成员的频道——都是**主键前缀扫描**，写法只有一种：用键自己的 builder 造探针，交给 `Collection::scan_keys`。
+
+```rust
+let probe = MembershipKey::prefix().channel_id(channel_id).finish();
+for key in memberships.scan_keys(&probe) { … }      // key: MembershipKey，已解码
+```
+
+- builder 由 `KeyEncode` 派生在**消费方 crate** 里生成（okm ADR-0049）：字段方法只能按声明顺序调用，键里插一个字段会让旧调用编译不过，而不是悄悄换了含义；`finish()` 在任意深度可用，提前停就是探针（`PrefixProbe::empty()` 是全表）。
+- 返回值是**解码后的键**，不是字节：okm 取主键那一段交给 `K::decode`。条目长度与声明不符时报 `Corrupt` 而不是跳过，比手工切分严格。
+- 要行就 `get(&key)`；要与面一起读就 `scan(&probe)`，它返回 `PrefixKey<K>`（`decoded` 是整条键）加 `Option<R>`——okm 已经回表，`None` 表示扫到读之间那一行消失了。
+- **不写** `store().scan_suffix(prefix)` 配 `Key::decode(&full[3..])`：header 宽度、主键槽 1 字节对索引槽 2 字节、suffix 的起算位置，全是键布局的内部细节；写在调用方就是把布局复制一份，改布局时两边漂移。`nil_member()` 那类「填空位哨兵」也随之消失。
+- GRAPH 的边 id 恢复也不在调用方切字节：`Graph::max_edge_id()` 走主键槽的反向一步（okm 侧提供，`None` 表示没有边），`next_edge` 由它加一得到。至此容器读没有例外。
+
+**面条目的字节**是 `[ns 2B][slot 2B][索引字段…][完整主键]`。`by_member` 因此长这样：
+
+    [ns][0x3001][member_id 16B][channel_id 8B][member_id 16B]
+                 ↑ 来自行 payload 的列    ↑ 来自主键
+
+前一个 `member_id` 是**行里的列**（生成的 impl 从 document 取索引字段），后两个是**主键**。两份在存储上是独立位置，写入方可以写不一致；`scan` 解出的 `PrefixKey<MembershipKey>.decoded` 取的是尾巴（条目最后 24 字节 = 整条主键），所以反查拿到的 `channel_id` 与 `member_id` 都可信，不需要手工切分。
+
+**键里已有的字段不要再复制成 payload 列去建索引。** 复制列既不省字节（面条目里两份都在，40B），又引入一类没有检查的错误——列与键不一致。需要这种反查就手写一个从 `key` 取字段的访问方法（`KvIndex::encode_named` 同时收到 key 与 document），配合 `key(...)` 把尾巴截短（`taken` 语义：前缀字段可信，其后零填），条目能回到 24B。今天 `memberships.member_id` 还是复制列形态，是这条纪律的待改点。
+
 ## Hex 稳定性
 
 Key 布局由各套件自己的 hex 测试锁定——`tests/channel.rs` 与 `tests/code.rs` 的

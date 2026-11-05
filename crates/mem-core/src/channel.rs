@@ -31,10 +31,7 @@
 //! time inside that turn, so a prefix scan over `channel_id` returns the
 //! log in conversation order with no sort step (ADR-0024).
 
-use okm_core::{
-    write_slot, Document, DocumentEncode, FjallStore, KeyEncode, Uuid7, VirtualStorage,
-    PRIMARY_SLOT,
-};
+use okm_core::{Document, DocumentEncode, FjallStore, KeyEncode, Uuid7};
 
 /// Append-only message log (ns 33 — the channel-log band, next to flat
 /// memory's 32; one entity class = one ns, per MODELING).
@@ -373,11 +370,6 @@ pub fn member_node(member_id: Uuid7) -> String {
 /// fixed so callers need not thread it through Phase 0's turn loop.
 pub fn default_member() -> Uuid7 {
     Uuid7::from_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
-}
-
-/// The nil uuid — the value a prefix scan puts where the field is NOT being filtered on.
-fn nil_member() -> Uuid7 {
-    Uuid7::from_bytes([0u8; 16])
 }
 
 /// The name member 1 is seeded with on a channel's first touch. One constant so
@@ -810,26 +802,10 @@ impl ChannelStore {
         &mut self,
         channel_id: u64,
     ) -> Result<Vec<(CheckpointKey, CheckpointRow)>, String> {
-        let mut prefix = Vec::with_capacity(3 + 8);
-        prefix.extend_from_slice(CheckpointRow::NS_PREFIX);
-        write_slot(&mut prefix, PRIMARY_SLOT);
-        let probe = CheckpointKey {
-            channel_id,
-            turn_id: 0,
-            ts_ms: 0,
-            sub: 0,
-        };
-        probe.encode_prefix_named(&mut prefix, &["channel_id"]);
-        let suffixes = self
-            .checkpoints
-            .store()
-            .scan_suffix(&prefix)
-            .map_err(|e| e.to_string())?;
-        let mut out = Vec::with_capacity(suffixes.len());
-        for sfx in &suffixes {
-            let mut full = prefix.clone();
-            full.extend_from_slice(sfx);
-            let key = CheckpointKey::decode(&full[3..]);
+        let probe = CheckpointKey::prefix().channel_id(channel_id).finish();
+        let mut out = Vec::new();
+        for key in self.checkpoints.scan_keys(&probe) {
+            let key = key.map_err(|e| e.to_string())?;
             // A node that vanished between the scan and the read is absence; a
             // store that cannot answer is not, and it propagates.
             if let Some(row) = self.checkpoints.get(&key).map_err(|e| e.to_string())? {
@@ -1222,24 +1198,13 @@ impl ChannelStore {
     /// Every channel row, in id order. The set of channels is small by nature (one per line), and
     /// this is the call a deployment makes to find "the channel for this person's line".
     pub fn channels(&mut self) -> Result<Vec<(ChannelKey, ChannelRow)>, String> {
-        let mut prefix = Vec::with_capacity(3);
-        prefix.extend_from_slice(ChannelRow::NS_PREFIX);
-        write_slot(&mut prefix, PRIMARY_SLOT);
-        let suffixes = self
-            .channels
-            .store()
-            .scan_suffix(&prefix)
-            .map_err(|e| e.to_string())?;
-        let mut out = Vec::with_capacity(suffixes.len());
-        for sfx in &suffixes {
-            let mut full = prefix.clone();
-            full.extend_from_slice(sfx);
-            let key = ChannelKey::decode(&full[3..]);
+        let mut out = Vec::new();
+        for key in self.channels.scan_keys(&okm_core::PrefixProbe::empty()) {
+            let key = key.map_err(|e| e.to_string())?;
             if let Some(row) = self.channels.get(&key).map_err(|e| e.to_string())? {
                 out.push((key, row));
             }
         }
-        out.sort_by_key(|(key, _)| key.channel_id);
         Ok(out)
     }
 
@@ -1253,32 +1218,17 @@ impl ChannelStore {
     /// Every member of one channel, in member-id order. The RELATIONSHIP table answers this now:
     /// the channel's key prefix lists its rows, and each row's member id fetches the identity.
     pub fn members(&mut self, channel_id: u64) -> Result<Vec<(MemberKey, MemberRow)>, String> {
-        let mut prefix = Vec::with_capacity(4 + 8);
-        prefix.extend_from_slice(MembershipRow::NS_PREFIX);
-        write_slot(&mut prefix, PRIMARY_SLOT);
-        let probe = MembershipKey {
-            channel_id,
-            member_id: nil_member(),
-        };
-        probe.encode_prefix_named(&mut prefix, &["channel_id"]);
-        let suffixes = self
-            .memberships
-            .store()
-            .scan_suffix(&prefix)
-            .map_err(|e| e.to_string())?;
-        let mut out = Vec::with_capacity(suffixes.len());
-        for sfx in &suffixes {
-            let member_id = Uuid7::from_bytes(
-                sfx[..16]
-                    .try_into()
-                    .map_err(|_| "a membership key without a member id".to_string())?,
-            );
-            let key = MemberKey { member_id };
-            if let Some(row) = self.members.get(&key).map_err(|e| e.to_string())? {
-                out.push((key, row));
+        let probe = MembershipKey::prefix().channel_id(channel_id).finish();
+        let mut out = Vec::new();
+        for key in self.memberships.scan_keys(&probe) {
+            let key = key.map_err(|e| e.to_string())?;
+            let identity = MemberKey {
+                member_id: key.member_id,
+            };
+            if let Some(row) = self.members.get(&identity).map_err(|e| e.to_string())? {
+                out.push((identity, row));
             }
         }
-        out.sort_by_key(|(key, _)| key.member_id);
         Ok(out)
     }
 
@@ -1336,31 +1286,10 @@ impl ChannelStore {
         channel_id: u64,
         after: Pointer,
     ) -> Result<Vec<(MessageKey, MessageRow)>, String> {
-        // Header is `[ns 2B][0x00]` — the primary slot is a fixed face, one
-        // byte (okm ADR-0030).
-        let mut prefix = Vec::with_capacity(3 + 8);
-        prefix.extend_from_slice(MessageRow::NS_PREFIX);
-        okm_core::index::write_slot(&mut prefix, okm_core::index::PRIMARY_SLOT);
-        let probe = MessageKey {
-            channel_id,
-            turn_id: 0,
-            ts_ms: 0,
-            sub: 0,
-        };
-        probe.encode_prefix_named(&mut prefix, &["channel_id"]);
-        let suffixes = self
-            .messages
-            .store()
-            .scan_suffix(&prefix)
-            .map_err(|e| e.to_string())?;
-        let mut out = Vec::with_capacity(suffixes.len());
-        for sfx in &suffixes {
-            // suffix = `[turn_id 8B][ts_ms 8B][sub 2B]` after
-            // `[ns 2B][0x00][channel_id 8B]`; decode via full-key
-            // reconstruction (the graph's pattern).
-            let mut full = prefix.clone();
-            full.extend_from_slice(sfx);
-            let key = MessageKey::decode(&full[3..]);
+        let probe = MessageKey::prefix().channel_id(channel_id).finish();
+        let mut out = Vec::new();
+        for key in self.messages.scan_keys(&probe) {
+            let key = key.map_err(|e| e.to_string())?;
             if Pointer::of(&key) <= after {
                 continue;
             }

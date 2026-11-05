@@ -798,3 +798,26 @@ Deferred gates:
   may now make.
 
 - [ ] Deferred (2026-10-31, owner): **populating relations from documents** — `docs/ideas/hypergraph-population.md`, moved here from okm the same day. Local extraction (NER + embedding clustering, or a small model for the predicate) instead of a general LLM reading everything, with the store's key layout as the constraint. Deferred because its first step is a product decision, not a model choice: whether this service ingests unstructured text at all. If it does, the dependency check in that document fixes the order: entity resolution and predicate canonicalization come BEFORE any extractor — identity is decided before the write, a wrong resolution writes a wrong edge with no marker, and the predicate vocabulary is append-only with first-seen numbering and no removal API, so an extractor that invents a synonym per document grows it permanently. A companion idea covers the other half — keeping the group of facts an extraction produced from dissolving (`docs/ideas/extraction-group.md`; no carrier needed). The learner stays outside the store: okm holds no weights and no continual learning, and what it can hold is the outcome — a confidence field, the edge's existence, the feedback event that drove it. Nothing in that pipeline changes a key or a face.
+
+
+**2026-11-05 — 容器读统一走类型化探针（okm ADR-0049），不再手工切键**：六处 `store().scan_suffix()`
+换成 `Key::prefix()...finish()` + `Collection::scan_keys()`——`checkpoints_of`、`channels`、
+`members`、channel 日志读、`scope_entities`、`scope_vectors`。键由 okm 解码成声明类型（`CheckpointKey`
+/ `ChannelKey` / `MembershipKey` / `MessageKey` / `EntityKey`），长度与声明不符时报 `Corrupt` 而不是
+静默跳过；两处多余的 `sort_by_key` 删掉（键序已经决定顺序），`nil_member()` 随之退场。
+
+剩余两处原始扫描是 GRAPH 的边 id 恢复（`max(edge_id) + 1`）：okm 没有类型化原语——`Graph::edge_ids()`
+是**急切**的 `Vec`，内部同样手切 8 字节。值得补的是 `Graph::max_edge_id()`（反向区间扫描、懒），
+那要动 okm 并让本仓 `cargo update -p okm-core`，不在本笔。
+
+门：171 例 OK（`cargo test --workspace`），`cargo check --all-targets` 零警告。
+
+**2026-11-05 — 边 id 恢复收尾，容器读再无例外**：上面留的两处换成 `Graph::max_edge_id()`（okm
+`f905750`：主键槽 `[ns][0x00][edge_id 8B]` 的反向一步，`None` 表示没有边，键宽不符报 `Corrupt`
+而不是截成一个错的 id），`next_edge` 由它加一。`open` 里那套「造 EntityRow 的前缀再覆写前两字节成
+`Facts` ns、再切末 8 字节」退场，`reseed` 同形，成 `self.facts().max_edge_id()`。okm 依赖
+`463b493d → ddbad228`（`cargo update -p okm-core`；lock 不入版本控制）。
+
+门：217 例 OK（`cargo test --workspace`），`cargo check --all-targets` 零警告；`scan_suffix` 在
+`crates/mem-core` 清零，余下的 `from_bytes` 是 `Uuid7` 构造与 `member_from_pkey` 的裸键转换
+（`MemberKey` 整条键就是一个 id，没有 header 与槽位可切，不是反模式）。
