@@ -25,7 +25,7 @@ the little a caller must know before executing them.
 
 ### 1. One row per reusable piece of code, keyed by a bare surrogate id
 
-`CodeKey { code_id: u64 }` at ns 35. No name, no content hash.
+`CodeKey { code_id: u64 }` at ns 35. No caller-proposed name, no content hash.
 
 - **No name** because a name is a namespace, and this store has no authority to
   allocate one: two authors both write `login.nu`, and resolving that is a governance
@@ -42,9 +42,19 @@ the highest id ever written is one point read at open and the unfold is a NO-OP 
 withdrawing a row never frees its id for the next delivery. A counter recovered from
 "the last key" would do exactly that, silently, the first time a table was emptied.
 
+The row is a VERTEX of the fact graph — `kind = "code"` in ns 36, named `code-{id}`
+(ADR-0023). That name is the graph's own addressing, synthetic and derived from the
+number: it carries nothing but the number, and no caller proposes it. The row has to be
+an entity because a fact must be able to point at code — gravity ADR-0003 §3 binds a
+task to the code row that finishes it (`task --finishes_on--> code`), and a fact
+reaches entities. The payload below sits on a sheet beside the vertex (ns 35, keyed
+`[scope][code_id]`), and the doors carry that scope (`/code/{scope}`), because the
+vertex lives in that scope's graph.
+
 ### 2. The row carries what a caller needs BEFORE reading the source
 
-`CodeRow { language, description, parameters, source }`.
+`CodeRow { language, description, parameters, source }`, on the sheet beside the
+vertex.
 
 `description` is what a skill-to-code link is decided from; `parameters` is the
 parameter definition, carried as a JSON document in TEXT — **the store does not parse
@@ -76,21 +86,20 @@ direction — many skills to one code row — is why the row exists separately a
 code were stored INSIDE a skill node, that script would be duplicated into every skill
 that uses it.
 
-### 5. `list()` is a bring-up posture, not the interface
+### 5. There is no list door
 
-The bring-up pool read (`GET /code`, identity + language + description and **no
-source**) was WITHDRAWN 2026-10-20: no consumer ever issued it — gravity reads one
-row by id at call time, and the resolver's "which step points at which code" question
-is the graph's (Phase 5+). A door nobody calls is a surface to keep honest for
-nothing. It was described as
-while skills do not yet link to code; when the graph's retrieval can answer "which code
-does a step of this skill point at", that query replaces the list.
+The store exposes no pool read over rows (`GET /code`, identity + language + description
+and no source): gravity reads one row by id at call time, and "which step of which
+skill points at which code" is the graph's question, answered by the graph's retrieval
+(PLAN 2.8), not by a listing here. A door nobody calls is a surface to keep honest for
+nothing.
 
 ### 6. Storage placement
 
-The table lives in the `memory` keyspace — one tree with the graph and (later) the
-skills, discriminated by ns, so a code row and a fact do not need two database handles.
-The API is `put` / `get` / `list`.
+The sheet lives in the `memory` keyspace — one tree with the graph and (later) the
+skills, discriminated by ns, so a code row and a fact do not need two database handles —
+keyed `[scope][code_id]`, while the vertex lives in the graph's entity table (ns 36).
+The API is `put` / `get`, behind the scoped code doors.
 
 ## Why Not
 
@@ -98,14 +107,14 @@ The API is `put` / `get` / `list`.
   as one fact it is an opaque blob wearing an edge's clothes; split into pieces it needs
   reassembly rules nothing else in the graph has. Weight and decay, the graph's whole
   point, mean nothing for source.
-- **A `name` field as the lookup key**: inviting a global namespace the store cannot
-  police (collisions, renames, case folding), and a rename would either break links or
-  require rewriting them.
+- **A caller-proposed `name` as the lookup key**: inviting a global namespace the store
+  cannot police (collisions, renames, case folding), and a rename would either break
+  links or require rewriting them.
 - **A content hash as identity**: dedupe by value. It also silently merges two rows that
   differ only in `parameters` — the field that actually decides how the code is called.
 - **A version column**: gravity re-reads the row on every call, so the row's source is
-  whatever it says now. History, when it is wanted, is a second row plus a link saying
-  one succeeded the other — not a version integer the store would have to interpret.
+  whatever it says now; history is the chain of revisions under the id (ADR-0023), not a
+  version integer the row carries and the store would have to interpret.
 - **A search door over source**: this is not a second memory surface. Retrieval for code
   belongs to the graph's link from a skill, not to a text search here.
 
@@ -116,21 +125,5 @@ The API is `put` / `get` / `list`.
 - A caller that stores code without a matching mount on the executing node finds out at
   call time, loudly. That asymmetry is deliberate: the store cannot know what a node
   can run.
-- The `list()` shape is owed a replacement by the graph's retrieval (PLAN 2.8), and this
-  ADR records that the list is a bring-up posture so nobody mistakes it for the design.
-
-## Update (2026-10-31) — the row moved onto a node
-
-[ADR-0023](0023-a-code-row-is-a-vertex.md) amends this decision at the address, not at
-the payload. A code row is now a VERTEX of the fact graph (`kind = "code"`, named
-`code-{id}`) with the fields below on a sheet beside it (ns 35, keyed `[scope][code_id]`).
-
-Why: gravity ADR-0003 §3 binds a task to the code row that finishes it
-(`task --finishes_on--> code`), and a fact reaches entities — so the moment anything has
-to POINT at a piece of code, that piece of code has to be a node.
-
-What stands unchanged: the surrogate id (still the number a skill's `steps[].code_id`
-carries), the payload, the watermark allocator, and this ADR's reason for refusing a
-meaningful name. What changed: the name now exists (synthetic, derived from the id, the
-graph's own addressing), the doors are scoped (`/code/{scope}`), and the table's key has
-a scope in front of it. The "Why Not" entries above still hold as written.
+- "Which code does a step of this skill point at" is the graph's retrieval (PLAN 2.8);
+  the store answers reads by id and never grows a listing to answer it.
