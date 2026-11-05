@@ -95,7 +95,7 @@ for key in memberships.scan_keys(&probe) { … }      // key: MembershipKey，�
 
 前一个 `member_id` 是**行里的列**（生成的 impl 从 document 取索引字段），后两个是**主键**。两份在存储上是独立位置，写入方可以写不一致；`scan` 解出的 `PrefixKey<MembershipKey>.decoded` 取的是尾巴（条目最后 24 字节 = 整条主键），所以反查拿到的 `channel_id` 与 `member_id` 都可信，不需要手工切分。
 
-**索引字段来自 payload，所以键里已有的字段要复制成列。** `memberships.member_id` 就是这种复制：反查要扫它，而生成的数据段只认行上的字段。条目因此是 `[ns][slot][member_id][channel_id][member_id]`，尾巴是**完整主键**——一次扫描给回键和行，`decoded` 里两段都是真的，不用调用方拼。让 `fields(...)` 命名键里的字段、配合 `key(channel_id)` 把尾巴截短能把条目降到 28 字节，但那要动 okm 的 derive，并把 `fields(...)` 打错字从编译错误退化成第一次写入时的 panic，还会失去回表——评估过，不划算（okm MODELING 多对多那节记着这笔账）。
+**索引字段来自 payload，所以键里已有的字段要复制成列。** `memberships.member_id` 就是这种复制：反查要扫它，而生成的数据段只认行上的字段。条目因此是 `[ns][slot][member_id][channel_id][member_id]`，尾巴是**完整主键**——一次扫描给回键和行，`decoded` 里两段都是真的，不用调用方拼。让 `fields(...)` 命名键里的字段、配合 `key(channel_id)` 把尾巴截短能把条目降到 28 字节，但那要动 okm 的 derive，并把 `fields(...)` 打错字从编译错误退化成第一次写入时的 panic，还会失去回表——评估过，不划算（okm ADR-0052 与它 MODELING 的多对多一节记着这笔账）。
 
 ## Hex 稳定性
 
