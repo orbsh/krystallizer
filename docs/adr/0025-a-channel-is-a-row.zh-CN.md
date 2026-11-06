@@ -27,9 +27,9 @@
 
 `members` 的键只有 `[member_id]`，行上是 `{ display_name, role }`——一个人一行，不管他在几个频道里。按频道切分是第一版的做法，它让「这个 uuid 是谁」必须先说出一个频道才答得上来。
 
-`memberships` 的键是 `[channel_id][member_id]` → `{ member_id, nickname, since_ms }`，并在成员列上声明 `by_member` 索引。频道在前是因为频道是容器：删一个频道就是一段键区间的事；而「这个人在哪些频道」是索引的活。`nickname` 是频道内的名字，空 = 用身份的 `display_name`——与 checkpoint 摘要同一条「空即不存在」的规矩，因为 `DocumentEncode` 没有 `Option<T>`。`join()` 在一个批里写身份行与关系行，提交一次。
+`memberships` 的键是 `[channel_id][member_id]` → `{ nickname, since_ms }`，`by_member` 是键里成员那一段上的**前导面**（okm ADR-0054）。频道在前是因为频道是容器：删一个频道就是一段键区间的事；而「这个人在哪些频道」是这张面的活——面从键里读那个已经存着的成员 id，所以行上不再有它的副本。`nickname` 是频道内的名字，空 = 用身份的 `display_name`——与 checkpoint 摘要同一条「空即不存在」的规矩，因为 `DocumentEncode` 没有 `Option<T>`。`join()` 在一个批里写身份行与关系行，提交一次。
 
-**3. 读在存储层收口。** `channels_of_app(app_id)`（按 app id 等值）、`channels_of(member_id)`（走 `by_member` 索引，每条命中一次回表）、`members(channel_id)`（关系表上的前缀扫描），以及两个门 `GET /channels?app=`、`GET /members/{id}/channels?app=`。关系行自己没有 app：过滤落在它指向的那条频道行上。
+**3. 读在存储层收口。** `channels_of_app(app_id)`（按 app id 等值）、`channels_of(member_id)`（走 `by_member` 前导面：类型化探针、一次前缀扫描）、`members(channel_id)`（关系表上的前缀扫描），以及两个门 `GET /channels?app=`、`GET /members/{id}/channels?app=`。关系行自己没有 app：过滤落在它指向的那条频道行上。
 
 **4. 成员 id 就是用户 id，类型 `Uuid7`。** prism 铸造，k10r 原样存进 `MemberKey`、`MembershipKey`、`CursorKey`、消息日志的 sender，以及图里 `member-{uuid}` 的节点名。不用数字代理键，不哈希 uuid：日志里一个回不到身份的 id，对之后每一个「这是谁写的」都是死路；而 `Uuid7` 是 128 位定宽值，键布局照旧定宽，只是更宽。
 
@@ -61,4 +61,4 @@
 4. **`owner` 改名 `app`**（`7df7508`），并与 `scene` 分开。被否决的名字记在这里，而不是日后在本 ADR 上打补丁。
 5. **`member_id`：`u64` → `Uuid7`**（进行中）：最初的实现用数字成员 id，device → user → channel 这条链没法把 prism 的身份带过去。
 6. **app 变成一张表**（`25c5c16`）：`app` 起初是频道行上的 `String`，现在是 `Uuid7` 的 `app_id`，指向 `apps`。手写的过滤键会让「gravity 那唯一一个频道」取决于拼法。
-7. **成员不再按频道切分，镜像表随之消失**（本次改动）：第一版把 `members` 的键做成 `[channel_id][member_id]`，并留 `memberships` 当镜像，关系只能装 `since_ms`。身份是全局的，频道前缀离开成员键之后，关系自己成了一张表——`{ nickname, since_ms }` 加 `by_member` 索引——镜像也就不需要了。图跟着改：成员节点是 `member-{uuid}`，不再是 `member-{channel}-{uuid}`。
+7. **成员不再按频道切分，镜像表随之消失**（本次改动）：第一版把 `members` 的键做成 `[channel_id][member_id]`，并留 `memberships` 当镜像，关系只能装 `since_ms`。身份是全局的，频道前缀离开成员键之后，关系自己成了一张表——`{ nickname, since_ms }` 加基于它键的 `by_member` 面——镜像也就不需要了。图跟着改：成员节点是 `member-{uuid}`，不再是 `member-{channel}-{uuid}`。

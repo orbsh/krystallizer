@@ -46,16 +46,17 @@ the machine filters on must not change when a human renames a label.
 person, whatever channels they are in. Slicing it by channel was the first cut, and it made
 "who is this uuid" unanswerable without naming a channel first.
 
-`memberships` is keyed `[channel_id][member_id]` → `{ member_id, nickname, since_ms }`, with
-`by_member` declared over the member column. The channel leads because the channel is the
-container: deleting one purges its relationships as a single key range, while "which channels
-is this person in" is the index's job. `nickname` is the per-channel name, empty meaning "use
+`memberships` is keyed `[channel_id][member_id]` → `{ nickname, since_ms }`, with `by_member`
+declared as a **lead face** over the member segment of that key (okm ADR-0054). The channel
+leads because the channel is the container: deleting one purges its relationships as a single
+key range, while "which channels is this person in" is the face's job — and the face reads the
+member id out of the key it is already stored in, so the row carries no copy of it. `nickname` is the per-channel name, empty meaning "use
 the identity's `display_name`" — the same "empty means absent" rule the checkpoint summary
 uses, since `DocumentEncode` has no `Option<T>`. `join()` writes the identity row and the
 relationship row in one batch and commits once.
 
 **3. Reads are filtered at the storage line.** `channels_of_app(app_id)` (equality on the app
-id), `channels_of(member_id)` (the `by_member` index, fetch-back per hit), `members(channel_id)`
+id), `channels_of(member_id)` (the `by_member` lead face: typed probe, one prefix scan), `members(channel_id)`
 (prefix over the relationship), and the doors `GET /channels?app=`,
 `GET /members/{id}/channels?app=`. The relationship carries no app of its own: the filter is
 applied to the channel row it names.
@@ -121,6 +122,6 @@ This ADR is the terminal state. The changes it records:
    the first cut keyed `members` by `[channel_id][member_id]` and kept `memberships` as its
    mirror, with `since_ms` as the only thing a relationship could carry. Identity is global,
    so the channel prefix left the member key; the relationship then became a table in its own
-   right — `{ nickname, since_ms }` plus a `by_member` index — which is what made the mirror
-   unnecessary. The graph followed: a member node is `member-{uuid}`, no longer
+   right — `{ nickname, since_ms }` plus a `by_member` face over its key — which is what made the
+   mirror unnecessary. The graph followed: a member node is `member-{uuid}`, no longer
    `member-{channel}-{uuid}`.

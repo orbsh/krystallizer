@@ -100,14 +100,14 @@ for key in memberships.scan_keys(&probe) { … }      // key: MembershipKey, alr
 - Do **not** write `store().scan_suffix(prefix)` with `Key::decode(&full[3..])`: header width, a one-byte primary slot against a two-byte index slot, and where the suffix starts are all internals of the key layout; writing them at the call site copies the layout, and the copy drifts when the layout changes. Sentinels that filled the probe's empty fields (`nil_member()`) go away with it.
 - The GRAPH's edge-id recovery does not slice bytes at the call site either: `Graph::max_edge_id()` is one reverse step into the primary slot (`None` = no edges), and `next_edge` is that plus one. No exception is left in the container read.
 
-An **index entry's bytes** are `[ns 2B][slot 2B][index fields…][full primary key]`. `by_member` therefore:
+An **entry's bytes** are `[ns 2B][slot 2B][segment…][key tail]`. `by_member` therefore:
 
-    [ns][0x3001][member_id 16B][channel_id 8B][member_id 16B]
-                 ↑ from the row's payload    ↑ from the primary key
+    [ns][0x5001][member_id 16B][channel_id 8B][member_id 16B]
+                 ↑ sliced out of the key      ↑ the whole primary key
 
-The first `member_id` is a **column on the row** (a generated impl sources index fields from the document); the last two are the **primary key**. They are independent storage locations, so a writer can disagree with itself; `scan` decodes the tail (the entry's last 24 bytes = the whole primary key), which is why `PrefixKey<MembershipKey>.decoded` gives both `channel_id` and `member_id` with no manual slicing.
+The two `member_id`s are the same bytes of the same key: a lead face (okm ADR-0054) cuts its segment out of the key's own encoding instead of copying identity into a column, so there is ONE storage location and nothing for a writer to disagree with. `scan` decodes the tail (the entry's last 24 bytes = the whole primary key), which is why `PrefixKey<MembershipKey>.decoded` gives both `channel_id` and `member_id` with no manual slicing.
 
-**Index fields come from the payload, so a field already in the key is copied into a column.** `memberships.member_id` is that copy: the reverse read scans it, and a generated data segment only knows row fields. The entry is therefore `[ns][slot][member_id][channel_id][member_id]` with the **whole primary key** as its tail — one scan hands back key and row, both decoded segments are true, and no caller assembles anything. Naming the key field in `fields(...)` and truncating the tail with `key(channel_id)` would cut the entry to 28 bytes, but it needs a derive change in okm, degrades a `fields(...)` typo from a compile error to a panic at the first write, and loses the fetch-back — rejected; okm ADR-0052 and its MODELING many-to-many section carry the account.
+**An identity-based reverse read does not cost a column.** It used to: an `#[ok_index]` sources its fields from the payload, so the member id had to be copied onto the row, and a `merge` could set the copy to a value the key disagreed with. `#[ok_lead(by_member { fields(member_id) })]` drops the copy — the row is `{ nickname, since_ms }` — and buys nothing else: same entry shape, same typed probe (`.prefix().member_id(id).finish()`), and `rebuild_faces` repairs the face without decoding a row, because the segment is in the key. What it costs is a second declaration kind, not a second copy. Truncating the tail with `key(channel_id)` remains a separate decision: 28 bytes, keys only, continue with a primary prefix read.
 
 ## Hex stability
 

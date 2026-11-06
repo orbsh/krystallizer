@@ -292,12 +292,12 @@ pub struct MembershipKey {
 #[ok_ref(MembershipKey)]
 #[ok_ns(46)]
 #[ok_name("memberships")]
-#[ok_index(by_member { fields(member_id) })]
+#[ok_layout(version = 2)]
+// A LEAD face (okm ADR-0054): its segment is sliced out of the key's own encoding, so the
+// member id is NOT copied into the payload. One fact, one place — a `merge` cannot set the
+// column to something the key disagrees with, and the reverse read rebuilds without a decode.
+#[ok_lead(by_member { fields(member_id) })]
 pub struct MembershipRow {
-    /// The member id as a COLUMN, not only as a key segment: the `by_member` index is declared
-    /// over a row field, and this is the field that makes "which channels does this person
-    /// belong to" a prefix scan instead of a walk.
-    pub member_id: Uuid7,
     /// The name this person goes by IN THIS CHANNEL. Empty = use the identity's
     /// `display_name` (the same "empty means absent" rule the checkpoint summary follows);
     /// `DocumentEncode` has no `Option<T>`, and inventing one for a display detail would be a
@@ -530,15 +530,7 @@ impl ChannelStore {
         self.ensure_member(channel_id)?;
         let turn_id = self.last_turn(channel_id)? + 1;
         self.append_from(
-            channel_id,
-            turn_id,
-            ts_ms,
-            sub,
-            sender,
-            end_ts_ms,
-            role,
-            kind,
-            content,
+            channel_id, turn_id, ts_ms, sub, sender, end_ts_ms, role, kind, content,
         )
     }
 
@@ -750,7 +742,6 @@ impl ChannelStore {
                 .put(
                     &joined,
                     &MembershipRow {
-                        member_id: default_member(),
                         nickname: String::new(),
                         since_ms: 0,
                     },
@@ -782,9 +773,9 @@ impl ChannelStore {
             Some((key, _)) => self.checkpoint_head(key)?,
             None => None,
         };
-        let compressing = nodes
-            .last()
-            .is_some_and(|(key, row)| row.summary.is_empty() && Pointer::of_checkpoint(key) > coverage);
+        let compressing = nodes.last().is_some_and(|(key, row)| {
+            row.summary.is_empty() && Pointer::of_checkpoint(key) > coverage
+        });
         Ok(SessionView {
             coverage,
             summary,
@@ -1150,16 +1141,13 @@ impl ChannelStore {
                     member_id,
                 },
                 &MembershipRow {
-                    member_id,
                     nickname: String::new(),
                     since_ms,
                 },
                 None,
             )
             .map_err(|e| e.to_string())?;
-        self.members
-            .commit_batch(batch)
-            .map_err(|e| e.to_string())
+        self.members.commit_batch(batch).map_err(|e| e.to_string())
     }
 
     /// Which channels this MEMBER is in — the direction the primary key cannot answer (it starts
@@ -1167,10 +1155,14 @@ impl ChannelStore {
     /// index, a fetch-back per hit. The reverse of a container read costs one hop, which is what
     /// a secondary index is (ADR-0051).
     pub fn channels_of(&mut self, member_id: Uuid7) -> Result<Vec<(u64, MembershipRow)>, String> {
-        let probe: &[u8] = member_id.as_bytes();
+        // A typed probe over the lead face: the segment is the key's own bytes, so the
+        // builder takes the id and the entry comes out already ordered by it.
+        let probe = __OkmLead_MembershipRow_by_member::prefix()
+            .member_id(member_id)
+            .finish();
         let hits = self
             .memberships
-            .scan::<__OkmIndex_MembershipRow_by_member>(probe)
+            .scan::<__OkmLead_MembershipRow_by_member>(&probe)
             .map_err(|e| e.to_string())?;
         let mut out: Vec<(u64, MembershipRow)> = hits
             .into_iter()
@@ -1183,7 +1175,10 @@ impl ChannelStore {
     /// Every channel this APP owns, in id order — the read that answers "which channel is this
     /// person's line" once the caller has narrowed by membership. Filtering here rather than in
     /// the caller keeps the "exactly one" invariant at the storage line that states it.
-    pub fn channels_of_app(&mut self, app_id: Uuid7) -> Result<Vec<(ChannelKey, ChannelRow)>, String> {
+    pub fn channels_of_app(
+        &mut self,
+        app_id: Uuid7,
+    ) -> Result<Vec<(ChannelKey, ChannelRow)>, String> {
         // The filter is equality on the app id, not on a label: the deployment writes the id
         // once and nothing relabels it, so "exactly one channel for this app" cannot become a
         // spelling question. `by_app` is declared on the row; the set of channels is small by

@@ -88,14 +88,14 @@ for key in memberships.scan_keys(&probe) { … }      // key: MembershipKey，�
 - **不写** `store().scan_suffix(prefix)` 配 `Key::decode(&full[3..])`：header 宽度、主键槽 1 字节对索引槽 2 字节、suffix 的起算位置，全是键布局的内部细节；写在调用方就是把布局复制一份，改布局时两边漂移。`nil_member()` 那类「填空位哨兵」也随之消失。
 - GRAPH 的边 id 恢复也不在调用方切字节：`Graph::max_edge_id()` 走主键槽的反向一步（okm 侧提供，`None` 表示没有边），`next_edge` 由它加一得到。至此容器读没有例外。
 
-**面条目的字节**是 `[ns 2B][slot 2B][索引字段…][完整主键]`。`by_member` 因此长这样：
+**条目字节**是 `[ns 2B][slot 2B][段…][键尾]`。`by_member` 因此长这样：
 
-    [ns][0x3001][member_id 16B][channel_id 8B][member_id 16B]
-                 ↑ 来自行 payload 的列    ↑ 来自主键
+    [ns][0x5001][member_id 16B][channel_id 8B][member_id 16B]
+                 ↑ 从键里切出来的段        ↑ 完整主键
 
-前一个 `member_id` 是**行里的列**（生成的 impl 从 document 取索引字段），后两个是**主键**。两份在存储上是独立位置，写入方可以写不一致；`scan` 解出的 `PrefixKey<MembershipKey>.decoded` 取的是尾巴（条目最后 24 字节 = 整条主键），所以反查拿到的 `channel_id` 与 `member_id` 都可信，不需要手工切分。
+两个 `member_id` 是同一条键的同一批字节：前导面（okm ADR-0054）把段从键自己的编码里切出来，而不是把身份复制成列，所以存储上只有一个位置，写入方没有东西可以写不一致。`scan` 解出的 `PrefixKey<MembershipKey>.decoded` 取的是尾巴（条目最后 24 字节 = 整条主键），所以反查拿到的 `channel_id` 与 `member_id` 都可信，不需要手工切分。
 
-**索引字段来自 payload，所以键里已有的字段要复制成列。** `memberships.member_id` 就是这种复制：反查要扫它，而生成的数据段只认行上的字段。条目因此是 `[ns][slot][member_id][channel_id][member_id]`，尾巴是**完整主键**——一次扫描给回键和行，`decoded` 里两段都是真的，不用调用方拼。让 `fields(...)` 命名键里的字段、配合 `key(channel_id)` 把尾巴截短能把条目降到 28 字节，但那要动 okm 的 derive，并把 `fields(...)` 打错字从编译错误退化成第一次写入时的 panic，还会失去回表——评估过，不划算（okm ADR-0052 与它 MODELING 的多对多一节记着这笔账）。
+**按身份反查不需要付一列的代价。** 以前要：`#[ok_index]` 的字段来自 payload，所以成员 id 必须复制到行上，而 `merge` 可以把那份副本改成键不承认的值。`#[ok_lead(by_member { fields(member_id) })]` 去掉这份复制——行就是 `{ nickname, since_ms }`——别的什么都没换：条目形状一样，类型化探针一样（`.prefix().member_id(id).finish()`），而 `rebuild_faces` 修这张面时不解码任何一行，因为段就在键里。代价是多了一种声明，不是多了一份副本。配合 `key(channel_id)` 截短尾巴仍然是另一个独立决定：28 字节、只出键、用主键前缀续扫。
 
 ## Hex 稳定性
 
