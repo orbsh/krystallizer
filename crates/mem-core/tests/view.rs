@@ -29,7 +29,6 @@ fn m(n: u8) -> mem_core::Uuid7 {
     mem_core::Uuid7::from_bytes(bytes)
 }
 
-
 fn tuple(text: &str) -> FactTuple {
     FactTuple::from_json(text).expect("the tuple decodes")
 }
@@ -83,22 +82,18 @@ fn say(
     kind: u8,
     text: &str,
 ) -> mem_core::MessageKey {
-    say_from(
-        stores,
-        channel,
-        ts_ms,
-        sub,
-        m(1),
-        0,
-        role,
-        kind,
-        text,
-    )
+    say_from(stores, channel, ts_ms, sub, m(1), 0, role, kind, text)
 }
 
 fn projection(stores: &mut ServiceStores) -> Projection {
-    assemble(&mut stores.channels, &mut stores.graph, 7, m(1), DEFAULT_SCOPE)
-        .expect("the projection assembles")
+    assemble(
+        &mut stores.channels,
+        &mut stores.graph,
+        7,
+        m(1),
+        DEFAULT_SCOPE,
+    )
+    .expect("the projection assembles")
 }
 
 /// An empty corpus is a legal answer, not an error: no head, no summary,
@@ -127,7 +122,9 @@ fn head_is_both_directions_deduplicated() {
         .graph
         .ingest(
             scope,
-            &tuple(&format!(r#"["{user_ref}","person",{{}},"PREFERS",{{}},"简洁","style",{{}}]"#)),
+            &tuple(&format!(
+                r#"["{user_ref}","person",{{}},"PREFERS",{{}},"简洁","style",{{}}]"#
+            )),
         )
         .unwrap();
     // Same node as the TAIL: an incoming edge.
@@ -135,7 +132,9 @@ fn head_is_both_directions_deduplicated() {
         .graph
         .ingest(
             scope,
-            &tuple(&format!(r#"["k10r","system",{{}},"OWNED_BY",{{}},"{user_ref}","person",{{}}]"#)),
+            &tuple(&format!(
+                r#"["k10r","system",{{}},"OWNED_BY",{{}},"{user_ref}","person",{{}}]"#
+            )),
         )
         .unwrap();
     // A second outgoing edge.
@@ -143,7 +142,9 @@ fn head_is_both_directions_deduplicated() {
         .graph
         .ingest(
             scope,
-            &tuple(&format!(r#"["{user_ref}","person",{{}},"WRITES",{{}},"Rust","language",{{}}]"#)),
+            &tuple(&format!(
+                r#"["{user_ref}","person",{{}},"WRITES",{{}},"Rust","language",{{}}]"#
+            )),
         )
         .unwrap();
 
@@ -184,7 +185,15 @@ fn increment_starts_after_the_compression_point() {
     let channel = 7u64;
     let _member = 1u64;
     say(&mut stores, channel, 1000, 0, role::USER, kind::TEXT, "hi");
-    say(&mut stores, channel, 1001, 0, role::ASSISTANT, kind::TEXT, "hello");
+    say(
+        &mut stores,
+        channel,
+        1001,
+        0,
+        role::ASSISTANT,
+        kind::TEXT,
+        "hello",
+    );
     stores
         .channels
         .append_checkpoint(channel, at(1, 1000, 0), "greeting done", &[])
@@ -221,7 +230,9 @@ fn the_head_is_frozen_at_the_compression() {
         .graph
         .ingest(
             scope,
-            &tuple(&format!(r#"["{user_ref}","person",{{}},"PREFERS",{{}},"简洁","style",{{}}]"#)),
+            &tuple(&format!(
+                r#"["{user_ref}","person",{{}},"PREFERS",{{}},"简洁","style",{{}}]"#
+            )),
         )
         .unwrap();
 
@@ -258,7 +269,9 @@ fn the_head_is_frozen_at_the_compression() {
         .graph
         .ingest(
             scope,
-            &tuple(&format!(r#"["{user_ref}","person",{{}},"PREFERS",{{}},"浓咖啡","drink",{{}}]"#)),
+            &tuple(&format!(
+                r#"["{user_ref}","person",{{}},"PREFERS",{{}},"浓咖啡","drink",{{}}]"#
+            )),
         )
         .unwrap();
 
@@ -290,8 +303,28 @@ fn conversation_merges_a_user_burst_and_keeps_the_replys_end() {
         .put_member(m(2), "k10r", mem_core::member_role::AGENT)
         .unwrap();
 
-    say_from(&mut stores, ch, 1_000, 0, m(10), 0, role::USER, kind::TEXT, "在吗");
-    say_from(&mut stores, ch, 1_050, 0, m(11), 0, role::USER, kind::TEXT, "问个事");
+    say_from(
+        &mut stores,
+        ch,
+        1_000,
+        0,
+        m(10),
+        0,
+        role::USER,
+        kind::TEXT,
+        "在吗",
+    );
+    say_from(
+        &mut stores,
+        ch,
+        1_050,
+        0,
+        m(11),
+        0,
+        role::USER,
+        kind::TEXT,
+        "问个事",
+    );
     // The reply is keyed by its FIRST token and ends 4 s later.
     say_from(
         &mut stores,
@@ -305,7 +338,17 @@ fn conversation_merges_a_user_burst_and_keeps_the_replys_end() {
         "在，你说",
     );
     // Typed while that reply was still streaming.
-    say_from(&mut stores, ch, 1_200, 0, m(10), 0, role::USER, kind::TEXT, "急");
+    say_from(
+        &mut stores,
+        ch,
+        1_200,
+        0,
+        m(10),
+        0,
+        role::USER,
+        kind::TEXT,
+        "急",
+    );
 
     let turns = mem_core::view::conversation(&mut stores.channels, ch, m(1)).unwrap();
     assert_eq!(
@@ -315,7 +358,8 @@ fn conversation_merges_a_user_burst_and_keeps_the_replys_end() {
     );
     assert_eq!(turns[0].role, "user");
     assert_eq!(
-        turns[0].text, format!("[小王(id={})] 在吗\n[小李(id={})] 问个事", m(10), m(11)),
+        turns[0].text,
+        format!("[小王(id={})] 在吗\n[小李(id={})] 问个事", m(10), m(11)),
         "one turn, attributed per line, ids for the model to look up"
     );
     assert_eq!(turns[0].senders, vec![m(10), m(11)]);
@@ -359,7 +403,11 @@ fn the_default_member_is_seeded_on_first_touch() {
     let turns = mem_core::view::conversation(&mut stores.channels, ch, m(1)).unwrap();
     assert_eq!(
         turns[0].text,
-        format!("[{}(id={})] hi", mem_core::channel::DEFAULT_MEMBER_NAME, m(1))
+        format!(
+            "[{}(id={})] hi",
+            mem_core::channel::DEFAULT_MEMBER_NAME,
+            m(1)
+        )
     );
 }
 
@@ -399,8 +447,7 @@ fn the_head_comes_from_every_member_of_the_channel() {
     let names: Vec<String> = p.head.iter().map(|f| f.src.name.clone()).collect();
     let expected = vec![format!("member-{}", m(10)), format!("member-{}", m(11))];
     assert_eq!(
-        names,
-        expected,
+        names, expected,
         "both members' facts, in member-id order at equal weight"
     );
     assert_eq!(p.head[0].dst.name, "美式");

@@ -197,7 +197,10 @@ fn ids_are_recovered_across_reopen() {
     {
         let mut store = GraphStore::open(dir.path()).unwrap();
         assert_eq!(store.put_code(1, "nu", "first", "{}", "first").unwrap(), 1);
-        assert_eq!(store.put_code(1, "nu", "second", "{}", "second").unwrap(), 2);
+        assert_eq!(
+            store.put_code(1, "nu", "second", "{}", "second").unwrap(),
+            2
+        );
     }
     let mut store = GraphStore::open(dir.path()).unwrap();
     assert_eq!(
@@ -206,7 +209,8 @@ fn ids_are_recovered_across_reopen() {
         "continues past the max"
     );
     assert_eq!(
-        store.code(1, 1)
+        store
+            .code(1, 1)
             .expect("the row reads")
             .expect("row")
             .1
@@ -291,15 +295,29 @@ fn an_invocation_counts_the_script_on_its_vertex() {
         .unwrap();
 
     let attempt = store
-        .touch_code(1, code_id, mem_core::skills::TouchPhase::Attempt, 1_700_000_000_000)
+        .touch_code(
+            1,
+            code_id,
+            mem_core::skills::TouchPhase::Attempt,
+            1_700_000_000_000,
+        )
         .unwrap();
     let mem_core::code::CodeTouchOutcome::Counted(attempt) = attempt else {
         panic!("a written script is countable: {attempt:?}");
     };
-    assert_eq!((attempt.calls, attempt.ok), (1, 0), "an attempt is not a success");
+    assert_eq!(
+        (attempt.calls, attempt.ok),
+        (1, 0),
+        "an attempt is not a success"
+    );
 
     let success = store
-        .touch_code(1, code_id, mem_core::skills::TouchPhase::Success, 1_700_000_002_000)
+        .touch_code(
+            1,
+            code_id,
+            mem_core::skills::TouchPhase::Success,
+            1_700_000_002_000,
+        )
         .unwrap();
     let mem_core::code::CodeTouchOutcome::Counted(success) = success else {
         panic!("the second record counts too: {success:?}");
@@ -311,10 +329,20 @@ fn an_invocation_counts_the_script_on_its_vertex() {
         .put_code(1, "python", "log in", "{}", "print(2)")
         .unwrap();
     store
-        .touch_code(1, code_id, mem_core::skills::TouchPhase::Attempt, 1_700_000_003_000)
+        .touch_code(
+            1,
+            code_id,
+            mem_core::skills::TouchPhase::Attempt,
+            1_700_000_003_000,
+        )
         .unwrap();
     let fresh = store
-        .touch_code(1, other, mem_core::skills::TouchPhase::Attempt, 1_700_000_004_000)
+        .touch_code(
+            1,
+            other,
+            mem_core::skills::TouchPhase::Attempt,
+            1_700_000_004_000,
+        )
         .unwrap();
     let mem_core::code::CodeTouchOutcome::Counted(fresh) = fresh else {
         panic!("the new row counts from zero: {fresh:?}");
@@ -343,11 +371,14 @@ fn a_touch_names_what_is_missing_or_mistyped() {
     // node exists and is not code — the guard says which kind it met instead of
     // bumping a stranger's counters.
     store
-        .put_skill(1, &mem_core::skills::SkillDecl {
-            name: "code-7".into(),
-            title: "A skill that happens to be named like code".into(),
-            ..Default::default()
-        })
+        .put_skill(
+            1,
+            &mem_core::skills::SkillDecl {
+                name: "code-7".into(),
+                title: "A skill that happens to be named like code".into(),
+                ..Default::default()
+            },
+        )
         .unwrap();
     let mismatch = store
         .touch_code(1, 7, mem_core::skills::TouchPhase::Attempt, 1)

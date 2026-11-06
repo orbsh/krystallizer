@@ -768,10 +768,7 @@ async fn read_channel(
     for (key, row) in rows {
         // An unregistered sender is absence, not a failure: the entry falls
         // back to the id-derived name.
-        let sender_name = match store
-            .member(row.sender)
-            .map_err(FactError::internal)?
-        {
+        let sender_name = match store.member(row.sender).map_err(FactError::internal)? {
             Some(member) => member.display_name,
             None => format!("member-{}", row.sender),
         };
@@ -2658,7 +2655,12 @@ async fn open_channel(
 ) -> Result<StatusCode, FactError> {
     let store = state.store.lock().await;
     store
-        .put_channel(channel_id, parse_app_id(&body.app_id)?, &body.scene, body.created_ms)
+        .put_channel(
+            channel_id,
+            parse_app_id(&body.app_id)?,
+            &body.scene,
+            body.created_ms,
+        )
         .map_err(FactError::internal)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2791,16 +2793,13 @@ async fn list_member_channels(
             let mut out = Vec::with_capacity(rows.len());
             for (channel_id, row) in rows {
                 if let Some(raw) = filter.app.as_deref() {
-                    let owned = raw
-                        .parse::<mem_core::Uuid7>()
-                        .ok()
-                        .is_some_and(|app_id| {
-                            store
-                                .channel(channel_id)
-                                .ok()
-                                .flatten()
-                                .is_some_and(|c| c.app_id == app_id)
-                        });
+                    let owned = raw.parse::<mem_core::Uuid7>().ok().is_some_and(|app_id| {
+                        store
+                            .channel(channel_id)
+                            .ok()
+                            .flatten()
+                            .is_some_and(|c| c.app_id == app_id)
+                    });
                     if !owned {
                         continue;
                     }

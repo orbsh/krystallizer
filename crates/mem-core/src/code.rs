@@ -167,7 +167,12 @@ impl GraphStore {
             props: std::collections::BTreeMap::new(),
         };
         self.put_entity(scope, &term)?;
-        self.put_code_sheet(scope, code_id, 1, &row_of(language, description, parameters, source))?;
+        self.put_code_sheet(
+            scope,
+            code_id,
+            1,
+            &row_of(language, description, parameters, source),
+        )?;
         Ok(code_id)
     }
 
@@ -200,7 +205,12 @@ impl GraphStore {
         let rev = self
             .latest_code(scope, code_id)?
             .map_or(1, |(rev, _)| rev.saturating_add(1));
-        self.put_code_sheet(scope, code_id, rev, &row_of(language, description, parameters, source))?;
+        self.put_code_sheet(
+            scope,
+            code_id,
+            rev,
+            &row_of(language, description, parameters, source),
+        )?;
         Ok(rev)
     }
 
@@ -208,7 +218,11 @@ impl GraphStore {
     /// read gravity makes at call time. "Current" is the last key of the
     /// script's range, so it costs one bounded seek, never a scan of the history.
     /// Unknown id = absent, not an error (the caller's error value, its choice).
-    pub fn code(&mut self, scope: u64, code_id: u64) -> Result<Option<(u64, CodeRow)>, IngestError> {
+    pub fn code(
+        &mut self,
+        scope: u64,
+        code_id: u64,
+    ) -> Result<Option<(u64, CodeRow)>, IngestError> {
         self.latest_code(scope, code_id)
     }
 
@@ -238,7 +252,9 @@ impl GraphStore {
     /// The vertex a code id lives on, `None` when the id was never written.
     pub fn code_vertex(&mut self, scope: u64, code_id: u64) -> Result<Option<u64>, IngestError> {
         let name = code_name(code_id);
-        Ok(self.entity_by_name(scope, &name)?.map(|(node_id, _)| node_id))
+        Ok(self
+            .entity_by_name(scope, &name)?
+            .map(|(node_id, _)| node_id))
     }
 
     /// Count one record of a script's invocation: `Attempt` when the caller
@@ -269,7 +285,10 @@ impl GraphStore {
         let calls = row.invoke_calls + u32::from(phase == TouchPhase::Attempt);
         let ok = row.invoke_ok + u32::from(phase == TouchPhase::Success);
         let mut write: BTreeMap<String, DynamicValue> = BTreeMap::new();
-        write.insert(CALLS_FIELD.to_string(), DynamicValue::UInt(u64::from(calls)));
+        write.insert(
+            CALLS_FIELD.to_string(),
+            DynamicValue::UInt(u64::from(calls)),
+        );
         write.insert(OK_FIELD.to_string(), DynamicValue::UInt(u64::from(ok)));
         write.insert(LAST_INVOKED_FIELD.to_string(), DynamicValue::UInt(now));
         self.merge_props(scope, node_id, &write)?;
@@ -290,7 +309,11 @@ impl GraphStore {
     }
 
     /// Export the code sheet by NAME as Parquet. `None` = not this table.
-    pub fn export_code(&mut self, name: &str, path: &std::path::Path) -> Option<Result<(), String>> {
+    pub fn export_code(
+        &mut self,
+        name: &str,
+        path: &std::path::Path,
+    ) -> Option<Result<(), String>> {
         (name == <CodeRow as Document>::TABLE_NAME)
             .then(|| crate::export::table(self.code_table_mut(), path))
     }
@@ -350,6 +373,10 @@ mod tests {
         assert_eq!(code_name(12), "code-12");
         assert_eq!(code_id_of_name("code-12"), Some(12));
         assert_eq!(code_id_of_name("task-12"), None);
-        assert_eq!(code_id_of_name("code-"), None, "a prefix alone is not an id");
+        assert_eq!(
+            code_id_of_name("code-"),
+            None,
+            "a prefix alone is not an id"
+        );
     }
 }

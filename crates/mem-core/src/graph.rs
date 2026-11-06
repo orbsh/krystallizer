@@ -58,13 +58,13 @@
 //! it bumps are the caller's clock riding the call (`ts_ms`), because a
 //! read without a clock is served but not counted.
 
-use okm_core::Uuid7;
 use crate::channel::{MemberKey, MemberRow};
 use crate::code::{CodeKey, CodeRow};
 use crate::embedding::Embedder;
 use crate::render::RenderFormat;
 use crate::tasks::{TaskSheet, TASK_KIND};
 use okm_core::obj_dynamic::DynamicValue;
+use okm_core::Uuid7;
 use okm_core::{
     write_slot, Batch, Collection, Document, DocumentEncode, EdgeHead, FjallStore, Graph,
     GraphEncode, KeyEncode, NodeRef, Vector, VectorElem, VirtualStorage, Vocab, PRIMARY_SLOT,

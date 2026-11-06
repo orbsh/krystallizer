@@ -62,7 +62,9 @@ async fn a_summary_lands_on_the_served_split() {
     assert_eq!(verdict["to_ts"], 2_000, "the span's last record");
 
     let status = client
-        .post(format!("{base}/channels/7/members/00000000-0000-0000-0000-000000000001/checkpoint"))
+        .post(format!(
+            "{base}/channels/7/members/00000000-0000-0000-0000-000000000001/checkpoint"
+        ))
         .json(&serde_json::json!({ "summary": "the first two messages" }))
         .send()
         .await

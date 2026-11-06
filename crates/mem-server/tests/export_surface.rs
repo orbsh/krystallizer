@@ -163,7 +163,17 @@ async fn the_export_is_a_snapshot_and_the_store_keeps_writing() {
     let client = reqwest::Client::new();
     for ts in [1_000u64, 2_000] {
         let text = format!("line {ts}");
-        post_finished(&client, &base, 7, ts, 0, 0, mem_core::channel::kind::TEXT, &text).await;
+        post_finished(
+            &client,
+            &base,
+            7,
+            ts,
+            0,
+            0,
+            mem_core::channel::kind::TEXT,
+            &text,
+        )
+        .await;
     }
     let first = client
         .get(format!("{base}/export/messages"))

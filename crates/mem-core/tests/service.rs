@@ -27,7 +27,6 @@ fn m(n: u8) -> mem_core::Uuid7 {
     mem_core::Uuid7::from_bytes(bytes)
 }
 
-
 /// Every group comes off one call and serves reads/writes.
 #[test]
 fn the_service_assembly_serves_every_group() {
@@ -58,12 +57,7 @@ fn the_service_assembly_serves_every_group() {
     let outcome = stores.graph.ingest(1, &fact).unwrap();
 
     assert_eq!(
-        stores
-            .channels
-            .fetch_full(7, m(1))
-            .unwrap()
-            .increment
-            .len(),
+        stores.channels.fetch_full(7, m(1)).unwrap().increment.len(),
         1
     );
     assert_eq!(

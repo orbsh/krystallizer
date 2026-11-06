@@ -22,9 +22,9 @@
 //! with a visited policy. Deeper walks are the caller's composition over
 //! the graph's own reads (ADR-0003).
 
-use okm_core::Uuid7;
 use crate::channel::{role, ChannelStore, SessionView};
 use crate::graph::{FactView, GraphStore, IngestError};
+use okm_core::Uuid7;
 use std::collections::BTreeSet;
 
 /// The corpus the head reads.
@@ -155,10 +155,7 @@ pub fn messages_of(
         };
         // An unregistered sender is absence, not a failure: the line falls
         // back to the id-derived name.
-        let name = match channels
-            .member(row.sender)
-            .map_err(IngestError::Storage)?
-        {
+        let name = match channels.member(row.sender).map_err(IngestError::Storage)? {
             Some(member) => member.display_name,
             None => format!("member-{}", row.sender),
         };

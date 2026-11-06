@@ -99,7 +99,17 @@ async fn a_bundle_opens_in_a_warehouse_reader_that_never_saw_k10r() {
 
     for ts in [1_000u64, 2_000] {
         let text = format!("line {ts}");
-        post_finished(&client, &base, 7, ts, 0, 0, mem_core::channel::kind::TEXT, &text).await;
+        post_finished(
+            &client,
+            &base,
+            7,
+            ts,
+            0,
+            0,
+            mem_core::channel::kind::TEXT,
+            &text,
+        )
+        .await;
     }
     let landed = client
         .post(format!("{base}/memories/1"))

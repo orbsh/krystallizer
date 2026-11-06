@@ -111,7 +111,9 @@ async fn code_and_channel_share_one_database_without_seeing_each_other() {
     post_finished(&client, &base, 7, 1000, 0, 0, 0, "hi").await;
 
     let session: serde_json::Value = client
-        .get(format!("{base}/channels/7/members/00000000-0000-0000-0000-000000000001/session"))
+        .get(format!(
+            "{base}/channels/7/members/00000000-0000-0000-0000-000000000001/session"
+        ))
         .send()
         .await
         .unwrap()
@@ -126,9 +128,17 @@ async fn code_and_channel_share_one_database_without_seeing_each_other() {
 
     // The message must not leak into the code table: the one row written
     // there is still the one the door stored, and nothing sits beside it.
-    let row = client.get(format!("{base}/code/37/1")).send().await.unwrap();
+    let row = client
+        .get(format!("{base}/code/37/1"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(row.status(), reqwest::StatusCode::OK);
-    let ghost = client.get(format!("{base}/code/37/2")).send().await.unwrap();
+    let ghost = client
+        .get(format!("{base}/code/37/2"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(
         ghost.status(),
         reqwest::StatusCode::NOT_FOUND,
@@ -150,9 +160,17 @@ async fn a_code_row_belongs_to_one_scope() {
         .await
         .unwrap();
 
-    let here = client.get(format!("{base}/code/37/1")).send().await.unwrap();
+    let here = client
+        .get(format!("{base}/code/37/1"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(here.status(), reqwest::StatusCode::OK);
-    let elsewhere = client.get(format!("{base}/code/38/1")).send().await.unwrap();
+    let elsewhere = client
+        .get(format!("{base}/code/38/1"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(elsewhere.status(), reqwest::StatusCode::NOT_FOUND);
 }
 
@@ -279,7 +297,10 @@ async fn a_touch_counts_the_script_and_names_what_is_missing() {
         .await
         .unwrap();
     assert_eq!(attempt["code_id"], code_id);
-    assert_eq!((attempt["calls"].as_u64(), attempt["ok"].as_u64()), (Some(1), Some(0)));
+    assert_eq!(
+        (attempt["calls"].as_u64(), attempt["ok"].as_u64()),
+        (Some(1), Some(0))
+    );
 
     let success: serde_json::Value = client
         .post(format!("{base}/code/37/{code_id}/touch"))

@@ -24,7 +24,6 @@ fn m(n: u8) -> mem_core::Uuid7 {
     mem_core::Uuid7::from_bytes(bytes)
 }
 
-
 fn open() -> (tempfile::TempDir, ChannelStore) {
     let dir = tempdir().unwrap();
     let store = ChannelStore::open(dir.path()).unwrap();
@@ -111,7 +110,11 @@ fn key_layout_is_hex_locked() {
         sub: 5,
     };
     let buf = key.encode();
-    assert_eq!(buf.len(), 8 + 8 + 8 + 2, "channel 8 + turn 8 + ts 8 + sub 2");
+    assert_eq!(
+        buf.len(),
+        8 + 8 + 8 + 2,
+        "channel 8 + turn 8 + ts 8 + sub 2"
+    );
     assert_eq!(&buf[0..8], &7u64.to_be_bytes(), "channel_id");
     assert_eq!(&buf[8..16], &3u64.to_be_bytes(), "turn_id");
     assert_eq!(&buf[16..24], &1_700_000_000_123u64.to_be_bytes(), "ts_ms");
@@ -143,7 +146,10 @@ fn turn_ids_are_minted_at_the_first_write() {
     let third = store
         .append_opening(CH, 400, 0, role::USER, kind::TEXT, "three")
         .unwrap();
-    assert_eq!(third.turn_id, 3, "and the log is the only input the mint reads");
+    assert_eq!(
+        third.turn_id, 3,
+        "and the log is the only input the mint reads"
+    );
     // Another channel counts on its own.
     let other = store
         .append_opening(2, 500, 0, role::USER, kind::TEXT, "hi")
@@ -172,7 +178,15 @@ fn fetch_returns_entries_in_key_order() {
     );
     say(&mut store, CH, 2000, 0, role::ASSISTANT, kind::TEXT, "last");
     // A second channel's row: must NOT leak into CH's projection.
-    say(&mut store, 2, 1500, 0, role::USER, kind::TEXT, "other channel");
+    say(
+        &mut store,
+        2,
+        1500,
+        0,
+        role::USER,
+        kind::TEXT,
+        "other channel",
+    );
 
     let view = store.fetch_full(CH, m(1)).unwrap();
     assert_eq!(view.coverage, Pointer::NONE, "no checkpoint yet");
@@ -191,7 +205,10 @@ fn fetch_returns_entries_in_key_order() {
     assert_eq!(view.increment[1].0.sub, 0);
     assert_eq!(view.increment[2].0.sub, 1);
     assert_eq!(
-        view.increment.iter().map(|(k, _)| k.turn_id).collect::<Vec<_>>(),
+        view.increment
+            .iter()
+            .map(|(k, _)| k.turn_id)
+            .collect::<Vec<_>>(),
         vec![1, 2, 3, 4],
         "each finished exchange is its own turn"
     );
@@ -279,9 +296,7 @@ fn closing_a_turn_keeps_what_it_names_and_purges_the_rest() {
         (180, 0, role::TOOL, kind::TOOL_RESULT, "result 2"),
         (190, 0, role::ASSISTANT, kind::TEXT, "answer"),
     ] {
-        store
-            .append(CH, turn, ts, sub, role, kind, text)
-            .unwrap();
+        store.append(CH, turn, ts, sub, role, kind, text).unwrap();
     }
     store
         .close_turn(
@@ -303,7 +318,11 @@ fn closing_a_turn_keeps_what_it_names_and_purges_the_rest() {
         "the two tool RESULTS were purged; the closing record is not shown"
     );
     let view = store.fetch_full(CH, m(1)).unwrap();
-    assert_eq!(view.increment.len(), 4, "the projection reads the same four");
+    assert_eq!(
+        view.increment.len(),
+        4,
+        "the projection reads the same four"
+    );
 
     // A row appended after the turn closed would never be purged, so it is
     // refused rather than written into a collapsed turn.
@@ -369,7 +388,15 @@ fn a_same_millisecond_record_after_the_pointer_stays_in_the_increment() {
         .append(CH, turn, 1001, 0, role::ASSISTANT, kind::TEXT, "reply")
         .unwrap();
     store
-        .append(CH, turn, 1000, 1, role::TOOL, kind::TOOL_RESULT, "tool_result, same ms")
+        .append(
+            CH,
+            turn,
+            1000,
+            1,
+            role::TOOL,
+            kind::TOOL_RESULT,
+            "tool_result, same ms",
+        )
         .unwrap();
     store
         .append(CH, turn, 1500, 0, role::ASSISTANT, kind::TEXT, "later")
@@ -473,11 +500,7 @@ fn the_read_at_stamps_advances_and_never_rewinds() {
     const CH: u64 = 1;
     say(&mut store, CH, 100, 0, role::USER, kind::TEXT, "m1");
 
-    assert_eq!(
-        store.read_at(CH, m(1)).unwrap(),
-        None,
-        "never read"
-    );
+    assert_eq!(store.read_at(CH, m(1)).unwrap(), None, "never read");
     assert_eq!(store.fetch_full(CH, m(1)).unwrap().read_at, None);
 
     store.note_read(CH, m(1), 1_000).unwrap();
@@ -502,11 +525,7 @@ fn the_read_at_stamps_advances_and_never_rewinds() {
         None,
         "another member's cursor is its own"
     );
-    assert_eq!(
-        store.read_at(2, m(1)).unwrap(),
-        None,
-        "another channel's"
-    );
+    assert_eq!(store.read_at(2, m(1)).unwrap(), None, "another channel's");
 }
 
 /// A compression OPENS a node at the pointer k10r served and COMPLETES it with
@@ -568,7 +587,11 @@ fn nodes_accumulate_and_the_read_follows_the_newest_complete_one() {
     store.open_checkpoint(CH, at(3, 900, 0), &[2]).unwrap();
 
     let v = store.fetch_full(CH, m(1)).unwrap();
-    assert_eq!(v.coverage, at(2, 200, 0), "the open node does not move the read");
+    assert_eq!(
+        v.coverage,
+        at(2, 200, 0),
+        "the open node does not move the read"
+    );
     assert_eq!(v.summary.as_deref(), Some("first summary"));
     assert!(v.compressing);
     assert_eq!(v.increment.len(), 1, "m3 is still raw");
@@ -677,7 +700,9 @@ fn a_compression_records_the_cut_it_would_have_chosen() {
 
     // A suggestion equal to the node's own pointer is the mechanical cut
     // restated — stored as none, so nothing downstream reads a range of zero.
-    store.complete_checkpoint(CH, "t", Some(at(3, 900, 0))).unwrap();
+    store
+        .complete_checkpoint(CH, "t", Some(at(3, 900, 0)))
+        .unwrap();
     let view = store.fetch_full(CH, m(1)).unwrap();
     assert_eq!(view.suggested, Pointer::NONE);
 }
@@ -745,7 +770,11 @@ fn members_name_their_senders_and_a_rename_rewrites_nothing() {
         .put_member(m(1), "王先生", mem_core::member_role::HUMAN)
         .unwrap();
     let view = store.fetch_full(CH, m(1)).unwrap();
-    assert_eq!(view.increment[0].1.sender, m(1), "the id is the stable part");
+    assert_eq!(
+        view.increment[0].1.sender,
+        m(1),
+        "the id is the stable part"
+    );
     assert_eq!(store.member(m(1)).unwrap().unwrap().display_name, "王先生");
 }
 
@@ -756,10 +785,16 @@ fn members_name_their_senders_and_a_rename_rewrites_nothing() {
 fn a_channel_is_a_row_and_membership_reads_both_ways() {
     let (_dir, mut store) = open();
 
-    store.put_channel(7, m(9), "private", 1_700_000_000_000).unwrap();
-    store.put_channel(9, m(10), "group:ops", 1_700_000_000_100).unwrap();
+    store
+        .put_channel(7, m(9), "private", 1_700_000_000_000)
+        .unwrap();
+    store
+        .put_channel(9, m(10), "group:ops", 1_700_000_000_100)
+        .unwrap();
     // Re-opening with a new scene is a RENAME, not a second channel.
-    store.put_channel(7, m(9), "private:master", 1_700_000_000_200).unwrap();
+    store
+        .put_channel(7, m(9), "private:master", 1_700_000_000_200)
+        .unwrap();
 
     // One member in two channels: the fan-out a person with several lines has.
     store.join(7, m(1), "master", 0, 111).unwrap();
@@ -768,13 +803,36 @@ fn a_channel_is_a_row_and_membership_reads_both_ways() {
     store.join(9, m(2), "k10r", 1, 333).unwrap();
 
     // channel -> members (the direction that always existed)
-    let in_nine: Vec<mem_core::Uuid7> = store.members(9).unwrap().iter().map(|(k, _)| k.member_id).collect();
-    assert_eq!(in_nine, vec![m(1), m(2)], "membership by channel, in member-id order");
+    let in_nine: Vec<mem_core::Uuid7> = store
+        .members(9)
+        .unwrap()
+        .iter()
+        .map(|(k, _)| k.member_id)
+        .collect();
+    assert_eq!(
+        in_nine,
+        vec![m(1), m(2)],
+        "membership by channel, in member-id order"
+    );
 
     // member -> channels (the mirror)
-    let ones: Vec<u64> = store.channels_of(m(1)).unwrap().iter().map(|(c, _)| *c).collect();
-    assert_eq!(ones, vec![7, 9], "membership by member, in channel-id order");
-    let twos: Vec<u64> = store.channels_of(m(2)).unwrap().iter().map(|(c, _)| *c).collect();
+    let ones: Vec<u64> = store
+        .channels_of(m(1))
+        .unwrap()
+        .iter()
+        .map(|(c, _)| *c)
+        .collect();
+    assert_eq!(
+        ones,
+        vec![7, 9],
+        "membership by member, in channel-id order"
+    );
+    let twos: Vec<u64> = store
+        .channels_of(m(2))
+        .unwrap()
+        .iter()
+        .map(|(c, _)| *c)
+        .collect();
     assert_eq!(twos, vec![9]);
 
     // The channel rows carry the application's own annotation, and the rename stuck.
@@ -789,10 +847,16 @@ fn a_channel_is_a_row_and_membership_reads_both_ways() {
         .collect();
     assert_eq!(
         all,
-        vec![(7, "private:master".to_string()), (9, "group:ops".to_string())],
+        vec![
+            (7, "private:master".to_string()),
+            (9, "group:ops".to_string())
+        ],
         "every channel row, in id order"
     );
-    assert!(store.channel(11).unwrap().is_none(), "an id nobody opened is absence");
+    assert!(
+        store.channel(11).unwrap().is_none(),
+        "an id nobody opened is absence"
+    );
 
     // The filter that makes "exactly one" checkable: gravity owns one channel here, mudra the other.
     let gravities: Vec<u64> = store
@@ -803,4 +867,3 @@ fn a_channel_is_a_row_and_membership_reads_both_ways() {
         .collect();
     assert_eq!(gravities, vec![7], "gravity's own channels, and only those");
 }
-

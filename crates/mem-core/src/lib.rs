@@ -21,8 +21,8 @@
     )
 )]
 
-pub mod bundle;
 pub mod apps;
+pub mod bundle;
 pub mod channel;
 
 /// The identity type: a member id IS a user id (ADR-0025 §4). Re-exported so a caller (the
@@ -57,9 +57,9 @@ pub const KEYSPACE_CHANNEL: &str = "channel";
 pub const KEYSPACE_MEMORY: &str = "memory";
 
 pub use channel::{
-    kind, member_node, member_role, role, ChannelStore, CheckpointKey, CheckpointRow, CursorKey,
-    CursorRow, MemberKey, MemberRow, MessageKey, MessageRow, Pointer, SessionView, Span,
-    default_member,
+    default_member, kind, member_node, member_role, role, ChannelStore, CheckpointKey,
+    CheckpointRow, CursorKey, CursorRow, MemberKey, MemberRow, MessageKey, MessageRow, Pointer,
+    SessionView, Span,
 };
 pub use code::{code_id_of_name, code_name, CodeKey, CodeRow, CODE_KIND};
 pub use compress::{

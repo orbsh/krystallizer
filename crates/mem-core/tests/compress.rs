@@ -29,7 +29,6 @@ fn m(n: u8) -> mem_core::Uuid7 {
     mem_core::Uuid7::from_bytes(bytes)
 }
 
-
 const PARAMS: Params = Params {
     context_bytes: 1000,
     budget_percent: 50,
@@ -83,7 +82,11 @@ fn budget_fires_and_splits_at_the_largest_gap() {
     let v = view(&[(1, 100), (2, 200), (3, 900)]);
     let verdict = evaluate(&v, 600, None, &PARAMS).expect("budget fired");
     assert_eq!(verdict.trigger, Trigger::Budget);
-    assert_eq!(verdict.checkpoint, at(2, 200, 0), "ends before the 700ms gap");
+    assert_eq!(
+        verdict.checkpoint,
+        at(2, 200, 0),
+        "ends before the 700ms gap"
+    );
     assert_eq!(verdict.max_gap_ms, Some(700));
     assert_eq!(verdict.assembled_bytes, 600);
 }
@@ -138,7 +141,11 @@ fn a_span_with_no_turn_boundary_splits_at_its_end() {
     // Many rounds of ONE turn: nothing inside a turn is a boundary.
     let one_turn = view(&[(1, 900), (1, 900), (1, 900)]);
     let verdict = evaluate(&one_turn, 600, None, &PARAMS).unwrap();
-    assert_eq!(verdict.checkpoint, at(1, 900, 0), "the last record of the span");
+    assert_eq!(
+        verdict.checkpoint,
+        at(1, 900, 0),
+        "the last record of the span"
+    );
     assert_eq!(verdict.max_gap_ms, None);
 }
 
@@ -148,7 +155,11 @@ fn a_span_with_no_turn_boundary_splits_at_its_end() {
 fn same_millisecond_turns_still_bound_the_split() {
     let v = view(&[(1, 900), (2, 900), (3, 900)]);
     let verdict = evaluate(&v, 600, None, &PARAMS).unwrap();
-    assert_eq!(verdict.checkpoint, at(1, 900, 0), "ties go to the earlier turn");
+    assert_eq!(
+        verdict.checkpoint,
+        at(1, 900, 0),
+        "ties go to the earlier turn"
+    );
     assert_eq!(verdict.max_gap_ms, Some(0));
 }
 

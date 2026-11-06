@@ -28,7 +28,6 @@ fn m(n: u8) -> mem_core::Uuid7 {
     mem_core::Uuid7::from_bytes(bytes)
 }
 
-
 fn tuple(text: &str) -> FactTuple {
     FactTuple::from_json(text).expect("the tuple decodes")
 }
@@ -1461,7 +1460,9 @@ fn an_unregistered_user_reference_is_refused_and_creates_nothing() {
     let mut stores = mem_core::open_service(dir.path()).unwrap();
     let graph = &mut stores.graph;
 
-    let ghost = tuple(r#"["member-00000000-0000-0000-0000-000000000009","user",{},"LIKES",{},"tea","drink",{}]"#);
+    let ghost = tuple(
+        r#"["member-00000000-0000-0000-0000-000000000009","user",{},"LIKES",{},"tea","drink",{}]"#,
+    );
     assert!(matches!(
         graph.ingest(1, &ghost),
         Err(IngestError::Refused(_))

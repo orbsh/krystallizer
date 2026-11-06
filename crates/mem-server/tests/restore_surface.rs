@@ -37,7 +37,17 @@ async fn a_bundle_restores_rows_and_the_issuers_that_hand_out_ids() {
     // A store with all three kinds of state: channel rows, a fact graph, code.
     for ts in [1_000u64, 2_000] {
         let text = format!("line {ts}");
-        post_finished(&client, &source, 7, ts, 0, 0, mem_core::channel::kind::TEXT, &text).await;
+        post_finished(
+            &client,
+            &source,
+            7,
+            ts,
+            0,
+            0,
+            mem_core::channel::kind::TEXT,
+            &text,
+        )
+        .await;
     }
     let landed = client
         .post(format!("{source}/memories/1"))
