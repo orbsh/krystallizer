@@ -3,9 +3,10 @@
 Date: 2026-10-20
 Status: RULED & LANDED 2026-10-20 (per-table Parquet). **Re-ruled 2026-10-22**:
 the backup is ONE `tar.zst` holding every table as a directory of Parquet files
-beside Iceberg v2 metadata, and restore is a door. §2's per-table granularity and
-the old §4's rejection of "one archive per backup" are superseded; §7 records why
-the metadata is Iceberg's and not Delta Lake's.
+beside warehouse metadata, and restore is a door. §2's per-table granularity and
+the old §4's rejection of "one archive per backup" are superseded. **Re-ruled
+2026-11-10**: the metadata is Delta's — okm ADR-0058 replaced its `bridge::iceberg`
+with `okm_parquet::delta` and deleted the Iceberg writer; §7 records why.
 
 ## 1. Context
 
@@ -166,37 +167,33 @@ after the rows it counts. The operator never sorts files.
   ISSUER, not data: without it a restored graph re-issues community ids the restored
   nodes already carry.
 
-## 7. Why Iceberg's metadata and not Delta Lake's
+## 7. Why Delta's metadata and not Iceberg's
 
-Both formats are a log of Parquet files, and for a snapshot-shaped export Delta's
-log is the smaller thing: three JSON lines (`protocol`, `metaData`, `add`) and no
-Avro, where Iceberg needs a metadata JSON plus a manifest and a manifest list, and
-requires column FIELD IDs inside the Parquet files.
+The earlier ruling here was Iceberg, on the criterion this repo spends on anything
+durable — what the file has to keep being readable as, for years. It was reversed for
+a structural reason rather than a change of taste: the writer lived in okm, and the
+Iceberg encoder was a hand-written Avro writer plus manifests inside a store crate
+that has neither Arrow nor Parquet in it. The export bridge moved to `okm-parquet`
+(okm ADR-0058), the Iceberg encoder was deleted with it, and keeping Iceberg would
+mean maintaining an Avro encoder in the drain crate for a promise no reader in this
+repo exercises.
 
-The ruling is still Iceberg, on the criterion this repo spends on anything durable —
-what the file has to keep being readable as, for years:
-
-- The expensive half of Iceberg is the manifests' Avro encoding with the spec's
-  field ids, and it is written and reader-verified here (DuckDB `iceberg_scan`,
-  pyiceberg). That cost is sunk, so Delta's cheaper first cut no longer buys
-  anything.
-- Iceberg's reader base is widening, its REST catalog is becoming the default, and
-  the major warehouses read it natively; Delta's OSS momentum is thinner and its
-  new features land engine-first. A backup format is a long-lived promise, and this
-  repo should not rewrite the promise in a year.
-- Incremental exports (not built) fit Iceberg's own shape: a new export is snapshot
-  N+1 pointing at a new manifest list, with the earlier snapshot still readable.
-  Delta would be equally capable, so this is not a discriminator — it is why the
-  snapshot is the unit we model.
-- What Delta would genuinely win — a log a human can `cat` — is not worth the swap:
-  the manifest is readable by the tools the file is handed to, and nobody debugs a
-  five-year-old backup by reading its log.
+What Delta costs: one JSON line per action (`protocol`, `metaData`, `add`) and no
+column FIELD IDs inside the Parquet files — a `_delta_log/` a person can read, and
+the readers this bundle is handed to open it (`DuckDB delta_scan`, Spark,
+Databricks). What it loses is Iceberg's REST-catalog default and the manifest-list
+shape that makes an incremental export a new snapshot; neither is used here — the
+bundle's own `catalog.parquet` and one directory per table are the multi-table
+answer, and incremental export is not built.
 
 Where the two are equal: multi-table access. Neither gives a warehouse you can point
 at without a catalog service, which is why the bundle carries `catalog.parquet` and
-every table is a self-describing directory (DuckDB reads one table by directory,
-pyiceberg by metadata path, and a consumer wanting a catalog registers the tables in
-its own).
+every table is a self-describing directory (DuckDB reads one table by directory, and
+a consumer wanting a catalog registers the tables in its own).
+
+What the ruling keeps: the promise itself. The bundle is still Parquet plus a
+published spec's log, still readable by a tool that never saw k10r — only the log's
+author is different, and it is verified by a real reader in this repo's tests.
 
 ## 8. Consequences
 

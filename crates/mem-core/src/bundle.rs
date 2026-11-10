@@ -1,11 +1,11 @@
 //! The backup BUNDLE (ADR-0013): one tar.zst whose content is a small
-//! warehouse — `<root>/<table>/data/<table>.parquet` beside each table's
-//! Iceberg metadata, plus the catalog. One file to move, many Parquet files to
-//! query once it is unpacked, and no k10r in the loop to read it.
+//! warehouse — `<root>/<table>/data/<table>.parquet` beside each table's Delta
+//! log, plus the catalog. One file to move, many Parquet files to query once it
+//! is unpacked, and no k10r in the loop to read it.
 //!
-//! The split with okm is deliberate: okm writes Parquet and the Iceberg
-//! metadata BESIDE the files it was given (it knows declarations, not
-//! archives), and this module only arranges directories and compresses them.
+//! The split with okm is deliberate: okm writes Parquet and the Delta commit
+//! BESIDE the files it was given (it knows declarations, not archives), and this
+//! module only arranges directories and compresses them.
 //! So a compression or container change never reaches the schema layer, and a
 //! schema change never reaches the archive layer.
 
@@ -26,7 +26,7 @@ pub fn table_file(root: &Path, table: &str) -> PathBuf {
         .join(format!("{table}.parquet"))
 }
 
-/// Where one table's Iceberg metadata goes (okm writes into it).
+/// Where one table's Delta log goes (okm writes into it).
 pub fn table_dir(root: &Path, table: &str) -> PathBuf {
     root.join(table)
 }

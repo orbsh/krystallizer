@@ -276,18 +276,18 @@ impl LogStore {
         verdict: &crate::compress::Verdict,
     ) -> Result<LogKey, String> {
         let mut fields = BTreeMap::new();
-        fields.insert(field::CHANNEL.to_string(), DynamicValue::UInt(channel_id));
+        fields.insert(field::CHANNEL.to_string(), DynamicValue::U64(channel_id));
         fields.insert(
             field::SPLIT_TURN.to_string(),
-            DynamicValue::UInt(verdict.checkpoint.turn_id),
+            DynamicValue::U64(verdict.checkpoint.turn_id),
         );
         fields.insert(
             field::SPLIT_TS.to_string(),
-            DynamicValue::UInt(verdict.checkpoint.ts_ms),
+            DynamicValue::U64(verdict.checkpoint.ts_ms),
         );
         fields.insert(
             field::SPLIT_SUB.to_string(),
-            DynamicValue::UInt(u64::from(verdict.checkpoint.sub)),
+            DynamicValue::U64(u64::from(verdict.checkpoint.sub)),
         );
         fields.insert(
             field::TRIGGER.to_string(),
@@ -295,13 +295,13 @@ impl LogStore {
         );
         fields.insert(
             field::ASSEMBLED_BYTES.to_string(),
-            DynamicValue::UInt(verdict.assembled_bytes as u64),
+            DynamicValue::U64(verdict.assembled_bytes as u64),
         );
         if let Some(idle) = verdict.idle_ms {
-            fields.insert(field::IDLE_MS.to_string(), DynamicValue::UInt(idle));
+            fields.insert(field::IDLE_MS.to_string(), DynamicValue::U64(idle));
         }
         if let Some(gap) = verdict.max_gap_ms {
-            fields.insert(field::MAX_GAP_MS.to_string(), DynamicValue::UInt(gap));
+            fields.insert(field::MAX_GAP_MS.to_string(), DynamicValue::U64(gap));
         }
         // No `note`: the fields above already say what happened, and a sentence
         // repeating them is the kind of data that rots. `note` is for the rows
@@ -383,7 +383,7 @@ impl LogStore {
             Some(crate::export::finish_import(out, || self.reseed()))
         } else if name == crate::export::LOG_REDUCES {
             let out =
-                okm_core::bridge::tooling::parquet_io::import_reduces::<_, __OkmReduce_LogRow_0>(
+                okm_parquet::snapshot::parquet_io::import_reduces::<_, __OkmReduce_LogRow_0>(
                     self.table.store(),
                     <LogRow as Document>::NS_PREFIX,
                     <LogRow as Document>::TABLE_NAME,

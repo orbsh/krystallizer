@@ -1,12 +1,12 @@
 //! The backup is readable by a tool that is not k10r (ADR-0013 §3): the bundle
-//! is unpacked and then opened by DuckDB through its Iceberg metadata, with no
-//! krystallizer code anywhere in the read path.
+//! is unpacked and then opened by DuckDB through its Delta log (okm ADR-0058),
+//! with no krystallizer code anywhere in the read path.
 //!
 //! This is the claim the format is chosen for — "readable by whoever is handed
 //! the file, years later" — so it is asserted against a real reader and real
 //! files rather than against the metadata being well-formed.
 //!
-//! Skipped (not failed) when `duckdb` is missing or its iceberg extension cannot
+//! Skipped (not failed) when `duckdb` is missing or its delta extension cannot
 //! load: both are properties of the machine, not of the files.
 #![allow(
     clippy::unwrap_used,
@@ -32,16 +32,15 @@ async fn spawn(dir: &std::path::Path) -> String {
 
 /// Rows a warehouse reader sees in one table directory.
 ///
-/// `None` means this machine cannot answer at all (no duckdb, or its iceberg
+/// `None` means this machine cannot answer at all (no duckdb, or its delta
 /// extension will not load). A reader that RAN and failed is a failure, not a
 /// skip: that is the difference this test exists to notice.
 fn rows(table_dir: &std::path::Path) -> Option<i64> {
     let sql = format!(
-        // `allow_moved_paths` is what a bundle NEEDS: the metadata was written
-        // in the directory the export ran in, and the reader now looks at a
-        // different one. Without it DuckDB resolves the recorded paths against
-        // the process's cwd and opens nothing.
-        "LOAD iceberg; SELECT count(*)::BIGINT FROM iceberg_scan('{}', allow_moved_paths = true)",
+        // The log records paths relative to the table directory, which is what
+        // makes a bundle relocatable: the reader is pointed at the directory,
+        // wherever it now lives.
+        "LOAD delta; SELECT count(*)::BIGINT FROM delta_scan('{}')",
         table_dir.display()
     );
     let Ok(out) = Command::new("duckdb")
@@ -54,7 +53,7 @@ fn rows(table_dir: &std::path::Path) -> Option<i64> {
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         if err.contains("Extension") || err.contains("Could not load") {
-            eprintln!("skipped: no iceberg extension: {err}");
+            eprintln!("skipped: no delta extension: {err}");
             return None;
         }
         panic!("duckdb could not read {}: {err}", table_dir.display());
@@ -71,7 +70,7 @@ fn rows(table_dir: &std::path::Path) -> Option<i64> {
 /// (the store's numbering tables are not needed to read it).
 fn column(table_dir: &std::path::Path, column: &str, order: &str) -> Option<Vec<String>> {
     let sql = format!(
-        "LOAD iceberg; SELECT {column} FROM iceberg_scan('{}', allow_moved_paths = true) ORDER BY {order}",
+        "LOAD delta; SELECT {column} FROM delta_scan('{}') ORDER BY {order}",
         table_dir.display()
     );
     let out = Command::new("duckdb")
@@ -158,14 +157,14 @@ async fn a_bundle_opens_in_a_warehouse_reader_that_never_saw_k10r() {
         );
         assert!(
             root.join(table)
-                .join("metadata/version-hint.text")
+                .join("_delta_log/00000000000000000000.json")
                 .is_file(),
-            "{table} carries the hint a directory read needs"
+            "{table} carries the log a directory read needs"
         );
     }
 
     let Some(facts) = rows(&root.join("facts")) else {
-        eprintln!("skipped: no duckdb + iceberg extension on this machine");
+        eprintln!("skipped: no duckdb + delta extension on this machine");
         return;
     };
     assert_eq!(facts, 2, "both facts in the reader");

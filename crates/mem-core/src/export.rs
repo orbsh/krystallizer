@@ -11,7 +11,7 @@
 //! small: a backup is readable without k10r in the loop (Parquet + labels), and
 //! the schema cannot drift from the rows (one declaration generates both).
 
-use okm_core::bridge::tooling::parquet_io;
+use okm_parquet::snapshot::parquet_io;
 use okm_core::{Collection, Document, FjallStore, KeyEncode};
 use std::path::Path;
 
@@ -81,7 +81,7 @@ where
     K: KeyEncode,
     R: Document<Key = K>,
 {
-    okm_core::bridge::tooling::parquet_io::import_parquet(collection, path)
+    parquet_io::import_parquet(collection, path)
         .map_err(|e| format!("parquet import: {e}"))
 }
 
@@ -137,13 +137,13 @@ fn civil(secs: u64) -> (i64, u64, u64, u64, u64, u64) {
     (y, m, d, rem / 3600, (rem % 3600) / 60, rem % 60)
 }
 
-/// One exported table's Iceberg metadata beside its data file — the call the
-/// bundle makes after each table's Parquet lands. okm reads the file's own
-/// columns and row count; nothing here restates a schema.
+/// One exported table's Delta commit beside its data file — the call the bundle
+/// makes after each table's Parquet lands. okm reads the file's own columns and
+/// row count; nothing here restates a schema.
 pub fn write_metadata(table_dir: &std::path::Path, file: &std::path::Path) -> Result<(), String> {
-    okm_core::bridge::iceberg::write_table_metadata(table_dir, &[file.to_path_buf()])
+    okm_parquet::delta::commit_files(table_dir, &[file.to_path_buf()])
         .map(|_| ())
-        .map_err(|e| format!("iceberg metadata for {}: {e}", file.display()))
+        .map_err(|e| format!("delta metadata for {}: {e}", file.display()))
 }
 
 /// Write the catalog: `(table, ns)` per row.
@@ -163,7 +163,7 @@ where
 }
 
 /// An already-built batch (the graph's edge table) to a file.
-pub fn batch(batch: &okm_core::RecordBatch, path: &Path) -> Result<(), String> {
+pub fn batch(batch: &arrow::array::RecordBatch, path: &Path) -> Result<(), String> {
     parquet_io::write_batch(batch, path).map_err(|e| format!("parquet export: {e}"))
 }
 

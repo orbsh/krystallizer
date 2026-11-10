@@ -62,7 +62,7 @@ community id），但**维护**那个结构从来不是消费方的活儿。所�
 | `POST /memories/{scope}/edges/{id}/touch` | `GraphStore::touch`（调用方上报的工具调用：计数加一、权重重折；未知边或别的 scope 404） | facts (37) | 已落（2026-10-19） |
 | `POST /code/{scope}` | `GraphStore::put_code`（顶点 + 边表）；带 `code_id` 时走 `put_code_revision` | code (35) + entity (36) | 已落（ADR-0023；改版 2026-10-31） |
 | `GET /code` | ——2026-10-20 撤除（从来没有客户端读它；gravity 读的是 `GET /code/{id}`） | code (35) | 已不存在 |
-| `GET /export` | **一个** `tar.zst`（ADR-0013 §2）：每张表 `<table>/data/<table>.parquet` 旁带 Iceberg v2 元数据，根上 `catalog.parquet`。在同一趟锁里建在临时目录，**完整**才发；`Content-Disposition: krystallizer-backup-<ts>.tar.zst`。元数据里的路径是表相对的，文件搬走之后仍可读 | 全部表 | 2026-10-22 已落 |
+| `GET /export` | **一个** `tar.zst`（ADR-0013 §2）：每张表 `<table>/data/<table>.parquet` 旁带 Delta 日志，根上 `catalog.parquet`。在同一趟锁里建在临时目录，**完整**才发；`Content-Disposition: krystallizer-backup-<ts>.tar.zst`。元数据里的路径是表相对的，文件搬走之后仍可读 | 全部表 | 2026-10-22 已落 |
 | `POST /import` | 同一个包裹原路回来，按 catalog 顺序走活写契约恢复（按 key 并、不删），事后再从库里重算所有签发者；答每表行数 | 全部表 | 2026-10-22 已落 |
 | `GET /export/{table}` | 按**表名**把一张表导成 Parquet（okm 的桥按行声明生成列；声明字段 + 承载动态段的 `variant` 列；`Content-Disposition: <table>.parquet`）。边按 okm `Graph` 的边表导出：`(src_table, src_pkey, dst_table, dst_pkey, predicate)` + 声明字段 + props variant。`log__reduces` / `code__reduces` 是派生 reduce 表。404 = 没有这个表名（指向 catalog），空表 200 加空文件 | 全部表 | 2026-10-21 已落 |
 | `GET /code/{scope}/{id}` | `GraphStore::code`——**当前版本** `(rev, row)`，含 source | code (35) | 已落 |

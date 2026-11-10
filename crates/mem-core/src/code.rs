@@ -287,10 +287,10 @@ impl GraphStore {
         let mut write: BTreeMap<String, DynamicValue> = BTreeMap::new();
         write.insert(
             CALLS_FIELD.to_string(),
-            DynamicValue::UInt(u64::from(calls)),
+            DynamicValue::U64(u64::from(calls)),
         );
-        write.insert(OK_FIELD.to_string(), DynamicValue::UInt(u64::from(ok)));
-        write.insert(LAST_INVOKED_FIELD.to_string(), DynamicValue::UInt(now));
+        write.insert(OK_FIELD.to_string(), DynamicValue::U64(u64::from(ok)));
+        write.insert(LAST_INVOKED_FIELD.to_string(), DynamicValue::U64(now));
         self.merge_props(scope, node_id, &write)?;
         Ok(CodeTouchOutcome::Counted(CodeTouch {
             code_id,
@@ -343,7 +343,7 @@ impl GraphStore {
             }))
         } else if name == crate::export::CODE_REDUCES {
             let out =
-                okm_core::bridge::tooling::parquet_io::import_reduces::<_, __OkmReduce_CodeRow_0>(
+                okm_parquet::snapshot::parquet_io::import_reduces::<_, __OkmReduce_CodeRow_0>(
                     self.code_table().store(),
                     <CodeRow as Document>::NS_PREFIX,
                     <CodeRow as Document>::TABLE_NAME,

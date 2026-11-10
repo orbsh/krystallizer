@@ -74,8 +74,9 @@ Bool / Bytes / Array / Obj / Null) under arbitrary names:
   (u64 / the composite key's fields). Unavailable means absent, never a
   placeholder.
 - **Payload**: parameter snapshots, the three signals' measured values, the split
-  point, error text, timings. Nested objects MUST go through `put_frame_named`
-  (a bare `put_frame` has no dictionary to resolve names).
+  point, error text, timings. Nested objects are encoded by okm's segment
+  encoder, which owns the dictionary: a nested block's names allocate in the same
+  field-name vocabulary (ADR-0057), so no path writes an anonymous nested object.
 
 ### 4. What goes in, what stays out
 

@@ -238,7 +238,7 @@ pub struct LogRow { pub level: u8, pub event: Vocab<u16>,
   换来一个当前没人发的查询；等某个查询成了热路径再加。
 - 变的部分全在槽 1 的动态段：**定位**（`channel` / `scope` / `entity` / `edge` /
   `msg`，哪个适用记哪个）与**载荷**（参数快照、信号实测值、切分点、错误原文）。
-  嵌套值走 `put_frame_named`。
+  嵌套值由 okm 的段编码器写成独立的块（ADR-0057），名字仍走同一张字段字典。
 - 由 `logs { max-rows }` 封顶：写一行时在同一 batch 里从最老的键开始删。裁剪本身
   不记日志（否则裁剪产生日志、日志触发裁剪）。
 

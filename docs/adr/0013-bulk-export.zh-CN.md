@@ -2,8 +2,9 @@
 
 日期：2026-10-20
 状态：已裁决并落地 2026-10-20（一表一文件）。**2026-10-22 重裁**：备份是**一个** `tar.zst`，
-里面每张表是一个目录（Parquet 数据文件 ＋ Iceberg v2 元数据），恢复是一扇门。§2 的按表粒度、
-旧 §4 里「一次备份一个归档包」的否决都被推翻；§7 记录为什么元数据用 Iceberg 而不是 Delta Lake。
+里面每张表是一个目录（Parquet 数据文件 ＋ 仓库元数据），恢复是一扇门。§2 的按表粒度、
+旧 §4 里「一次备份一个归档包」的否决都被推翻。**2026-11-10 再裁**：元数据改用 Delta——
+okm ADR-0058 用 `okm_parquet::delta` 取代了 `bridge::iceberg` 并且删掉了 Iceberg 写入器；§7 记录理由。
 
 ## 1. 背景
 
@@ -122,27 +123,26 @@ dump 会是真正那份格式旁边的第二种格式。
 - 社区序列（`ns 38`）作为一张表在包裹里。它是**签发者**不是数据：没有它，恢复出来的图会重发恢复
   节点已经带着的社区 id。
 
-## 7. 为什么元数据是 Iceberg 的，不是 Delta Lake 的
+## 7. 为什么元数据是 Delta 的，不是 Iceberg 的
 
-两者都是「一份 Parquet 文件的日志」。对快照形态的导出，Delta 的日志确实更小：三行 JSON
-（`protocol`、`metaData`、`add`）、没有 Avro；Iceberg 要一份元数据 JSON ＋ 一个 manifest ＋ 一个
-manifest list，并且要求 Parquet 文件里带列 **field id**。
+这里早先裁的是 Iceberg，用的判据是这个仓对一切耐久之物花的那条——**这份文件在若干年后仍然必须能被
+当成什么读**。推翻它的不是一个改口味，而是一个结构性原因：写入器本来住在 okm，而 Iceberg 那份编码器
+是手写的 Avro 写入器加 manifest，长在一个既没有 Arrow 也没有 Parquet 的存储 crate 里。导出的桥已经
+搬去 `okm-parquet`（okm ADR-0058），Iceberg 编码器随之被删；继续用 Iceberg 就意味着在 drain crate 里
+维护一个 Avro 编码器，只为守一个本仓没有任何读取端在用的承诺。
 
-裁决仍然是 Iceberg，用的判据是这个仓对一切耐久之物花的那条——**这份文件在若干年后仍然必须能被
-当成什么读**：
-
-- Iceberg 贵的那一半，是 manifest 的 Avro 编码加 spec 的 field id，这一半已经写好并被读取端验过
-  （DuckDB `iceberg_scan`、pyiceberg）。这笔成本已经沉没，Delta「第一刀更便宜」不再换来任何东西。
-- Iceberg 的读取端在变宽，它的 REST catalog 正在成为默认，主流仓库原生读它；Delta 的开源势头更薄，
-  新特性先在引擎里落地。备份格式是一个长期承诺，这个仓不该在一年后重写这个承诺。
-- 增量导出（还没做）正好是 Iceberg 自己的形状：新一次导出是 snapshot N+1 指向新的 manifest list，
-  旧快照仍可读。Delta 同样做得到，所以这不是区分点——它只解释了为什么我们把「快照」当作建模单位。
-- Delta 真正赢的那点——日志人能 `cat`——不值得换：manifest 也能被文件交给的那些工具读，而没人靠读
-  日志去排查五年前的备份。
+Delta 的代价：每个动作一行 JSON（`protocol`、`metaData`、`add`），Parquet 文件里不带列 **field id**；
+换来的是一个能直接看的 `_delta_log/`，以及这份包裹真正会被交给的那些读取端（`DuckDB delta_scan`、
+Spark、Databricks）。它丢掉的是 Iceberg 的 REST catalog 默认地位，以及 manifest list 那种「增量导出＝
+新快照」的形状；这两样这里都没用——包裹自带的 `catalog.parquet` 加一表一目录就是多表的答案，增量导出
+也没有做。
 
 两者打平的地方：多表访问。谁都不会给你一个不靠 catalog 服务就能指过去的仓库，所以包裹里带
-`catalog.parquet`，每张表都是一个自描述的目录（DuckDB 按目录读一张表，pyiceberg 按元数据路径读，
-想要 catalog 的消费方把表注册进自己的）。
+`catalog.parquet`，每张表都是一个自描述的目录（DuckDB 按目录读一张表，想要 catalog 的消费方把表注册
+进自己的）。
+
+这次裁决保住的是承诺本身：包裹仍然是 Parquet 加上一份公开规范的日志，仍然能被一个从没见过 k10r 的
+工具读——只是日志的作者换了，而且换的那一个由本仓测试里的真实读取端验过。
 
 ## 8. 后果
 

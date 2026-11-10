@@ -130,8 +130,8 @@ impl GraphStore {
                 DynamicValue::Str(decl.steps.clone()),
             );
         }
-        props.insert(COUNT_FIELD.to_string(), DynamicValue::UInt(count));
-        props.insert(LAST_SEEN_FIELD.to_string(), DynamicValue::UInt(decl.ts_ms));
+        props.insert(COUNT_FIELD.to_string(), DynamicValue::U64(count));
+        props.insert(LAST_SEEN_FIELD.to_string(), DynamicValue::U64(decl.ts_ms));
         let term = Term {
             value: name,
             type_label: PROPOSAL_KIND.to_string(),
@@ -277,8 +277,8 @@ fn text_of(props: &BTreeMap<String, DynamicValue>, field: &str) -> String {
 
 fn uint_of(props: &BTreeMap<String, DynamicValue>, field: &str) -> u64 {
     match props.get(field) {
-        Some(DynamicValue::UInt(value)) => *value,
-        Some(DynamicValue::Int(value)) => (*value).max(0) as u64,
+        Some(DynamicValue::U64(value)) => *value,
+        Some(DynamicValue::I64(value)) => (*value).max(0) as u64,
         _ => 0,
     }
 }

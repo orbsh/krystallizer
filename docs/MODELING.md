@@ -286,7 +286,8 @@ pub struct LogRow { pub level: u8, pub event: Vocab<u16>,
 - Everything variable rides slot 1's dynamic segment: the LOCATOR (`channel` /
   `scope` / `entity` / `edge` / `msg`, whichever applies) and the PAYLOAD
   (parameter snapshots, measured signals, the split point, error text). Nested
-  values go through `put_frame_named`.
+  values are written by okm's segment encoder as blocks of their own (ADR-0057),
+  with their names in the same field-name dictionary.
 - Bounded by `logs { max-rows }`: a write trims oldest-first in the SAME batch,
   and the trim is never logged (trimming would emit rows that trigger trimming).
 

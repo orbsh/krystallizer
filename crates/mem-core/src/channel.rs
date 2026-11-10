@@ -820,7 +820,7 @@ impl ChannelStore {
                 items
                     .iter()
                     .filter_map(|item| match item {
-                        okm_core::obj_dynamic::DynamicValue::UInt(id) => Some(*id),
+                        okm_core::obj_dynamic::DynamicValue::U64(id) => Some(*id),
                         _ => None,
                     })
                     .collect(),
@@ -836,7 +836,7 @@ impl ChannelStore {
             checkpoint_field::HEAD.to_string(),
             okm_core::obj_dynamic::DynamicValue::Array(
                 head.iter()
-                    .map(|id| okm_core::obj_dynamic::DynamicValue::UInt(*id))
+                    .map(|id| okm_core::obj_dynamic::DynamicValue::U64(*id))
                     .collect(),
             ),
         );

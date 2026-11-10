@@ -222,25 +222,33 @@ fn read_rows(body: &[u8]) -> arrow::record_batch::RecordBatch {
 }
 
 /// `GET /export` is the BUNDLE: one `tar.zst` holding every table's Parquet file
-/// beside its Iceberg metadata, plus the catalog at the root.
+/// beside its Delta log, plus the catalog at the root (ADR-0058).
 #[tokio::test]
-async fn the_bundle_carries_every_table_and_its_iceberg_metadata() {
+async fn the_bundle_carries_every_table_and_its_delta_log() {
     let (base, _dir) = spawn_server().await;
     let response = reqwest::Client::new()
         .get(format!("{base}/export"))
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 200);
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let body = response.bytes().await.unwrap();
     assert_eq!(
-        response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok()),
+        status,
+        200,
+        "the bundle failed: {}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(
+        content_type.as_deref(),
         Some("application/zstd"),
         "a .tar.zst, not a bare Parquet file"
     );
-    let body = response.bytes().await.unwrap();
     assert_eq!(&body[..4], &[0x28, 0xb5, 0x2f, 0xfd], "the zstd magic");
 
     // Unpack it the way a restore does, then read what a reader outside k10r
@@ -281,14 +289,16 @@ async fn the_bundle_carries_every_table_and_its_iceberg_metadata() {
     ]) {
         let file = mem_core::bundle::table_file(&root, table);
         assert!(file.exists(), "{table} has a data file");
-        let meta = mem_core::bundle::table_dir(&root, table).join("metadata");
+        let log = mem_core::bundle::table_dir(&root, table).join("_delta_log");
+        let first = log.join("00000000000000000000.json");
         assert!(
-            meta.join("v1.metadata.json").exists(),
-            "{table} carries Iceberg metadata"
+            first.exists(),
+            "{table} carries a Delta log — the table is readable by directory"
         );
+        let text = std::fs::read_to_string(&first).unwrap();
         assert!(
-            meta.join("version-hint.text").exists(),
-            "{table} is readable as a directory"
+            text.contains("\"add\""),
+            "{table}'s first commit adds the data file"
         );
     }
 }

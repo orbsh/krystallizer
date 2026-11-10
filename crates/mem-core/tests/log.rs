@@ -57,9 +57,9 @@ fn a_row_round_trips_with_its_dynamic_fields() {
             source::COMPRESS,
             "",
             fields(&[
-                (field::CHANNEL, DynamicValue::UInt(7)),
+                (field::CHANNEL, DynamicValue::U64(7)),
                 (field::TRIGGER, DynamicValue::Str("cache_clock".into())),
-                (field::IDLE_MS, DynamicValue::UInt(301_000)),
+                (field::IDLE_MS, DynamicValue::U64(301_000)),
             ]),
         )
         .unwrap();
@@ -67,18 +67,18 @@ fn a_row_round_trips_with_its_dynamic_fields() {
     let doc = store.get(&key).expect("row present").expect("row present");
     assert_eq!(
         doc.get("level"),
-        Some(&DynamicValue::UInt(level::WARN as u64))
+        Some(&DynamicValue::U64(level::WARN as u64))
     );
     assert_eq!(
         doc.get("event"),
         Some(&DynamicValue::Str(event::COMPRESSION_VERDICT.into()))
     );
-    assert_eq!(doc.get(field::CHANNEL), Some(&DynamicValue::UInt(7)));
+    assert_eq!(doc.get(field::CHANNEL), Some(&DynamicValue::U64(7)));
     assert_eq!(
         doc.get(field::TRIGGER),
         Some(&DynamicValue::Str("cache_clock".into()))
     );
-    assert_eq!(doc.get(field::IDLE_MS), Some(&DynamicValue::UInt(301_000)));
+    assert_eq!(doc.get(field::IDLE_MS), Some(&DynamicValue::U64(301_000)));
 }
 
 /// A bare event line needs no dynamic segment at all: `fields` empty is legal,
@@ -220,16 +220,16 @@ fn the_verdict_row_carries_the_decision_it_made() {
         .get(&key)
         .expect("the row lands")
         .expect("the row lands");
-    assert_eq!(row[field::CHANNEL], DynamicValue::UInt(7));
-    assert_eq!(row[field::SPLIT_TS], DynamicValue::UInt(1_500));
-    assert_eq!(row[field::SPLIT_SUB], DynamicValue::UInt(2));
+    assert_eq!(row[field::CHANNEL], DynamicValue::U64(7));
+    assert_eq!(row[field::SPLIT_TS], DynamicValue::U64(1_500));
+    assert_eq!(row[field::SPLIT_SUB], DynamicValue::U64(2));
     assert_eq!(
         row[field::TRIGGER],
         DynamicValue::Str("cache_clock".into()),
         "the trigger travels as a WORD: a log is read by people"
     );
-    assert_eq!(row[field::ASSEMBLED_BYTES], DynamicValue::UInt(12_345));
-    assert_eq!(row[field::IDLE_MS], DynamicValue::UInt(400_000));
+    assert_eq!(row[field::ASSEMBLED_BYTES], DynamicValue::U64(12_345));
+    assert_eq!(row[field::IDLE_MS], DynamicValue::U64(400_000));
     assert!(
         !row.contains_key(field::MAX_GAP_MS),
         "an absent signal writes no field — absence must not read as zero"

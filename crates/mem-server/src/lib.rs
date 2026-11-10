@@ -1516,9 +1516,9 @@ async fn resolve_skills(
 /// `GET /export` — the WHOLE store as one `tar.zst` bundle (ADR-0013).
 ///
 /// Inside the archive: `<root>/<table>/data/<table>.parquet` beside that
-/// table's Iceberg metadata, the catalog at the root, and nothing k10r-specific
-/// beyond the directory names — unpack it and any Parquet/Iceberg reader can
-/// open the tables without this service.
+/// table's Delta log, the catalog at the root, and nothing k10r-specific beyond
+/// the directory names — unpack it and any Parquet/Delta reader can open the
+/// tables without this service.
 ///
 /// The tables are exported under the SAME lock each write takes, one at a time,
 /// and the archive is built in a temp directory: a failure mid-way answers 500
@@ -1589,7 +1589,7 @@ async fn export_bundle(State(state): State<Arc<MemState>>) -> axum::response::Re
         .into_response()
 }
 
-/// One table into the bundle: the Parquet file, then its Iceberg metadata.
+/// One table into the bundle: the Parquet file, then its Delta commit.
 ///
 /// Each lock is taken as its OWN statement (and dropped before the next), so a
 /// table that falls through every store cannot re-take a lock it still holds —
@@ -2567,15 +2567,20 @@ impl IntoResponse for EngineError {
     }
 }
 
-/// A node attribute as wire JSON. The bag is storage's shape (`UInt` / `Int` /
+/// A node attribute as wire JSON. The bag is storage's shape (`U64` / `I64` /
 /// `Str` / …); a renderer only ever needs JSON, and bytes are the one variant
 /// with no JSON counterpart — they are shown as a length, never as a wall of
 /// numbers that would bury the rest of the card.
 fn dynamic_to_json(value: mem_core::DynamicValue) -> serde_json::Value {
     use mem_core::DynamicValue as D;
     match value {
-        D::UInt(n) => serde_json::Value::from(n),
-        D::Int(n) => serde_json::Value::from(n),
+        // Widths are a Rust-side convenience: the wire is widthless, so every
+        // unsigned variant is one number here.
+        D::U8(n) => serde_json::Value::from(n),
+        D::U16(n) => serde_json::Value::from(n),
+        D::U32(n) => serde_json::Value::from(n),
+        D::U64(n) => serde_json::Value::from(n),
+        D::I64(n) => serde_json::Value::from(n),
         D::F64(n) => serde_json::Number::from_f64(n)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),

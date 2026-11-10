@@ -29,9 +29,10 @@
 //!   (0x04/0x05) and is listed by one prefix scan of it.
 //! - **The relation's open props** (condition / cause / strength / the
 //!   per-assertion `functional` flag) ride the edge's dynamic segment
-//!   (okm's fixed face 0x01, one entry per edge), built by
-//!   `put_frame_named`; their names allocate in the field-name dictionary
-//!   (0x02/0x03), separate from the predicate vocabulary.
+//!   (okm's fixed face 0x01, one entry per edge), built by okm's segment
+//!   encoder (`obj_segment::encode`, ADR-0057); their names allocate in the
+//!   field-name dictionary (0x02/0x03), separate from the predicate
+//!   vocabulary.
 //!
 //! Write-time resolution (ADR-0010 §1): a fact whose relation declares
 //! `functional` (the caller states it per assertion — a kind's cardinality
@@ -69,6 +70,8 @@ use okm_core::{
     write_slot, Batch, Collection, Document, DocumentEncode, EdgeHead, FjallStore, Graph,
     GraphEncode, KeyEncode, NodeRef, Vector, VectorElem, VirtualStorage, Vocab, PRIMARY_SLOT,
 };
+use okm_parquet::bridge::EdgeTable;
+use okm_parquet::snapshot::parquet_io::EdgeRestore;
 use okm_vector::ExactIndex;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -885,11 +888,11 @@ fn embedding_text(value: &str, props: &BTreeMap<String, DynamicValue>) -> String
 /// must not turn into a phantom target.
 fn refs_of(value: &DynamicValue) -> Vec<u64> {
     match value {
-        DynamicValue::UInt(id) => vec![*id],
+        DynamicValue::U64(id) => vec![*id],
         DynamicValue::Array(items) => items
             .iter()
             .filter_map(|item| match item {
-                DynamicValue::UInt(id) => Some(*id),
+                DynamicValue::U64(id) => Some(*id),
                 _ => None,
             })
             .collect(),
@@ -2202,13 +2205,13 @@ impl GraphStore {
             Some(DynamicValue::Bool(true))
         );
         let since = match fact.rel.props.get("since") {
-            Some(DynamicValue::UInt(v)) => *v,
-            Some(DynamicValue::Int(v)) => *v as u64,
+            Some(DynamicValue::U64(v)) => *v,
+            Some(DynamicValue::I64(v)) => *v as u64,
             _ => 0,
         };
         let confidence = match fact.rel.props.get("confidence") {
-            Some(DynamicValue::UInt(v)) => (*v).min(255) as u8,
-            Some(DynamicValue::Int(v)) => (*v).clamp(0, 255) as u8,
+            Some(DynamicValue::U64(v)) => (*v).min(255) as u8,
+            Some(DynamicValue::I64(v)) => (*v).clamp(0, 255) as u8,
             _ => 255,
         };
         // The rel props that ride the edge's dynamic segment: the open
