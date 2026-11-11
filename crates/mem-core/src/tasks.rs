@@ -365,8 +365,8 @@ impl GraphStore {
                     .map_err(|e| IngestError::Storage(e.to_string()))?;
                     entries
                         .into_iter()
-                        .filter(|entry| entry.decoded.scope == scope)
-                        .map(|entry| entry.decoded.node_id)
+                        .filter(|(_, key)| key.decoded.scope == scope)
+                        .map(|(_, key)| key.decoded.node_id)
                         .collect::<Vec<u64>>()
                 };
                 for node_id in ids {

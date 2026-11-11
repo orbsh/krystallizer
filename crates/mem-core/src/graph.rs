@@ -1173,7 +1173,7 @@ impl GraphStore {
             .map_err(|e| IngestError::Storage(e.to_string()))?;
         Ok(hits
             .into_iter()
-            .filter_map(|(key, row)| row.map(|row| (key.decoded, row)))
+            .filter_map(|(_, key, row)| row.map(|row| (key.decoded, row)))
             .find(|(key, row)| key.scope == scope && row.name == name)
             .map(|(key, row)| (key.node_id, row)))
     }
@@ -1536,7 +1536,10 @@ impl GraphStore {
                 &[],
             )
             .map_err(|e| IngestError::Storage(e.to_string()))?;
-            keys.into_iter().rev().map(|key| key.decoded.0).collect()
+            keys.into_iter()
+                .rev()
+                .map(|(_, key)| key.decoded.0)
+                .collect()
         };
         let mut out = Vec::new();
         for id in ids {
@@ -1647,7 +1650,7 @@ impl GraphStore {
             keys.into_iter()
                 .rev()
                 .take(k)
-                .map(|key| key.decoded.0)
+                .map(|(_, key)| key.decoded.0)
                 .collect()
         };
         let mut facts: Vec<FactView> = Vec::with_capacity(ids.len());
@@ -3074,7 +3077,7 @@ impl GraphStore {
             .map_err(|e| IngestError::Storage(e.to_string()))?;
         Ok(hits
             .into_iter()
-            .filter_map(|(key, row)| row.map(|row| (key.decoded, row)))
+            .filter_map(|(_, key, row)| row.map(|row| (key.decoded, row)))
             .filter(|(key, row)| key.scope == scope && row.community_id == community)
             .map(|(key, row)| (key.node_id, row))
             .collect())
