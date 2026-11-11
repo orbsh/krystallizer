@@ -79,7 +79,10 @@ async fn a_published_fact() -> (tempfile::TempDir, tempfile::TempDir) {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     let listing: Vec<String> = std::fs::read_dir(lake.path())
-        .map(|d| d.filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string())).collect())
+        .map(|d| {
+            d.filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+                .collect()
+        })
         .unwrap_or_default();
     panic!("the lake never carried the published fact; lake holds {listing:?}; last: {last}");
 }

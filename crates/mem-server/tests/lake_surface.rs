@@ -158,7 +158,9 @@ async fn the_service_publishes_itself_into_the_lake() {
             if name != first {
                 replaced = true;
                 assert!(
-                    lake.head(&format!("facts__entities__entities/{first}")).unwrap().is_none(),
+                    lake.head(&format!("facts__entities__entities/{first}"))
+                        .unwrap()
+                        .is_none(),
                     "the replaced file left the store"
                 );
                 break;

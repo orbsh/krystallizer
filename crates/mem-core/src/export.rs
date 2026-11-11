@@ -342,7 +342,9 @@ pub fn edge_batch(
         .map(|f| f.as_ref().clone())
         .collect();
     let mut arrays = cols.split_off(0);
-    let tail = arrays.pop().ok_or("an edge batch has at least one column")?;
+    let tail = arrays
+        .pop()
+        .ok_or("an edge batch has at least one column")?;
     let variant_field = fields.pop().ok_or("an edge batch has at least one field")?;
     for (field, array) in typed {
         fields.push(field);
@@ -359,7 +361,10 @@ fn endpoint_columns(
     vertex: &str,
     keys: &arrow::array::BinaryArray,
     prefix: &str,
-    out: &mut Vec<(arrow::datatypes::Field, std::sync::Arc<dyn arrow::array::Array>)>,
+    out: &mut Vec<(
+        arrow::datatypes::Field,
+        std::sync::Arc<dyn arrow::array::Array>,
+    )>,
 ) -> Result<(), String> {
     use arrow::array::{Array, StringBuilder, UInt64Builder};
     use arrow::datatypes::{DataType, Field};
