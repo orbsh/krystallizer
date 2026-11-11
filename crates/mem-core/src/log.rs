@@ -29,7 +29,7 @@
 //! logged — trimming would emit rows, and rows would trigger trimming. Loss is
 //! the accepted price: a diagnostic table, not a ledger.
 
-use okm_core::obj_dynamic::DynamicValue;
+use okm_core::okm_value::DynamicValue;
 use okm_core::{Collection, Document, DocumentEncode, FjallStore, KeyEncode, ReduceCodec, Vocab};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -363,6 +363,36 @@ impl LogStore {
             <LogRow as Document>::TABLE_NAME,
             crate::export::ns(LogRow::NS_PREFIX),
         )]
+    }
+
+    /// Land the table (or its `seq` watermark) at `ns` — the restore's door
+    /// (ADR-0015). The issuer and the trim index are recomputed from what landed,
+    /// so a restored log does not reissue numbers its rows already carry.
+    pub fn restore(
+        &mut self,
+        table: &str,
+        ns: u16,
+        batches: &[arrow::array::RecordBatch],
+    ) -> Option<Result<usize, String>> {
+        let out = if table == <LogRow as Document>::TABLE_NAME {
+            crate::export::land_into(&mut self.table.rebased(ns), batches)
+        } else if table == crate::export::LOG_REDUCES {
+            crate::export::land_reduce(self.table.store(), ns, batches)
+        } else {
+            return None;
+        };
+        // No reseed here: the `seq` watermark is the reduce row, and a restore that
+        // takes the table also takes that row (ADR-0034 §5) — nothing else counts it.
+        Some(out)
+    }
+
+    /// Whether the table's namespace is untouched (the restore's refusal).
+    pub fn ns_is_empty(&self, table: &str, ns: u16) -> Option<Result<bool, String>> {
+        if table == <LogRow as Document>::TABLE_NAME || table == crate::export::LOG_REDUCES {
+            Some(crate::export::ns_is_empty_into(&self.table.rebased(ns)))
+        } else {
+            None
+        }
     }
 
     /// Export the table by NAME as Parquet bytes, with the columns that identify a row —

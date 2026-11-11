@@ -64,13 +64,14 @@ use crate::code::{CodeKey, CodeRow};
 use crate::embedding::Embedder;
 use crate::render::RenderFormat;
 use crate::tasks::{TaskSheet, TASK_KIND};
-use okm_core::obj_dynamic::DynamicValue;
+use okm_core::okm_value::DynamicValue;
 use okm_core::Uuid7;
 use okm_core::{
     write_slot, Batch, Collection, Document, DocumentEncode, EdgeHead, FjallStore, Graph,
     GraphEncode, KeyEncode, NodeRef, Vector, VectorElem, VirtualStorage, Vocab, PRIMARY_SLOT,
 };
 use okm_lake::bridge::EdgeTable;
+use okm_lake::snapshot::parquet_io::EdgeRestore;
 use okm_vector::ExactIndex;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -1280,6 +1281,75 @@ impl GraphStore {
     /// the declaration's fields, and the edge's open attributes as a `variant`
     /// column — which is why that segment lives on the graph rather than in a
     /// consumer. `None` = not this graph's table.
+    /// Land one table's rows at `ns` — the restore's per-table door (ADR-0015).
+    ///
+    /// `ns_of` answers a lake table's DESTINATION ns, because an edge's endpoints
+    /// are `[ns 2B]` refs: a mapped restore that moved the node table and left the
+    /// edges pointing at the old ns would restore edges to nothing.
+    pub fn restore(
+        &mut self,
+        table: &str,
+        ns: u16,
+        batches: &[arrow::array::RecordBatch],
+        ns_of: &dyn Fn(&str) -> Option<u16>,
+    ) -> Option<Result<usize, String>> {
+        let out = if table == <EntityRow as Document>::TABLE_NAME {
+            crate::export::land_into(&mut self.entities.rebased(ns), batches)
+        } else if table == <Facts as Document>::TABLE_NAME {
+            let mut graph = self.facts().rebased(ns);
+            let mut rows = 0usize;
+            for batch in batches {
+                match graph.import_table(batch, ns_of) {
+                    Ok(n) => rows += n,
+                    Err(e) => return Some(Err(e)),
+                }
+            }
+            Ok(rows)
+        } else if table == <CommunitySeqRow as Document>::TABLE_NAME {
+            let mut seq = <CommunitySeqRow as Document>::collection(self.store.clone()).rebased(ns);
+            crate::export::land_into(&mut seq, batches)
+        } else if table == <crate::code::CodeRow as Document>::TABLE_NAME
+            || table == crate::export::CODE_REDUCES
+        {
+            return self.restore_code(table, ns, batches);
+        } else {
+            return None;
+        };
+        if out.is_ok() {
+            if let Err(e) = self.reseed() {
+                return Some(Err(e));
+            }
+        }
+        Some(out)
+    }
+
+    /// Whether a table's namespace is untouched (the restore's refusal).
+    pub fn ns_is_empty(&self, table: &str, ns: u16) -> Option<Result<bool, String>> {
+        if table == <EntityRow as Document>::TABLE_NAME {
+            Some(crate::export::ns_is_empty_into(&self.entities.rebased(ns)))
+        } else if table == <Facts as Document>::TABLE_NAME {
+            // The edges share the node table's ns, so "no edge" is asked of the
+            // graph itself: a restore that found edges there would fold two
+            // corpora into one number space.
+            Some(
+                self.facts()
+                    .rebased(ns)
+                    .has_edges()
+                    .map(|edges| !edges)
+                    .map_err(|e| e.to_string()),
+            )
+        } else if table == <CommunitySeqRow as Document>::TABLE_NAME {
+            let seq = <CommunitySeqRow as Document>::collection(self.store.clone()).rebased(ns);
+            Some(crate::export::ns_is_empty_into(&seq))
+        } else if table == <crate::code::CodeRow as Document>::TABLE_NAME
+            || table == crate::export::CODE_REDUCES
+        {
+            self.ns_is_empty_code(table, ns)
+        } else {
+            None
+        }
+    }
+
     pub fn export(&mut self, name: &str) -> Option<Result<crate::export::Export, String>> {
         if name == <EntityRow as Document>::TABLE_NAME {
             Some(crate::export::table_bytes(&mut self.entities))

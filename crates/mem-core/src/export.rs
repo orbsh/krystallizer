@@ -161,3 +161,77 @@ pub fn reduces_bytes<A: okm_core::model::reduce::Reduce>(
         keys: Vec::new(),
     })
 }
+
+/// Land batches into an already-rooted collection: the restore's write seam
+/// (ADR-0015). The caller hands the collection it means — `collection.rebased(ns)`
+/// for a mapped table — so this function never names a key or row type.
+pub fn land_into<S, K, R>(
+    collection: &mut Collection<S, K, R>,
+    batches: &[arrow::array::RecordBatch],
+) -> Result<usize, String>
+where
+    S: okm_core::engine::storage::VirtualStorage,
+    K: KeyEncode,
+    R: Document<Key = K>,
+{
+    let mut rows = 0;
+    for batch in batches {
+        rows += parquet_io::import_parquet_batch(collection, batch)
+            .map_err(|e| format!("restoring the table: {e}"))?;
+    }
+    Ok(rows)
+}
+
+/// Whether the namespace this handle would write into is untouched: one key
+/// under its header is enough to refuse a restore (ADR-0015: a restore only goes
+/// into an empty namespace). Faces, index entries and reduce rows share the
+/// header, so this sees them too, not just the rows a scan of documents finds.
+pub fn ns_is_empty_into<S, K, R>(collection: &Collection<S, K, R>) -> Result<bool, String>
+where
+    S: okm_core::engine::storage::VirtualStorage,
+    K: KeyEncode,
+    R: Document<Key = K>,
+{
+    let prefix = collection.header();
+    let end = okm_core::engine::storage::prefix_end(&prefix);
+    let mut it = collection.store().scan_range_iter(&prefix, end.as_deref());
+    Ok(it.next().is_none())
+}
+
+/// Land a reduce table's entries at `ns`: each row is `(reduce slot, group,
+/// value)` and the key is `[ns 2B][slot][group]` — the same shape the reducer
+/// writes, so a restored watermark counts what the restored rows already hold.
+pub fn land_reduce<S>(
+    store: &S,
+    ns: u16,
+    batches: &[arrow::array::RecordBatch],
+) -> Result<usize, String>
+where
+    S: okm_core::engine::storage::VirtualStorage,
+{
+    let mut rows = 0usize;
+    for batch in batches {
+        let slot_col = batch
+            .column_by_name("reduce")
+            .and_then(|c| c.as_any().downcast_ref::<arrow::array::UInt16Array>())
+            .ok_or_else(|| "a reduce table needs a `reduce` column".to_string())?;
+        let group_col = batch
+            .column_by_name("group")
+            .and_then(|c| c.as_any().downcast_ref::<arrow::array::BinaryArray>())
+            .ok_or_else(|| "a reduce table needs a `group` column".to_string())?;
+        let value_col = batch
+            .column_by_name("value")
+            .and_then(|c| c.as_any().downcast_ref::<arrow::array::BinaryArray>())
+            .ok_or_else(|| "a reduce table needs a `value` column".to_string())?;
+        for row in 0..batch.num_rows() {
+            let mut key = ns.to_be_bytes().to_vec();
+            okm_core::model::index::write_slot(&mut key, slot_col.value(row));
+            key.extend_from_slice(group_col.value(row));
+            store
+                .put(key, value_col.value(row).to_vec())
+                .map_err(|e| format!("landing a reduce entry: {e}"))?;
+            rows += 1;
+        }
+    }
+    Ok(rows)
+}

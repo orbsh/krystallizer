@@ -54,3 +54,29 @@ pub fn open_service(path: &std::path::Path) -> Result<ServiceStores, String> {
         log: LogStore::wrap(channel_store)?,
     })
 }
+
+impl ServiceStores {
+    /// Land one table's batches, wherever that table lives — the restore's
+    /// dispatch (ADR-0015). `None` = no store serves the table.
+    pub fn land(
+        &mut self,
+        table: &str,
+        ns: u16,
+        batches: &[arrow::array::RecordBatch],
+        ns_of: &dyn Fn(&str) -> Option<u16>,
+    ) -> Option<Result<usize, String>> {
+        self.channels
+            .restore(table, ns, batches)
+            .or_else(|| self.log.restore(table, ns, batches))
+            .or_else(|| self.graph.restore(table, ns, batches, ns_of))
+    }
+
+    /// Whether a table's destination namespace is untouched. `None` = no store
+    /// serves the table.
+    pub fn ns_is_empty(&self, table: &str, ns: u16) -> Option<Result<bool, String>> {
+        self.channels
+            .ns_is_empty(table, ns)
+            .or_else(|| self.log.ns_is_empty(table, ns))
+            .or_else(|| self.graph.ns_is_empty(table, ns))
+    }
+}

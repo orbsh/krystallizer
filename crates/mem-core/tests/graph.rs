@@ -15,7 +15,7 @@
 
 use mem_core::graph::{FactTuple, GraphStore, IngestError, IngestOutcome};
 use mem_core::{EntityKey, EntityRow, Facts, RenderFormat, LITERAL_KIND};
-use okm_core::obj_dynamic::DynamicValue;
+use okm_core::okm_value::DynamicValue;
 use okm_core::{Document, KeyEncode, NodeRef, Vector};
 
 /// A member id in these tests: the identity IS a uuid (ADR-0025 §4), so a small ordinal is spelled

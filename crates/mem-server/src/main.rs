@@ -28,9 +28,15 @@ const CONFIG_FILE: &str = "krystallizer.kdl";
 
 const USAGE: &str = "\
 usage: krystallizer [--config <path>] [--addr <ip:port>]
+       krystallizer --config <path> --restore <target> [--map <table>=<ns>]...
 
   --config <path>    the KDL config (default: krystallizer.kdl beside this binary)
   --addr <ip:port>   where the HTTP door listens (default 127.0.0.1:7760)
+  --restore <target> land a lake back into storage.data-dir, then exit
+                     (<target> is a directory or s3://bucket/prefix)
+  --map <table>=<ns> restore only this table, into namespace <ns> (ADR-0015:
+                     the application creates the namespace; a restore never
+                     lands on top of rows that are already there)
   -h, --help         this text
 
 Everything else is the config: `storage.data-dir` (the database's directory,
@@ -47,6 +53,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()
         .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 7760)));
 
+    // The restore's two shapes (ADR-0015): a target, and optionally the mapping
+    // that says which tables go where. No mapping = full restore.
+    let mut restore: Option<String> = None;
+    let mut mapping: std::collections::BTreeMap<String, u16> = std::collections::BTreeMap::new();
+
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -55,6 +66,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .next()
                     .ok_or_else(|| format!("--config needs a path\n{USAGE}"))?;
                 config = Some(PathBuf::from(value));
+            }
+            "--restore" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| format!("--restore needs a lake target\n{USAGE}"))?;
+                restore = Some(value);
+            }
+            "--map" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| format!("--map needs <table>=<ns>\n{USAGE}"))?;
+                let (table, ns) = value
+                    .split_once('=')
+                    .ok_or_else(|| format!("--map wants <table>=<ns>, not `{value}`"))?;
+                let ns: u16 = ns
+                    .parse()
+                    .map_err(|_| format!("`{ns}` is not a namespace number"))?;
+                mapping.insert(table.to_string(), ns);
             }
             "--addr" => {
                 let value = args
@@ -87,6 +116,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Resolved here as well, because the boot line names the directory being served:
     // an operator watching a process start must see WHERE its state lives.
     let data_dir = cfg.storage.data_dir()?;
+
+    // The restore is an OPERATOR action on a stopped service, not a door: the store
+    // has one writer, so it runs here, lands the lake, and exits before any door
+    // exists (ADR-0015).
+    if let Some(target) = restore {
+        let lake = okm_lake::store::open(&target, None)?;
+        let mut stores = mem_core::service::open_service(&data_dir)?;
+        let mapping = (!mapping.is_empty()).then_some(&mapping);
+        let landed = mem_core::restore::land(&mut stores, &*lake, mapping)?;
+        for entry in &landed {
+            println!(
+                "restored {:<14} ns {:<5} {} row(s)",
+                entry.table, entry.ns, entry.rows
+            );
+        }
+        println!("  from {}", target);
+        println!("  into {}", data_dir.display());
+        return Ok(());
+    }
 
     let app = mem_server::open_from_config(&cfg)?;
     let listener = tokio::net::TcpListener::bind(addr).await?;

@@ -444,6 +444,72 @@ impl ChannelStore {
         ]
     }
 
+    /// Land one table's rows at `ns` — the restore's per-table door (ADR-0015).
+    /// `None` = this group holds no such table.
+    pub fn restore(
+        &mut self,
+        table: &str,
+        ns: u16,
+        batches: &[arrow::array::RecordBatch],
+    ) -> Option<Result<usize, String>> {
+        if table == <MessageRow as Document>::TABLE_NAME {
+            Some(crate::export::land_into(
+                &mut self.messages.rebased(ns),
+                batches,
+            ))
+        } else if table == <CheckpointRow as Document>::TABLE_NAME {
+            Some(crate::export::land_into(
+                &mut self.checkpoints.rebased(ns),
+                batches,
+            ))
+        } else if table == <CursorRow as Document>::TABLE_NAME {
+            Some(crate::export::land_into(
+                &mut self.cursors.rebased(ns),
+                batches,
+            ))
+        } else if table == <MemberRow as Document>::TABLE_NAME {
+            Some(crate::export::land_into(
+                &mut self.members.rebased(ns),
+                batches,
+            ))
+        } else if table == <ChannelRow as Document>::TABLE_NAME {
+            Some(crate::export::land_into(
+                &mut self.channels.rebased(ns),
+                batches,
+            ))
+        } else if table == <MembershipRow as Document>::TABLE_NAME {
+            Some(crate::export::land_into(
+                &mut self.memberships.rebased(ns),
+                batches,
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// Whether a table's namespace is untouched (the restore's refusal, ADR-0015).
+    pub fn ns_is_empty(&self, table: &str, ns: u16) -> Option<Result<bool, String>> {
+        if table == <MessageRow as Document>::TABLE_NAME {
+            Some(crate::export::ns_is_empty_into(&self.messages.rebased(ns)))
+        } else if table == <CheckpointRow as Document>::TABLE_NAME {
+            Some(crate::export::ns_is_empty_into(
+                &self.checkpoints.rebased(ns),
+            ))
+        } else if table == <CursorRow as Document>::TABLE_NAME {
+            Some(crate::export::ns_is_empty_into(&self.cursors.rebased(ns)))
+        } else if table == <MemberRow as Document>::TABLE_NAME {
+            Some(crate::export::ns_is_empty_into(&self.members.rebased(ns)))
+        } else if table == <ChannelRow as Document>::TABLE_NAME {
+            Some(crate::export::ns_is_empty_into(&self.channels.rebased(ns)))
+        } else if table == <MembershipRow as Document>::TABLE_NAME {
+            Some(crate::export::ns_is_empty_into(
+                &self.memberships.rebased(ns),
+            ))
+        } else {
+            None
+        }
+    }
+
     /// Export one table by NAME as Parquet bytes, with the columns that identify a row.
     /// `None` = this group holds no such table.
     pub fn export(&mut self, name: &str) -> Option<Result<crate::export::Export, String>> {
@@ -795,11 +861,11 @@ impl ChannelStore {
             return Ok(None);
         };
         Ok(match doc.get(checkpoint_field::HEAD) {
-            Some(okm_core::obj_dynamic::DynamicValue::Array(items)) => Some(
+            Some(okm_core::okm_value::DynamicValue::Array(items)) => Some(
                 items
                     .iter()
                     .filter_map(|item| match item {
-                        okm_core::obj_dynamic::DynamicValue::U64(id) => Some(*id),
+                        okm_core::okm_value::DynamicValue::U64(id) => Some(*id),
                         _ => None,
                     })
                     .collect(),
@@ -813,9 +879,9 @@ impl ChannelStore {
         let mut fields = std::collections::BTreeMap::new();
         fields.insert(
             checkpoint_field::HEAD.to_string(),
-            okm_core::obj_dynamic::DynamicValue::Array(
+            okm_core::okm_value::DynamicValue::Array(
                 head.iter()
-                    .map(|id| okm_core::obj_dynamic::DynamicValue::U64(*id))
+                    .map(|id| okm_core::okm_value::DynamicValue::U64(*id))
                     .collect(),
             ),
         );

@@ -26,7 +26,7 @@
 //! Re-labelling a node in place would need a write path the graph does not have,
 //! and it would lose the record of the run that suggested it.
 
-use okm_core::obj_dynamic::DynamicValue;
+use okm_core::okm_value::DynamicValue;
 use std::collections::BTreeMap;
 
 use crate::graph::{GraphStore, IngestError, Term};

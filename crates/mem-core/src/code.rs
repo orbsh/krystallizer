@@ -49,7 +49,7 @@
 //! gravity is the only client (ADR-0001: the node never talks to krystallizer;
 //! the byte path is gravity → control path → node).
 
-use okm_core::obj_dynamic::DynamicValue;
+use okm_core::okm_value::DynamicValue;
 use okm_core::{Collection, Document, DocumentEncode, FjallStore, KeyEncode, ReduceCodec};
 use std::collections::BTreeMap;
 
@@ -303,6 +303,40 @@ impl GraphStore {
     /// This store's code table name — the key the export catalogue uses.
     pub fn code_table_name(&self) -> &'static str {
         <CodeRow as Document>::TABLE_NAME
+    }
+
+    /// Land the code sheet (or its id watermark) at `ns` — the restore's door.
+    /// The watermark comes along, or a restored sheet hands out ids it used.
+    pub fn restore_code(
+        &mut self,
+        table: &str,
+        ns: u16,
+        batches: &[arrow::array::RecordBatch],
+    ) -> Option<Result<usize, String>> {
+        let out = if table == <CodeRow as Document>::TABLE_NAME {
+            crate::export::land_into(&mut self.code_table_mut().rebased(ns), batches)
+        } else if table == crate::export::CODE_REDUCES {
+            crate::export::land_reduce(self.code_table().store(), ns, batches)
+        } else {
+            return None;
+        };
+        if out.is_ok() {
+            if let Err(e) = self.reseed_code() {
+                return Some(Err(e.to_string()));
+            }
+        }
+        Some(out)
+    }
+
+    /// Whether the sheet's namespace is untouched (the restore's refusal).
+    pub fn ns_is_empty_code(&self, table: &str, ns: u16) -> Option<Result<bool, String>> {
+        if table == <CodeRow as Document>::TABLE_NAME || table == crate::export::CODE_REDUCES {
+            Some(crate::export::ns_is_empty_into(
+                &self.code_table().rebased(ns),
+            ))
+        } else {
+            None
+        }
     }
 
     /// Export the code sheet by NAME as Parquet bytes. `None` = not this table.

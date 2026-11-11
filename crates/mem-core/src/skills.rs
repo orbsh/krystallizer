@@ -18,7 +18,7 @@
 //! Identity is the node's `name`: declaring twice is declaring once (the props
 //! merge, the id stays), which is the resolution rule `ingest` already follows.
 
-use okm_core::obj_dynamic::DynamicValue;
+use okm_core::okm_value::DynamicValue;
 use std::collections::BTreeMap;
 
 use crate::graph::{GraphStore, IngestError, Term, CONTENT_FIELD, TITLE_FIELD};
@@ -250,10 +250,7 @@ impl GraphStore {
         let calls = row.invoke_calls + u32::from(phase == TouchPhase::Attempt);
         let ok = row.invoke_ok + u32::from(phase == TouchPhase::Success);
         let mut write: BTreeMap<String, DynamicValue> = BTreeMap::new();
-        write.insert(
-            CALLS_FIELD.to_string(),
-            DynamicValue::U64(u64::from(calls)),
-        );
+        write.insert(CALLS_FIELD.to_string(), DynamicValue::U64(u64::from(calls)));
         write.insert(OK_FIELD.to_string(), DynamicValue::U64(u64::from(ok)));
         write.insert(LAST_INVOKED_FIELD.to_string(), DynamicValue::U64(now));
         self.merge_props(scope, node_id, &write)?;

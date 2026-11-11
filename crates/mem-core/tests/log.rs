@@ -11,7 +11,7 @@
 
 use mem_core::log::{event, field, level, source};
 use mem_core::{LogKey, LogStore, DEFAULT_MAX_ROWS};
-use okm_core::obj_dynamic::DynamicValue;
+use okm_core::okm_value::DynamicValue;
 use okm_core::KeyEncode;
 use std::collections::BTreeMap;
 
