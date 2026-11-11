@@ -93,7 +93,21 @@ pub fn plan(
         let ns = mapping
             .and_then(|map| map.get(table).copied())
             .unwrap_or(declared_ns);
-        let files = okm_lake::delta::files_in_order(lake, table)?;
+        // The edge set is published as one table per endpoint pair (ADR-0027), so
+        // a restore reads them all and lands them into the one graph.
+        let mut files: Vec<String> = Vec::new();
+        if table == <crate::graph::Facts as okm_core::Document>::TABLE_NAME {
+            for (src, dst) in export::EDGE_PAIRS {
+                let pair = export::edge_table_name(src, dst);
+                for file in okm_lake::delta::files_in_order(lake, &pair)? {
+                    files.push(format!("{pair}/{file}"));
+                }
+            }
+        } else {
+            for file in okm_lake::delta::files_in_order(lake, table)? {
+                files.push(format!("{table}/{file}"));
+            }
+        }
         if files.is_empty() {
             return Err(format!("the lake holds no `{table}` to restore"));
         }
@@ -114,7 +128,10 @@ pub fn plan(
         else {
             continue;
         };
-        let files = okm_lake::delta::files_in_order(lake, reduce)?;
+        let files: Vec<String> = okm_lake::delta::files_in_order(lake, reduce)?
+            .into_iter()
+            .map(|file| format!("{reduce}/{file}"))
+            .collect();
         if files.is_empty() {
             continue;
         }
@@ -155,7 +172,10 @@ fn read_table(
 ) -> Result<Vec<arrow::array::RecordBatch>, String> {
     let mut batches = Vec::new();
     for file in &entry.files {
-        let key = format!("{}/{}", entry.table, file);
+        // A file is already a lake key (`facts__entities__members/data/…`): an
+        // edge set's files come from four tables, so the key cannot be rebuilt
+        // from the entry's base name.
+        let key = file.clone();
         let bytes = lake.get(&key).map_err(|e| format!("{key}: {e}"))?;
         batches.extend(
             okm_lake::snapshot::parquet_io::read_batches(bytes::Bytes::from(bytes))

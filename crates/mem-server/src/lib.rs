@@ -1587,7 +1587,8 @@ async fn publish_all(state: &Arc<MemState>) -> Result<usize, String> {
         return Ok(0);
     };
     let mut exports: Vec<(String, mem_core::export::Export)> = Vec::new();
-    for &(name, _) in mem_core::export::CATALOG {
+    for name in mem_core::export::lake_table_names() {
+        let name = name.as_str();
         let mut got = { state.store.lock().await.export(name) };
         if got.is_none() {
             got = state.log.lock().await.export(name);

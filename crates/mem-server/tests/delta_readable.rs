@@ -67,6 +67,18 @@ fn rows(table_dir: &std::path::Path) -> Option<i64> {
         .ok()
 }
 
+/// The edge set's rows, summed over its endpoint-pair tables (ADR-0027): the lake
+/// publishes one edge table per pair, so "how many facts" is a sum, not a read.
+fn edge_rows(root: &std::path::Path) -> Option<i64> {
+    let mut total = 0;
+    for src in ["entities", "members"] {
+        for dst in ["entities", "members"] {
+            total += rows(&root.join(format!("facts__{src}__{dst}")))?;
+        }
+    }
+    Some(total)
+}
+
 /// The names a column holds, in order — used to prove the file carries LABELS
 /// (the store's numbering tables are not needed to read it).
 fn column(table_dir: &std::path::Path, column: &str, order: &str) -> Option<Vec<String>> {
@@ -142,7 +154,7 @@ async fn the_lake_opens_in_a_warehouse_reader_that_never_saw_k10r() {
     let mut caught_up = false;
     for _ in 0..150 {
         let seen = (
-            rows(&root.join("facts")),
+            edge_rows(&root),
             rows(&root.join("entities")),
             rows(&root.join("code")),
             rows(&root.join("messages")),
@@ -154,7 +166,7 @@ async fn the_lake_opens_in_a_warehouse_reader_that_never_saw_k10r() {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 
-    let Some(facts) = rows(&root.join("facts")) else {
+    let Some(facts) = edge_rows(&root) else {
         eprintln!("skipped: no duckdb + delta extension on this machine");
         return;
     };

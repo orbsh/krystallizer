@@ -26,6 +26,8 @@ Anything else (merge into an existing corpus, restore "the rest") is out of scop
 
 Through `Collection::rebased(ns)` (okm ADR-0062), so the same declaration writes under the new namespace and the vocabulary is interned into the DESTINATION's numbering: ids are local, labels are the identity, so a mapped restore of the same lake into two namespaces yields the same labels and different ids. `Graph::rebased(ns)` for edges, with a resolver that answers each endpoint table's destination ns — an edge's endpoints are `[ns 2B]` references, so an edge moved alone would point at nothing.
 
+The edge set arrives as one table per endpoint pair (ADR-0027), and the plan's one `facts` entry reads them all: four tables land as one graph.
+
 The reduce tables (a log's `seq` watermark, a code sheet's id watermark) are not addressable on their own: they ride their parent table's ns and are skipped when the parent is. A restore without them hands out ids the restored rows already carry.
 
 ## 4. Where the door is

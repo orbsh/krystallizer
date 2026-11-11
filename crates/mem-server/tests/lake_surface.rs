@@ -92,7 +92,7 @@ async fn the_service_publishes_itself_into_the_lake() {
     // race, so the test waits for a version that holds it rather than for "a version".
     let mut snapshot: Option<(String, usize)> = None;
     for _ in 0..150 {
-        if let Some((name, rows)) = rows_in_live_file(&lake, "facts") {
+        if let Some((name, rows)) = rows_in_live_file(&lake, "facts__entities__entities") {
             if rows >= 1 {
                 snapshot = Some((name, rows));
                 break;
@@ -154,11 +154,11 @@ async fn the_service_publishes_itself_into_the_lake() {
     // A second pass REPLACES the version: still one live file, and it is not the first one.
     let mut replaced = false;
     for _ in 0..150 {
-        if let Some((name, _)) = rows_in_live_file(&lake, "facts") {
+        if let Some((name, _)) = rows_in_live_file(&lake, "facts__entities__entities") {
             if name != first {
                 replaced = true;
                 assert!(
-                    lake.head(&format!("facts/{first}")).unwrap().is_none(),
+                    lake.head(&format!("facts__entities__entities/{first}")).unwrap().is_none(),
                     "the replaced file left the store"
                 );
                 break;

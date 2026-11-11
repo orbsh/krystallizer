@@ -235,3 +235,183 @@ where
     }
     Ok(rows)
 }
+
+// ---- the edge set, one table per endpoint pair (ADR-0027) -----------------
+
+/// The vertex tables an edge can name. Each is a table a property-graph
+/// declaration roots at, and the columns below are the key it is rootable by.
+pub const VERTEX_TABLES: &[&str] = &["entities", "members"];
+
+/// The endpoint pairs an edge table is split by. A property graph's edge table
+/// references ONE vertex table at each end (`SOURCE KEY (…) REFERENCES v (…)`),
+/// so an edge set that spans vertex tables has to be one table per pair.
+///
+/// The list is the vertex tables crossed with themselves, written out: a pair
+/// that holds no edge is published as an empty table, which is what makes the
+/// published set a function of the declaration rather than of today's rows.
+pub const EDGE_PAIRS: &[(&str, &str)] = &[
+    ("entities", "entities"),
+    ("entities", "members"),
+    ("members", "entities"),
+    ("members", "members"),
+];
+
+/// The lake table name for one endpoint pair: `facts__entities__members`. The
+/// base table's name stays the prefix, so a reader (and the restore) can find
+/// the edge set without a second catalog.
+pub fn edge_table_name(src: &str, dst: &str) -> String {
+    format!("{}__{src}__{dst}", <Facts as Document>::TABLE_NAME)
+}
+
+/// The pair a lake table name stands for, if it is an edge table.
+pub fn edge_pair_of(name: &str) -> Option<(&str, &str)> {
+    let rest = name
+        .strip_prefix(<Facts as Document>::TABLE_NAME)?
+        .strip_prefix("__")?;
+    rest.split_once("__")
+}
+
+/// The lake table name's base table: `facts__entities__members` is `facts`.
+pub fn base_table(name: &str) -> &str {
+    name.split("__").next().unwrap_or(name)
+}
+
+/// One endpoint pair's slice of the edge set, as a table a property graph can
+/// reference: the canonical edge batch's rows for that pair, with the pair's
+/// vertex key DECODED into typed columns (`src_scope`, `src_node_id`, …).
+///
+/// The raw `src_pkey` columns stay. A restore needs the exact bytes, and keeping
+/// them means no reader has to learn the key codec to join an edge to a node.
+pub fn edge_batch(
+    batch: &arrow::array::RecordBatch,
+    src: &str,
+    dst: &str,
+) -> Result<arrow::array::RecordBatch, String> {
+    use arrow::array::{Array, ArrayRef, BinaryArray, StringArray, UInt32Array};
+    use arrow::datatypes::{Field, Schema};
+
+    let names = |col: &str| -> Result<&StringArray, String> {
+        batch
+            .column_by_name(col)
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+            .ok_or_else(|| format!("the edge batch has no `{col}` column"))
+    };
+    let (srcs, dsts) = (names("src_table")?, names("dst_table")?);
+    let keep: Vec<u32> = (0..batch.num_rows())
+        .filter(|row| {
+            srcs.is_valid(*row)
+                && dsts.is_valid(*row)
+                && srcs.value(*row) == src
+                && dsts.value(*row) == dst
+        })
+        .map(|row| row as u32)
+        .collect();
+    let idx = UInt32Array::from(keep);
+    let mut cols: Vec<ArrayRef> = batch
+        .columns()
+        .iter()
+        .map(|c| arrow::compute::take(c.as_ref(), &idx, None).map_err(|e| e.to_string()))
+        .collect::<Result<_, _>>()?;
+
+    let index_of = |col: &str| -> Result<usize, String> {
+        batch
+            .schema()
+            .index_of(col)
+            .map_err(|_| format!("the edge batch has no `{col}` column"))
+    };
+    let (src_keys, dst_keys) = (
+        cols[index_of("src_pkey")?]
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .ok_or("`src_pkey` is not a raw-key column")?,
+        cols[index_of("dst_pkey")?]
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .ok_or("`dst_pkey` is not a raw-key column")?,
+    );
+    let mut typed: Vec<(Field, ArrayRef)> = Vec::new();
+    endpoint_columns(src, src_keys, "src", &mut typed)?;
+    endpoint_columns(dst, dst_keys, "dst", &mut typed)?;
+
+    // The typed columns go before the variant (the last column): the endpoint
+    // columns stay a block, and nothing depends on the tail's position.
+    let mut fields: Vec<Field> = batch
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.as_ref().clone())
+        .collect();
+    let mut arrays = cols.split_off(0);
+    let tail = arrays.pop().ok_or("an edge batch has at least one column")?;
+    let variant_field = fields.pop().ok_or("an edge batch has at least one field")?;
+    for (field, array) in typed {
+        fields.push(field);
+        arrays.push(array);
+    }
+    fields.push(variant_field);
+    arrays.push(tail);
+    let schema = std::sync::Arc::new(Schema::new(fields));
+    arrow::array::RecordBatch::try_new(schema, arrays).map_err(|e| e.to_string())
+}
+
+/// One endpoint's key, decoded into the columns its vertex table declares.
+fn endpoint_columns(
+    vertex: &str,
+    keys: &arrow::array::BinaryArray,
+    prefix: &str,
+    out: &mut Vec<(arrow::datatypes::Field, std::sync::Arc<dyn arrow::array::Array>)>,
+) -> Result<(), String> {
+    use arrow::array::{Array, StringBuilder, UInt64Builder};
+    use arrow::datatypes::{DataType, Field};
+
+    match vertex {
+        "entities" => {
+            let (mut scope, mut node) = (UInt64Builder::new(), UInt64Builder::new());
+            for row in 0..keys.len() {
+                let key = <crate::graph::EntityKey as KeyEncode>::decode(keys.value(row));
+                scope.append_value(key.scope);
+                node.append_value(key.node_id);
+            }
+            out.push((
+                Field::new(format!("{prefix}_scope"), DataType::UInt64, false),
+                std::sync::Arc::new(scope.finish()),
+            ));
+            out.push((
+                Field::new(format!("{prefix}_node_id"), DataType::UInt64, false),
+                std::sync::Arc::new(node.finish()),
+            ));
+        }
+        "members" => {
+            let mut member = StringBuilder::new();
+            for row in 0..keys.len() {
+                let key = <crate::channel::MemberKey as KeyEncode>::decode(keys.value(row));
+                // The vertex table writes a uuid as hyphenated text, and an edge
+                // column that spells it differently joins nothing.
+                member.append_value(key.member_id.to_string());
+            }
+            out.push((
+                Field::new(format!("{prefix}_member_id"), DataType::Utf8, false),
+                std::sync::Arc::new(member.finish()),
+            ));
+        }
+        other => return Err(format!("no vertex table `{other}` in this service")),
+    }
+    Ok(())
+}
+
+/// The lake tables this service publishes: the catalog, with the edge set
+/// expanded into one table per endpoint pair (ADR-0027). The base `facts` name
+/// is not a lake table — it is the edge set's name, not one of its files.
+pub fn lake_table_names() -> Vec<String> {
+    let mut names = Vec::new();
+    for &(name, _) in CATALOG {
+        if name == <Facts as Document>::TABLE_NAME {
+            for (src, dst) in EDGE_PAIRS {
+                names.push(edge_table_name(src, dst));
+            }
+        } else {
+            names.push(name.to_string());
+        }
+    }
+    names
+}

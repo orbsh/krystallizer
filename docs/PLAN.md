@@ -833,6 +833,15 @@ secret-env }`，凭据只给环境变量名）。服务启动即发布一次、�
 运行中发布失败只记日志、下个间隔重试。`GET /export`、`GET /export/{table}`、`POST /import` 与
 `bundle` 模块一并删除，ADR-0013 标记撤销。
 
-- [ ] **从湖恢复**：现在没有恢复通道。它要按同一条写契约把湖里的行落地，并决定"库非空"怎么办。
+- [x] **从湖恢复**（ADR-0026）：`krystallizer --restore <target> [--map <table>=<ns>]…`。
 - [ ] **演练一次真桶**：本轮的验证是临时目录 + DuckDB（`delta_readable`），S3 面在 okm 侧用
   rustfs 验过；k10r 自己还没对着桶跑过一次完整的间隔发布。
+
+**2026-11-11 — 还原只进空的 ns（ADR-0026），边集按端点对发布（ADR-0027）**：`--restore` 走
+`mem_core::restore`：`plan`（湖里有哪些表 → 目标 ns；映射表只取点名的表，reduce 表跟着父表）→
+**先查空**（问键头，面/索引/reduce 都算占位，任一非空即整体中止并点名 `facts in ns 37`）→ `land`
+（文档表 `Collection::rebased(ns)`、边表 `Graph::rebased(ns).import_table(ns_of)`、watermark 走
+新 ns 的 `land_reduce`）。入口是停止服务时的运维动作，落完即退出。同时按读者能直接声明图的要求
+改导出面：`facts` 拆成 `facts__<src>__<dst>` 四张表，端点键解码成顶点表同名列（`src_scope` /
+`src_node_id`、`src_member_id`），裸 `src_pkey` 保留；空的对也发布成空表，于是已发布集合是声明的
+函数而不是今天这些行的函数。okm 侧边导入改成按名字取列、容忍多余列，对表因此仍可直接还原。

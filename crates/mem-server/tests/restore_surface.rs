@@ -52,13 +52,14 @@ async fn a_published_fact() -> (tempfile::TempDir, tempfile::TempDir) {
     // boot and names an empty table, so "the lake has a file" is not the condition.
     let store: Box<dyn okm_lake::store::LakeStore> =
         okm_lake::store::open(&lake.path().display().to_string(), None).unwrap();
+    let mut last = String::new();
     for _ in 0..150 {
-        let rows: usize = okm_lake::delta::files_in_order(&*store, "facts")
+        let rows: usize = okm_lake::delta::files_in_order(&*store, "facts__entities__entities")
             .unwrap_or_default()
             .iter()
             .map(|file| {
                 store
-                    .get(&format!("facts/{file}"))
+                    .get(&format!("facts__entities__entities/{file}"))
                     .ok()
                     .and_then(|bytes| {
                         okm_lake::snapshot::parquet_io::read_batches(bytes.into())
@@ -71,9 +72,16 @@ async fn a_published_fact() -> (tempfile::TempDir, tempfile::TempDir) {
         if rows >= 1 {
             return (data, lake);
         }
+        last = format!(
+            "files {:?} rows {rows}",
+            okm_lake::delta::files_in_order(&*store, "facts__entities__entities")
+        );
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    panic!("the lake never carried the published fact");
+    let listing: Vec<String> = std::fs::read_dir(lake.path())
+        .map(|d| d.filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string())).collect())
+        .unwrap_or_default();
+    panic!("the lake never carried the published fact; lake holds {listing:?}; last: {last}");
 }
 
 #[tokio::test]

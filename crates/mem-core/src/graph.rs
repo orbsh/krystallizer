@@ -1353,6 +1353,19 @@ impl GraphStore {
     pub fn export(&mut self, name: &str) -> Option<Result<crate::export::Export, String>> {
         if name == <EntityRow as Document>::TABLE_NAME {
             Some(crate::export::table_bytes(&mut self.entities))
+        } else if let Some((src, dst)) = crate::export::edge_pair_of(name) {
+            // One edge table per endpoint pair (ADR-0027): the pair's rows, with
+            // the endpoints decoded into that vertex table's key columns, so a
+            // property-graph declaration can reference them.
+            let mut facts = self.facts();
+            let batch = match facts.to_record_batch_table(crate::export::name_of) {
+                Ok(batch) => batch,
+                Err(e) => return Some(Err(format!("the facts table: {e}"))),
+            };
+            match crate::export::edge_batch(&batch, src, dst) {
+                Ok(pair) => Some(crate::export::batch_bytes(&pair)),
+                Err(e) => Some(Err(format!("{name}: {e}"))),
+            }
         } else if name == <Facts as Document>::TABLE_NAME {
             let mut facts = self.facts();
             let batch = match facts.to_record_batch_table(crate::export::name_of) {

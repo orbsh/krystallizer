@@ -23,6 +23,8 @@ okm's lake line answers both: a table's exported directory is a Delta table (okm
 log is the manifest, and the writer takes any key space — a directory or a bucket (okm
 ADR-0061). A service that can write one Parquet file and one commit can BE the lake.
 
+One table is not published under its own name: the edge set is published as one table per endpoint pair (`facts__entities__entities`, …), because a SQL/PGQ declaration can only reference one vertex table per edge table (ADR-0027).
+
 ## 2. Decision: a `lake` node, a publisher, and no export doors
 
 **2.1 The configuration.** One optional top-level node in `krystallizer.kdl`:
