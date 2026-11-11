@@ -13,9 +13,7 @@
     clippy::panic_in_result_fn
 )]
 
-use mem_core::graph::{
-    FactTuple, GraphStore, IngestError, IngestOutcome, Touch, RECENT_BASE, RECENT_SLOTS,
-};
+use mem_core::graph::{FactTuple, GraphStore, IngestError, IngestOutcome};
 use mem_core::{EntityKey, EntityRow, Facts, RenderFormat, LITERAL_KIND};
 use okm_core::obj_dynamic::DynamicValue;
 use okm_core::{Document, KeyEncode, NodeRef, Vector};
@@ -81,11 +79,12 @@ fn entity_key_layout_is_hex_locked() {
     assert_eq!(&buf[8..16], &9u64.to_be_bytes(), "node_id");
 }
 
-/// The fact edge's payload is an ordinary obj payload: `[version u8]
-/// [hot_len u16 BE][since u64][confidence u8][weight u32][read u32]
-/// [write u32][tool u32][last_read u64][last_write u64]` — the derive's own
-/// field order, contiguous big-endian. The round trip is what keeps the
-/// reader honest against the writer (both are the declaration's).
+/// The fact edge's payload is an ordinary obj payload and carries NO header: the
+/// layout stamp lives on the entry head in the segment, not in the bytes of a value
+/// (okm ADR-0060). The body is the derive's own field order, contiguous big-endian —
+/// `[since u64][confidence u8][weight u32][read u32][write u32][tool u32]` then the
+/// two clocks — and the ring is the COLD tail. The round trip is what keeps the reader
+/// honest against the writer (both are the declaration's).
 #[test]
 fn edge_payload_layout_is_locked() {
     let edge = Facts {
@@ -103,93 +102,31 @@ fn edge_payload_layout_is_locked() {
     let payload = edge.encode_payload();
     assert_eq!(
         payload.len(),
-        3 + 8 + 8 + 1 + 4 + 4 + 4 + 4 + 8 + 8   // header + the hot fields
+        8 + 8 + 1 + 4 + 4 + 4 + 4 + 8 + 8   // the hot fields
             + 1 + 1 + 4 + 8 * 4, // cold frame: tag + len + count + slots
-        "header + the hot fields + the recency ring"
+        "the hot fields + the recency ring"
     );
-    assert_eq!(payload[0], 3, "layout version");
-    assert_eq!(&payload[1..3], &49u16.to_be_bytes(), "hot_len");
-    assert_eq!(&payload[3..11], &3u64.to_be_bytes(), "scope");
-    assert_eq!(&payload[11..19], &7u64.to_be_bytes(), "since");
-    assert_eq!(payload[19], 200, "confidence");
-    assert_eq!(&payload[20..24], &3u32.to_be_bytes(), "weight");
-    assert_eq!(&payload[24..28], &5u32.to_be_bytes(), "read_count");
-    assert_eq!(&payload[28..32], &2u32.to_be_bytes(), "write_count");
-    assert_eq!(&payload[32..36], &9u32.to_be_bytes(), "tool_count");
-    assert_eq!(&payload[36..44], &1_000u64.to_be_bytes(), "last_read");
-    assert_eq!(&payload[44..52], &900u64.to_be_bytes(), "last_write");
-    // The ring is the payload's COLD tail: tag = declaration index, len varint,
-    // count u32, then bare little-endian u32 slots.
-    assert_eq!(payload[52], 9, "cold tag = `recent`'s declaration index");
-    assert_eq!(payload[53], 36, "frame payload = count + 8 slots");
-    assert_eq!(&payload[54..58], &8u32.to_be_bytes(), "slot count");
+    assert_eq!(&payload[0..8], &3u64.to_be_bytes(), "scope");
+    assert_eq!(&payload[8..16], &7u64.to_be_bytes(), "since");
+    assert_eq!(payload[16], 200, "confidence");
+    assert_eq!(&payload[17..21], &3u32.to_be_bytes(), "weight");
+    assert_eq!(&payload[21..25], &5u32.to_be_bytes(), "read_count");
+    assert_eq!(&payload[25..29], &2u32.to_be_bytes(), "write_count");
+    assert_eq!(&payload[29..33], &9u32.to_be_bytes(), "tool_count");
+    assert_eq!(&payload[33..41], &1_000u64.to_be_bytes(), "last_read");
+    assert_eq!(&payload[41..49], &900u64.to_be_bytes(), "last_write");
+    // The ring is the payload's COLD tail: tag = declaration index, len, count u32, then
+    // bare little-endian u32 slots.
+    assert_eq!(payload[49], 9, "cold tag = `recent`'s declaration index");
+    assert_eq!(payload[50], 36, "frame payload = count + 8 slots");
+    assert_eq!(&payload[51..55], &8u32.to_be_bytes(), "slot count");
     assert_eq!(
-        &payload[58..62],
+        &payload[55..59],
         &11u32.to_le_bytes(),
         "first (oldest) slot"
     );
-    assert_eq!(&payload[86..90], &88u32.to_le_bytes(), "last (newest) slot");
+    assert_eq!(&payload[83..87], &88u32.to_le_bytes(), "last (newest) slot");
     assert_eq!(Facts::decode_payload(&payload), edge);
-}
-
-/// The ring holds the last K accesses, oldest first, and never grows: every row
-/// is padded from the first write (`#[ok_len(8)]` is an encode-time contract)
-/// and each touch shifts the window rather than appending.
-#[test]
-fn the_recent_ring_keeps_the_last_eight_accesses_in_order() {
-    let day = 86_400u64;
-    let base_ms = RECENT_BASE * 1000;
-    let mut edge = Facts::default();
-    assert_eq!(
-        edge.recent.elems.len(),
-        RECENT_SLOTS,
-        "a fresh row is padded, not empty — the frame width is a contract"
-    );
-
-    // Ten accesses, one per day: the two oldest fall off the window.
-    for d in 1..=10u64 {
-        edge = edge.touched(Touch::Read, base_ms + d * day * 1000);
-    }
-    let expected: Vec<u32> = (3..=10).map(|d| (d * day) as u32).collect();
-    assert_eq!(
-        edge.recent.elems, expected,
-        "oldest first, the two oldest dropped"
-    );
-    assert_eq!(
-        edge.last_access(),
-        base_ms + 10 * day * 1000,
-        "the newest slot IS the last access"
-    );
-    assert_eq!(
-        edge.read_count, 10,
-        "the counters still summarize the whole history"
-    );
-}
-
-/// A payload written before the ring existed (layout v2) decodes with the ring
-/// PADDED, so a migrated row stays encodable under `#[ok_len(8)]` — that is what
-/// keeps okm's append-only evolution free of a store rebuild.
-#[test]
-fn a_pre_ring_payload_decodes_with_a_padded_ring() {
-    let edge = Facts {
-        since: 5,
-        ..Default::default()
-    };
-    let mut v2 = edge.encode_payload();
-    v2.truncate(52); // header + hot fields: exactly the v2 shape
-    v2[0] = 2;
-    let back = Facts::decode_payload(&v2);
-    assert_eq!(back.since, 5);
-    assert_eq!(
-        back.recent.elems,
-        vec![0; RECENT_SLOTS],
-        "absent frame → padded default"
-    );
-    assert_eq!(
-        Facts::decode_payload(&back.encode_payload()),
-        back,
-        "the migrated row is still a legal payload"
-    );
 }
 
 /// One name = one node inside one scope; the same name in another scope is

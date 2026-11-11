@@ -823,3 +823,16 @@ Deferred gates:
 门：217 例 OK（`cargo test --workspace`），`cargo check --all-targets` 零警告；`scan_suffix` 在
 `crates/mem-core` 清零，余下的 `from_bytes` 是 `Uuid7` 构造与 `member_from_pkey` 的裸键转换
 （`MemberKey` 整条键就是一个 id，没有 header 与槽位可切，不是反模式）。
+
+**2026-11-11 — 服务把自己发布进湖，手动导出的门撤掉（ADR-0014）**：配置新增 `lake` 节点
+（`target` 是 `s3://bucket/prefix` 或一个目录、`interval-secs`、桶用的 `s3 { endpoint key-env
+secret-env }`，凭据只给环境变量名）。服务启动即发布一次、之后每个间隔一次：每张表（声明的表 +
+两张 reduce 表）导成 Parquet 字节，经 `okm_lake::publish::replace_table` 提交一个**替换**上一
+版本全部文件的 Delta 版本，湖里因此是当前状态——每表一个活跃文件。存储的锁只在拷贝时持有，发布在
+阻塞线程上跑，慢桶不拖慢请求。启动时湖打不开（坏 url、拒绝服务的存储、凭据变量为空）是启动失败；
+运行中发布失败只记日志、下个间隔重试。`GET /export`、`GET /export/{table}`、`POST /import` 与
+`bundle` 模块一并删除，ADR-0013 标记撤销。
+
+- [ ] **从湖恢复**：现在没有恢复通道。它要按同一条写契约把湖里的行落地，并决定"库非空"怎么办。
+- [ ] **演练一次真桶**：本轮的验证是临时目录 + DuckDB（`delta_readable`），S3 面在 okm 侧用
+  rustfs 验过；k10r 自己还没对着桶跑过一次完整的间隔发布。

@@ -52,6 +52,25 @@ pub struct MemState {
     /// diagnostics — the compression verdict's row is its first writer
     /// (ADR-0011). No HTTP door reads it.
     log: tokio::sync::Mutex<mem_core::LogStore>,
+    /// Where the service publishes itself (ADR-0014). `None` = no lake: the
+    /// config has no `lake` node and nothing leaves this machine.
+    lake: Option<Arc<dyn okm_lake::store::LakeStore>>,
+}
+
+/// Open the database at `path` with a lake, and publish into it every `interval_secs`.
+///
+/// The seam the `lake` node of the config ends in: the same store the binary builds from
+/// a bucket URL, opened here without credentials so a test (or an in-process caller) can
+/// point at a directory.
+pub fn open_with_lake(path: PathBuf, target: &str, interval_secs: u64) -> Result<Router, String> {
+    let store = okm_lake::store::open(target, None)?;
+    build(
+        path,
+        None,
+        mem_core::CompressionParams::default(),
+        mem_core::DEFAULT_MAX_ROWS,
+        Some((Arc::from(store), interval_secs)),
+    )
 }
 
 /// Open the database at `path` and build the router WITHOUT an embedding
@@ -63,6 +82,7 @@ pub fn open(path: PathBuf) -> Result<Router, String> {
         None,
         mem_core::CompressionParams::default(),
         mem_core::DEFAULT_MAX_ROWS,
+        None,
     )
 }
 
@@ -83,6 +103,7 @@ pub fn open_with(
         embedder,
         mem_core::CompressionParams::default(),
         mem_core::DEFAULT_MAX_ROWS,
+        None,
     )
 }
 
@@ -94,7 +115,13 @@ pub fn open_with_compression(
     embedder: Option<Arc<dyn mem_core::Embedder>>,
     compression: mem_core::CompressionParams,
 ) -> Result<Router, String> {
-    build(path, embedder, compression, mem_core::DEFAULT_MAX_ROWS)
+    build(
+        path,
+        embedder,
+        compression,
+        mem_core::DEFAULT_MAX_ROWS,
+        None,
+    )
 }
 
 /// Everything opening the service can fail on before a door exists: the
@@ -158,11 +185,22 @@ impl From<fjall::Error> for OpenError {
 pub fn open_from_config(cfg: &mem_core::KrystallizerConfig) -> Result<Router, OpenError> {
     let dir = cfg.storage.data_dir()?;
     let engine = engine_from(cfg)?;
+    // A lake node that cannot be built is a boot failure, like a missing embedding
+    // artifact: a service that thinks it is publishing and is not is worse than one that
+    // refuses to start.
+    let lake = match &cfg.lake {
+        Some(node) => {
+            let store = node.open().map_err(|e| OpenError::Storage(e.to_string()))?;
+            Some((Arc::from(store), node.interval_secs))
+        }
+        None => None,
+    };
     build(
         dir,
         Some(engine),
         cfg.compression.params(),
         cfg.logs.max_rows,
+        lake,
     )
     .map_err(OpenError::Storage)
 }
@@ -206,6 +244,7 @@ fn build(
     embedder: Option<Arc<dyn mem_core::Embedder>>,
     compression: mem_core::CompressionParams,
     log_max_rows: usize,
+    lake: Option<(Arc<dyn okm_lake::store::LakeStore>, u64)>,
 ) -> Result<Router, String> {
     let stores = mem_core::open_service(&path)?;
     let graph = match &embedder {
@@ -215,12 +254,22 @@ fn build(
         Some(engine) => stores.graph.with_embedder(engine.clone()),
         None => stores.graph,
     };
+    let (lake, interval) = match lake {
+        Some((lake, secs)) => (Some(lake), Some(secs)),
+        None => (None, None),
+    };
     let state = Arc::new(MemState {
         store: tokio::sync::Mutex::new(stores.channels),
         graph: tokio::sync::Mutex::new(graph),
         log: tokio::sync::Mutex::new(stores.log.with_max_rows(log_max_rows)),
         compression,
+        lake,
     });
+    // The publisher runs beside the doors, not behind them: it takes each store's lock
+    // only to COPY a table out, and does the network work once the locks are dropped.
+    if let Some(secs) = interval {
+        spawn_publisher(state.clone(), secs);
+    }
     Ok(Router::new()
         // The turn axis (k10r ADR-0024): a turn is opened here, its rounds are
         // appended through the message door with the id it answers, and it is
@@ -257,14 +306,8 @@ fn build(
         )
         .route("/members/{member_id}/channels", get(list_member_channels))
         .route("/code/{scope}", post(put_code))
-        .route("/export", get(export_bundle))
-        .route("/export/{table}", get(export_table))
         // A bundle is the whole store: the body limit that protects the small
         // JSON doors does not apply to it.
-        .route(
-            "/import",
-            post(import_bundle).layer(axum::extract::DefaultBodyLimit::disable()),
-        )
         .route("/code/{scope}/{code_id}", get(fetch_code))
         // One EXACT version — what an auditor reads to see what a run was given.
         // The current version stays the default (`/code/{scope}/{code_id}`), so
@@ -1513,289 +1556,82 @@ async fn resolve_skills(
     ))
 }
 
-/// `GET /export` — the WHOLE store as one `tar.zst` bundle (ADR-0013).
+/// Publish the service into its lake: once when the doors open, then every interval.
 ///
-/// Inside the archive: `<root>/<table>/data/<table>.parquet` beside that
-/// table's Delta log, the catalog at the root, and nothing k10r-specific beyond
-/// the directory names — unpack it and any Parquet/Delta reader can open the
-/// tables without this service.
-///
-/// The tables are exported under the SAME lock each write takes, one at a time,
-/// and the archive is built in a temp directory: a failure mid-way answers 500
-/// and no half bundle is ever served.
-async fn export_bundle(State(state): State<Arc<MemState>>) -> axum::response::Response {
-    let dir = match tempfile::tempdir() {
-        Ok(dir) => dir,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("no temp dir for the export: {e}"),
-            )
-                .into_response()
-        }
+/// `build` is called by tests as well as by the binary, and a test may hold no runtime;
+/// a router built without one simply has no publisher — nothing else changes.
+fn spawn_publisher(state: Arc<MemState>, interval_secs: u64) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        return;
     };
-    let root = dir.path().join(mem_core::bundle::BUNDLE_DIR);
-    if let Err(e) = std::fs::create_dir_all(&root) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("creating the bundle root: {e}"),
-        )
-            .into_response();
-    }
-    if let Err(e) = mem_core::export::catalog(&root.join(mem_core::bundle::CATALOG_FILE)) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
-    }
+    handle.spawn(async move {
+        let period = std::time::Duration::from_secs(interval_secs.max(1));
+        loop {
+            if let Err(e) = publish_all(&state).await {
+                // A lake that is down is not a reason to stop serving: the next interval
+                // tries again, and the store has not changed in the meantime.
+                eprintln!("lake: {e}");
+            }
+            tokio::time::sleep(period).await;
+        }
+    });
+}
+
+/// One snapshot: copy every table out under its own lock, then write them to the lake.
+///
+/// The two phases are separate on purpose. The locks are held only while a table is copied
+/// into memory, so a slow bucket cannot stall a request; the publishes then run on a
+/// blocking thread (the S3 client is synchronous by design) one table at a time.
+async fn publish_all(state: &Arc<MemState>) -> Result<usize, String> {
+    let Some(lake) = state.lake.clone() else {
+        return Ok(0);
+    };
+    let mut exports: Vec<(String, mem_core::export::Export)> = Vec::new();
     for &(name, _) in mem_core::export::CATALOG {
-        if let Err(e) = export_one(&state, name, &root).await {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+        let mut got = { state.store.lock().await.export(name) };
+        if got.is_none() {
+            got = state.log.lock().await.export(name);
+        }
+        if got.is_none() {
+            got = state.graph.lock().await.export(name);
+        }
+        match got {
+            Some(Ok(export)) => exports.push((name.to_string(), export)),
+            Some(Err(e)) => return Err(format!("{name}: {e}")),
+            // A catalogued table no store serves is a wiring bug, not a missing row.
+            None => return Err(format!("no store serves the table `{name}`")),
         }
     }
-    for name in [
-        mem_core::export::LOG_REDUCES,
-        mem_core::export::CODE_REDUCES,
+    for (name, got) in [
+        (
+            mem_core::export::LOG_REDUCES,
+            state.log.lock().await.export_reduces(),
+        ),
+        (
+            mem_core::export::CODE_REDUCES,
+            state.graph.lock().await.export_code_reduces(),
+        ),
     ] {
-        if let Err(e) = export_one(&state, name, &root).await {
-            return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
-        }
+        exports.push((name.to_string(), got.map_err(|e| format!("{name}: {e}"))?));
     }
-    let archive = dir.path().join("backup.tar.zst");
-    if let Err(e) = mem_core::bundle::seal(&root, &archive) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
-    }
-    let bytes = match std::fs::read(&archive) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("the bundle was written but not read back: {e}"),
-            )
-                .into_response()
-        }
-    };
-    let filename = format!("krystallizer-backup-{}.tar.zst", mem_core::export::stamp());
-    (
-        [
-            (
-                axum::http::header::CONTENT_TYPE,
-                "application/zstd".to_string(),
-            ),
-            (
-                axum::http::header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{filename}\""),
-            ),
-        ],
-        bytes,
-    )
-        .into_response()
-}
 
-/// One table into the bundle: the Parquet file, then its Delta commit.
-///
-/// Each lock is taken as its OWN statement (and dropped before the next), so a
-/// table that falls through every store cannot re-take a lock it still holds —
-/// that is a self-deadlock, not a lookup miss.
-async fn export_one(
-    state: &Arc<MemState>,
-    name: &str,
-    root: &std::path::Path,
-) -> Result<(), String> {
-    let file = mem_core::bundle::table_file(root, name);
-    if let Some(parent) = file.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-    }
-    let mut found: Option<Result<(), String>> = None;
-    if found.is_none() {
-        found = state.store.lock().await.export(name, &file);
-    }
-    if found.is_none() {
-        found = state.log.lock().await.export(name, &file);
-    }
-    if found.is_none() {
-        found = state.graph.lock().await.export(name, &file);
-    }
-    if found.is_none() && name == mem_core::export::LOG_REDUCES {
-        found = Some(state.log.lock().await.export_reduces(&file));
-    }
-    if found.is_none() && name == mem_core::export::CODE_REDUCES {
-        found = Some(state.graph.lock().await.export_code_reduces(&file));
-    }
-    match found {
-        Some(Ok(())) => {}
-        Some(Err(e)) => return Err(e),
-        // A catalogued table no store serves is a wiring bug, not a 404.
-        None => return Err(format!("no store serves the table `{name}`")),
-    }
-    mem_core::export::write_metadata(&mem_core::bundle::table_dir(root, name), &file)
-}
-
-/// `GET /export/{table}` — ONE table as a Parquet file (inspection, not the
-/// backup's form: the backup is `GET /export`'s bundle). Table names come from
-/// the row declarations, so the door and the tables cannot drift; an unknown
-/// name is a 404 pointing at the bundle.
-async fn export_table(
-    State(state): State<Arc<MemState>>,
-    Path(name): Path<String>,
-) -> axum::response::Response {
-    let dir = match tempfile::tempdir() {
-        Ok(dir) => dir,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("no temp dir for the export: {e}"),
-            )
-                .into_response()
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let count = exports.len();
+    let lake = lake.clone();
+    tokio::task::spawn_blocking(move || -> Result<usize, String> {
+        for (name, export) in exports {
+            let file = format!("{name}-{stamp}.parquet");
+            okm_lake::publish::replace_table(&*lake, &name, &file, &export.bytes, &export.keys)
+                .map_err(|e| format!("publishing `{name}`: {e}"))?;
         }
-    };
-    let file = dir.path().join(format!("{name}.parquet"));
-    let mut found: Option<Result<(), String>> = None;
-    if found.is_none() {
-        found = state.store.lock().await.export(&name, &file);
-    }
-    if found.is_none() {
-        found = state.graph.lock().await.export_code(&name, &file);
-    }
-    if found.is_none() {
-        found = state.log.lock().await.export(&name, &file);
-    }
-    if found.is_none() {
-        found = state.graph.lock().await.export(&name, &file);
-    }
-    if found.is_none() && name == mem_core::export::LOG_REDUCES {
-        found = Some(state.log.lock().await.export_reduces(&file));
-    }
-    if found.is_none() && name == mem_core::export::CODE_REDUCES {
-        found = Some(state.graph.lock().await.export_code_reduces(&file));
-    }
-    let Some(outcome) = found else {
-        return (
-            StatusCode::NOT_FOUND,
-            format!(
-                "no table named {name} (the backup is GET /export; the catalog travels inside it)"
-            ),
-        )
-            .into_response();
-    };
-    if let Err(e) = outcome {
-        return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
-    }
-    read_parquet_response(&file, &format!("{name}.parquet"))
-}
-
-/// Answer with a file's bytes as an attachment of the given content type.
-fn read_parquet_response(file: &std::path::Path, filename: &str) -> axum::response::Response {
-    match std::fs::read(file) {
-        Ok(bytes) => (
-            [
-                (
-                    axum::http::header::CONTENT_TYPE,
-                    "application/vnd.apache.parquet".to_string(),
-                ),
-                (
-                    axum::http::header::CONTENT_DISPOSITION,
-                    format!("attachment; filename=\"{filename}\""),
-                ),
-            ],
-            bytes,
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("the export was written but not read back: {e}"),
-        )
-            .into_response(),
-    }
-}
-
-/// `POST /import` — restore a bundle (the mirror of `GET /export`).
-///
-/// ONE request restores every table, in the dependency order the catalog
-/// declares; the operator never sorts files. Rows land through the normal write
-/// contracts (merge by key: same key overwrites, new key inserts — the door
-/// never deletes), then each store recomputes its in-process issuers from what
-/// the store now holds, so a restored graph does not hand out an edge id a
-/// restored row already carries.
-///
-/// Refusals are the caller's bug and nothing lands: a body that is not a
-/// `.tar.zst`, an archive missing the bundle directory, a table member the
-/// catalog names but the archive lacks.
-async fn import_bundle(
-    State(state): State<Arc<MemState>>,
-    body: axum::body::Bytes,
-) -> axum::response::Response {
-    if body.is_empty() {
-        return (StatusCode::BAD_REQUEST, "an empty body is not a bundle").into_response();
-    }
-    let dir = match tempfile::tempdir() {
-        Ok(dir) => dir,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("no temp dir for the restore: {e}"),
-            )
-                .into_response()
-        }
-    };
-    let archive = dir.path().join("backup.tar.zst");
-    if let Err(e) = std::fs::write(&archive, &body) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("writing the uploaded bundle: {e}"),
-        )
-            .into_response();
-    }
-    let root = match mem_core::bundle::unpack(&archive, dir.path()) {
-        Ok(root) => root,
-        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
-    };
-
-    let mut report: std::collections::BTreeMap<&'static str, usize> =
-        std::collections::BTreeMap::new();
-    for name in mem_core::bundle::import_order() {
-        let file = mem_core::bundle::table_file(&root, name);
-        if !file.exists() {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "the bundle has no member for `{name}` (expected {})",
-                    file.display()
-                ),
-            )
-                .into_response();
-        }
-        let mut found: Option<Result<usize, String>> = None;
-        if found.is_none() {
-            found = state.store.lock().await.import(name, &file);
-        }
-        if found.is_none() {
-            found = state.graph.lock().await.import_code(name, &file);
-        }
-        if found.is_none() {
-            found = state.log.lock().await.import(name, &file);
-        }
-        if found.is_none() {
-            found = state.graph.lock().await.import(name, &file);
-        }
-        match found {
-            Some(Ok(rows)) => {
-                report.insert(name, rows);
-            }
-            Some(Err(e)) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("restoring `{name}`: {e}"),
-                )
-                    .into_response()
-            }
-            None => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("no store serves the table `{name}`"),
-                )
-                    .into_response()
-            }
-        }
-    }
-    Json(report).into_response()
+        Ok(count)
+    })
+    .await
+    .map_err(|e| format!("the publisher did not finish: {e}"))??;
+    Ok(count)
 }
 
 /// `GET /code/{code_id}` — the script gravity reads at call time.

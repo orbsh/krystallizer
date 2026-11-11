@@ -77,3 +77,32 @@ compression {
 logs {
     max-rows 10000
 }
+
+// === lake ===
+// Where the service mirrors itself (ADR-0014). A Delta table per store table, written
+// by this process and readable by anything that speaks Delta — DuckDB, Spark, a
+// warehouse — without k10r in the path. OMIT the whole node and nothing leaves the
+// machine: there is no "off switch" flag, absence is the switch.
+//
+//   target        — ONE url and the writer adapts: `s3://bucket/prefix` is a bucket,
+//                   anything else (a plain path, `file:///path`) is a directory.
+//   interval-secs — one snapshot per interval; each snapshot REPLACES the previous
+//                   version of a table, so the lake holds the service's current state
+//                   and does not grow a file per interval.
+//   s3 { }        — present only for a bucket. endpoint names a MinIO/rustfs-style
+//                   server (absent = AWS); key-env/secret-env name the environment
+//                   variables holding the key pair — the pair itself is never here.
+//
+// A target that cannot be opened, or a credential variable that is not set, is a START
+// FAILURE: a service that believes it is publishing and is not is worse than one that
+// refuses to start.
+//
+// lake {
+//     target "s3://krystallizer/k10r"
+//     interval-secs 300
+//     s3 {
+//         endpoint "http://127.0.0.1:9000"
+//         key-env "K10R_S3_KEY"
+//         secret-env "K10R_S3_SECRET"
+//     }
+// }

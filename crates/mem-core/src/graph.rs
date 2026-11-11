@@ -70,8 +70,7 @@ use okm_core::{
     write_slot, Batch, Collection, Document, DocumentEncode, EdgeHead, FjallStore, Graph,
     GraphEncode, KeyEncode, NodeRef, Vector, VectorElem, VirtualStorage, Vocab, PRIMARY_SLOT,
 };
-use okm_parquet::bridge::EdgeTable;
-use okm_parquet::snapshot::parquet_io::EdgeRestore;
+use okm_lake::bridge::EdgeTable;
 use okm_vector::ExactIndex;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -1281,53 +1280,27 @@ impl GraphStore {
     /// the declaration's fields, and the edge's open attributes as a `variant`
     /// column — which is why that segment lives on the graph rather than in a
     /// consumer. `None` = not this graph's table.
-    pub fn export(&mut self, name: &str, path: &std::path::Path) -> Option<Result<(), String>> {
+    pub fn export(&mut self, name: &str) -> Option<Result<crate::export::Export, String>> {
         if name == <EntityRow as Document>::TABLE_NAME {
-            Some(crate::export::table(&mut self.entities, path))
+            Some(crate::export::table_bytes(&mut self.entities))
         } else if name == <Facts as Document>::TABLE_NAME {
             let mut facts = self.facts();
             let batch = match facts.to_record_batch_table(crate::export::name_of) {
                 Ok(batch) => batch,
                 Err(e) => return Some(Err(format!("the facts table: {e}"))),
             };
-            Some(crate::export::batch(&batch, path))
+            // An EDGE batch, not a document table: its identity is the triple the edge set
+            // is keyed by, which this layer does not restate.
+            Some(crate::export::batch_bytes(&batch))
         } else if name == <CommunitySeqRow as Document>::TABLE_NAME {
             // An ISSUER row, not data: a restored graph without it re-issues
             // community ids the restored nodes already carry.
             let mut seq = <CommunitySeqRow as Document>::collection(self.store.clone());
-            Some(crate::export::table(&mut seq, path))
+            Some(crate::export::table_bytes(&mut seq))
         } else if name == <crate::code::CodeRow as Document>::TABLE_NAME {
             // The code sheets (k10r ADR-0023): a table of this graph's family,
-            // so the bundle carries it with the rest of the corpus.
-            self.export_code(name, path)
-        } else {
-            None
-        }
-    }
-
-    /// Restore one table by NAME from a Parquet file (the mirror of `export`).
-    ///
-    /// Every table lands through the SAME write contract the live path uses
-    /// (`put` / `link_into`), so the derived faces and reduces follow; the
-    /// ids, node ids and edge ids included, are the file's own. `None` = not
-    /// this graph's table.
-    pub fn import(&mut self, name: &str, path: &std::path::Path) -> Option<Result<usize, String>> {
-        if name == <EntityRow as Document>::TABLE_NAME {
-            let out = crate::export::import_table(&mut self.entities, path);
-            Some(crate::export::finish_import(out, || self.reseed()))
-        } else if name == <Facts as Document>::TABLE_NAME {
-            let mut facts = self.facts();
-            let out = facts.import_file(path, crate::export::ns_of);
-            Some(crate::export::finish_import(out, || self.reseed()))
-        } else if name == <CommunitySeqRow as Document>::TABLE_NAME {
-            let mut seq = <CommunitySeqRow as Document>::collection(self.store.clone());
-            let out = crate::export::import_table(&mut seq, path);
-            // The cache is per scope and lazily read from the row; dropping it
-            // is what makes a restored watermark visible.
-            self.next_community.clear();
-            Some(crate::export::finish_import(out, || Ok(())))
-        } else if name == <crate::code::CodeRow as Document>::TABLE_NAME {
-            self.import_code(name, path)
+            // so the lake carries it with the rest of the corpus.
+            self.export_code(name)
         } else {
             None
         }

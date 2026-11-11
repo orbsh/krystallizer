@@ -285,10 +285,7 @@ impl GraphStore {
         let calls = row.invoke_calls + u32::from(phase == TouchPhase::Attempt);
         let ok = row.invoke_ok + u32::from(phase == TouchPhase::Success);
         let mut write: BTreeMap<String, DynamicValue> = BTreeMap::new();
-        write.insert(
-            CALLS_FIELD.to_string(),
-            DynamicValue::U64(u64::from(calls)),
-        );
+        write.insert(CALLS_FIELD.to_string(), DynamicValue::U64(u64::from(calls)));
         write.insert(OK_FIELD.to_string(), DynamicValue::U64(u64::from(ok)));
         write.insert(LAST_INVOKED_FIELD.to_string(), DynamicValue::U64(now));
         self.merge_props(scope, node_id, &write)?;
@@ -308,54 +305,20 @@ impl GraphStore {
         <CodeRow as Document>::TABLE_NAME
     }
 
-    /// Export the code sheet by NAME as Parquet. `None` = not this table.
-    pub fn export_code(
-        &mut self,
-        name: &str,
-        path: &std::path::Path,
-    ) -> Option<Result<(), String>> {
+    /// Export the code sheet by NAME as Parquet bytes. `None` = not this table.
+    pub fn export_code(&mut self, name: &str) -> Option<Result<crate::export::Export, String>> {
         (name == <CodeRow as Document>::TABLE_NAME)
-            .then(|| crate::export::table(self.code_table_mut(), path))
+            .then(|| crate::export::table_bytes(self.code_table_mut()))
     }
 
     /// The code watermark as a derived reduce table — without it a restored
     /// sheet would hand out ids it already used.
-    pub fn export_code_reduces(&self, path: &std::path::Path) -> Result<(), String> {
-        crate::export::reduces::<__OkmReduce_CodeRow_0>(
+    pub fn export_code_reduces(&self) -> Result<crate::export::Export, String> {
+        crate::export::reduces_bytes::<__OkmReduce_CodeRow_0>(
             self.code_table().store(),
             crate::export::ns(<CodeRow as Document>::NS_PREFIX),
             <CodeRow as Document>::TABLE_NAME,
-            path,
         )
-    }
-
-    /// Restore the code sheet (or its reduce) by NAME, then reseed the id
-    /// watermark from what landed.
-    pub fn import_code(
-        &mut self,
-        name: &str,
-        path: &std::path::Path,
-    ) -> Option<Result<usize, String>> {
-        if name == <CodeRow as Document>::TABLE_NAME {
-            let out = crate::export::import_table(self.code_table_mut(), path);
-            Some(crate::export::finish_import(out, || {
-                self.reseed_code().map_err(|e| e.to_string())
-            }))
-        } else if name == crate::export::CODE_REDUCES {
-            let out =
-                okm_parquet::snapshot::parquet_io::import_reduces::<_, __OkmReduce_CodeRow_0>(
-                    self.code_table().store(),
-                    <CodeRow as Document>::NS_PREFIX,
-                    <CodeRow as Document>::TABLE_NAME,
-                    path,
-                )
-                .map_err(|e| format!("reduce import: {e}"));
-            Some(crate::export::finish_import(out, || {
-                self.reseed_code().map_err(|e| e.to_string())
-            }))
-        } else {
-            None
-        }
     }
 
     fn code_table_mut(&mut self) -> &mut Collection<FjallStore, CodeKey, CodeRow> {

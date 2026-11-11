@@ -12,17 +12,20 @@ path = "src/main.rs"
 
 [dependencies]
 mem-core = { path = "../mem-core" }
+# The lake's writer: the same crate the export boundary uses, so a published file and an
+# in-process one cannot disagree about the format (ADR-0014).
+okm-lake.workspace = true
 axum.workspace = true
 tokio.workspace = true
 fjall.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tempfile.workspace = true
 # The remote embedding mode's client (ADR-0003): the HTTP shell owns the
 # transport, mem-core owns none.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 
 [dev-dependencies]
+tempfile.workspace = true
 parquet = { version = "60", default-features = false, features = ["arrow"] }
 arrow = { version = "60" }
 bytes = "1"

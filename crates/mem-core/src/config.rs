@@ -34,6 +34,11 @@ pub struct KrystallizerConfig {
     /// table is disposable diagnostics, so it is bounded).
     #[knus(child)]
     pub logs: LogsConfig,
+    /// `lake { ... }` — the exported Delta table every table is mirrored into.
+    /// Absent = no lake: the service keeps its state to itself and publishes
+    /// nothing (ADR-0014).
+    #[knus(child)]
+    pub lake: Option<LakeConfig>,
 }
 
 /// Where the database lives: one directory, one lock file (ADR-0002 — k10r
@@ -116,6 +121,86 @@ pub struct LogsConfig {
     /// file — the same no-drift rule the compression numbers follow.
     #[knus(child, unwrap(argument))]
     pub max_rows: usize,
+}
+
+/// Where the lake lives and how often a snapshot lands (ADR-0014).
+///
+/// ```kdl
+/// lake {
+///     target "s3://krystallizer/k10r"     // or a directory: "/var/lib/k10r/lake"
+///     interval-secs 300
+///     s3 {
+///         endpoint "http://127.0.0.1:9000"
+///         key-env "K10R_S3_KEY"
+///         secret-env "K10R_S3_SECRET"
+///     }
+/// }
+/// ```
+///
+/// `target` is one URL and the store adapts: `s3://bucket/prefix` is a bucket, anything
+/// else is a directory. The `s3` block is present only for a bucket, and it names the
+/// environment variables that hold the key pair — never the key pair (the rule this
+/// file states at the top).
+#[derive(Decode, Debug, Clone)]
+pub struct LakeConfig {
+    /// `s3://bucket/prefix`, `file:///path`, or a plain directory.
+    #[knus(child, unwrap(argument))]
+    pub target: String,
+    /// How often the whole service is published, in seconds. One interval is one
+    /// version per table; the version replaces the previous one, so the lake holds
+    /// the service's current state rather than a history of it.
+    #[knus(child, unwrap(argument))]
+    pub interval_secs: u64,
+    /// Credentials for an S3-compatible endpoint; absent for a directory.
+    #[knus(child)]
+    pub s3: Option<LakeS3Config>,
+}
+
+/// The bucket's endpoint and the names of the variables holding its key pair.
+#[derive(Decode, Debug, Clone)]
+pub struct LakeS3Config {
+    /// A MinIO/rustfs-style endpoint. Absent = AWS.
+    #[knus(child, unwrap(argument))]
+    pub endpoint: Option<String>,
+    #[knus(child, unwrap(argument))]
+    pub region: Option<String>,
+    /// The environment variable holding the access key.
+    #[knus(child, unwrap(argument))]
+    pub key_env: String,
+    /// The environment variable holding the secret.
+    #[knus(child, unwrap(argument))]
+    pub secret_env: String,
+}
+
+impl LakeConfig {
+    /// The lake this node names, credentials resolved from the environment it names.
+    ///
+    /// An empty or unset credential variable is a boot failure, not an anonymous
+    /// request: a bucket that silently refuses every write is a lake that never lands,
+    /// and the operator would only learn it from a log line.
+    pub fn open(&self) -> Result<Box<dyn okm_lake::store::LakeStore>, ConfigError> {
+        let options = match &self.s3 {
+            Some(s3) => Some(okm_lake::store::S3Options {
+                endpoint: s3.endpoint.clone(),
+                region: s3.region.clone(),
+                access_key: env_value(&s3.key_env)?,
+                secret_key: env_value(&s3.secret_env)?,
+            }),
+            None => None,
+        };
+        okm_lake::store::open(&self.target, options).map_err(|e| ConfigError::Lake { message: e })
+    }
+}
+
+fn env_value(name: &str) -> Result<String, ConfigError> {
+    match std::env::var(name) {
+        Ok(value) if !value.is_empty() => Ok(value),
+        _ => Err(ConfigError::Lake {
+            message: format!(
+                "`{name}` is unset or empty: the lake's credentials are named, not stored"
+            ),
+        }),
+    }
 }
 
 /// The compression policy engine's numbers (ADR-0008 §4). Tuning is
@@ -468,6 +553,11 @@ pub enum ConfigError {
         /// std::error::Error, so it cannot sit in `#[source]`.
         report: miette::Report,
     },
+    /// The lake node names something this process cannot build: a bad URL, a store
+    /// that will not open, or a credential variable the node names and the
+    /// environment does not hold.
+    #[error("the lake cannot be opened: {message}")]
+    Lake { message: String },
     /// A configured path carries `$HOME` and the environment has none: the
     /// service refuses to guess (a literal `$HOME/…` directory would be a
     /// second, invisible database).

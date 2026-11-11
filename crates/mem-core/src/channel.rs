@@ -444,42 +444,21 @@ impl ChannelStore {
         ]
     }
 
-    /// Export one table by NAME as Parquet (ADR-0007's backup boundary).
-    /// `None` = this group holds no such table (the caller's 404).
-    pub fn export(&mut self, name: &str, path: &std::path::Path) -> Option<Result<(), String>> {
+    /// Export one table by NAME as Parquet bytes, with the columns that identify a row.
+    /// `None` = this group holds no such table.
+    pub fn export(&mut self, name: &str) -> Option<Result<crate::export::Export, String>> {
         if name == <MessageRow as Document>::TABLE_NAME {
-            Some(crate::export::table(&mut self.messages, path))
+            Some(crate::export::table_bytes(&mut self.messages))
         } else if name == <CheckpointRow as Document>::TABLE_NAME {
-            Some(crate::export::table(&mut self.checkpoints, path))
+            Some(crate::export::table_bytes(&mut self.checkpoints))
         } else if name == <CursorRow as Document>::TABLE_NAME {
-            Some(crate::export::table(&mut self.cursors, path))
+            Some(crate::export::table_bytes(&mut self.cursors))
         } else if name == <MemberRow as Document>::TABLE_NAME {
-            Some(crate::export::table(&mut self.members, path))
+            Some(crate::export::table_bytes(&mut self.members))
         } else if name == <ChannelRow as Document>::TABLE_NAME {
-            Some(crate::export::table(&mut self.channels, path))
+            Some(crate::export::table_bytes(&mut self.channels))
         } else if name == <MembershipRow as Document>::TABLE_NAME {
-            Some(crate::export::table(&mut self.memberships, path))
-        } else {
-            None
-        }
-    }
-
-    /// Restore one table by NAME from a Parquet file — the mirror of `export`.
-    /// Every channel table is a plain document table, so the restore lands
-    /// through the normal write contract and nothing derived has to follow.
-    pub fn import(&mut self, name: &str, path: &std::path::Path) -> Option<Result<usize, String>> {
-        if name == <MessageRow as Document>::TABLE_NAME {
-            Some(crate::export::import_table(&mut self.messages, path))
-        } else if name == <CheckpointRow as Document>::TABLE_NAME {
-            Some(crate::export::import_table(&mut self.checkpoints, path))
-        } else if name == <CursorRow as Document>::TABLE_NAME {
-            Some(crate::export::import_table(&mut self.cursors, path))
-        } else if name == <MemberRow as Document>::TABLE_NAME {
-            Some(crate::export::import_table(&mut self.members, path))
-        } else if name == <ChannelRow as Document>::TABLE_NAME {
-            Some(crate::export::import_table(&mut self.channels, path))
-        } else if name == <MembershipRow as Document>::TABLE_NAME {
-            Some(crate::export::import_table(&mut self.memberships, path))
+            Some(crate::export::table_bytes(&mut self.memberships))
         } else {
             None
         }

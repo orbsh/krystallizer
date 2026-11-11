@@ -365,76 +365,22 @@ impl LogStore {
         )]
     }
 
-    /// Export the table by NAME as Parquet (ADR-0007's backup boundary) — the
-    /// table where "bounded and trimmed" is normal, so the export is also the only
+    /// Export the table by NAME as Parquet bytes, with the columns that identify a row —
+    /// the table where "bounded and trimmed" is normal, so the export is also the only
     /// long-term record of what the trim drops. `None` = not this store's table.
-    pub fn export(&mut self, name: &str, path: &std::path::Path) -> Option<Result<(), String>> {
+    pub fn export(&mut self, name: &str) -> Option<Result<crate::export::Export, String>> {
         (name == <LogRow as Document>::TABLE_NAME)
-            .then(|| crate::export::table(&mut self.table, path))
-    }
-
-    /// Restore one table by NAME from a Parquet file — the mirror of `export`.
-    /// Rows land through the normal write contract, the reduce table pushes the
-    /// `seq` watermark, then the issuer and the trim index are recomputed from
-    /// the store.
-    pub fn import(&mut self, name: &str, path: &std::path::Path) -> Option<Result<usize, String>> {
-        if name == <LogRow as Document>::TABLE_NAME {
-            let out = crate::export::import_table(&mut self.table, path);
-            Some(crate::export::finish_import(out, || self.reseed()))
-        } else if name == crate::export::LOG_REDUCES {
-            let out =
-                okm_parquet::snapshot::parquet_io::import_reduces::<_, __OkmReduce_LogRow_0>(
-                    self.table.store(),
-                    <LogRow as Document>::NS_PREFIX,
-                    <LogRow as Document>::TABLE_NAME,
-                    path,
-                )
-                .map_err(|e| format!("reduce import: {e}"));
-            Some(crate::export::finish_import(out, || self.reseed()))
-        } else {
-            None
-        }
-    }
-
-    /// Recompute the `seq` issuer and the trim index from the store — the open
-    /// path, reused after a restore. The watermark is a point read and never a
-    /// scan of the last key: the trim deletes the NEWEST row when the ceiling
-    /// holds, so a scan would hand out a number already used.
-    pub fn reseed(&mut self) -> Result<(), String> {
-        let water = okm_core::reduce::scan_reduces::<_, __OkmReduce_LogRow_0>(
-            self.table.store(),
-            <LogRow as Document>::NS_PREFIX,
-        )
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .next()
-        .map(|(_, acc)| acc);
-        self.seq = water.map_or(0, |w| w.saturating_add(1));
-        let keys = self
-            .table
-            .scan_keys(&okm_core::PrefixProbe::empty())
-            .map(|r| r.map_err(|e| e.to_string()))
-            .collect::<Result<Vec<_>, _>>()?;
-        self.recent = keys
-            .into_iter()
-            .rev()
-            .take(self.max_rows)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        Ok(())
+            .then(|| crate::export::table_bytes(&mut self.table))
     }
 
     /// The `seq` watermark as the derived reduce table (ADR-0034 §5): the trim
     /// deletes from the front, so a restored log whose watermark is missing would
     /// reissue numbers the table already holds.
-    pub fn export_reduces(&self, path: &std::path::Path) -> Result<(), String> {
-        crate::export::reduces::<__OkmReduce_LogRow_0>(
+    pub fn export_reduces(&self) -> Result<crate::export::Export, String> {
+        crate::export::reduces_bytes::<__OkmReduce_LogRow_0>(
             self.table.store(),
             crate::export::ns(LogRow::NS_PREFIX),
             <LogRow as Document>::TABLE_NAME,
-            path,
         )
     }
 

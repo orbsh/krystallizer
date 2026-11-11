@@ -1,5 +1,5 @@
-//! The backup is readable by a tool that is not k10r (ADR-0013 §3): the bundle
-//! is unpacked and then opened by DuckDB through its Delta log (okm ADR-0058),
+//! The lake is readable by a tool that is not k10r (ADR-0014): the service publishes
+//! itself into a lake and DuckDB opens that lake through its Delta log (okm ADR-0058),
 //! with no krystallizer code anywhere in the read path.
 //!
 //! This is the claim the format is chosen for — "readable by whoever is handed
@@ -20,8 +20,9 @@ use std::process::Command;
 
 use mem_server::PutCode;
 
-async fn spawn(dir: &std::path::Path) -> String {
-    let router = mem_server::open(dir.to_path_buf()).unwrap();
+async fn spawn_with_lake(dir: &std::path::Path, lake: &std::path::Path) -> String {
+    let target = lake.display().to_string();
+    let router = mem_server::open_with_lake(dir.to_path_buf(), &target, 1).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -91,9 +92,10 @@ fn column(table_dir: &std::path::Path, column: &str, order: &str) -> Option<Vec<
 }
 
 #[tokio::test]
-async fn a_bundle_opens_in_a_warehouse_reader_that_never_saw_k10r() {
+async fn the_lake_opens_in_a_warehouse_reader_that_never_saw_k10r() {
     let store_dir = tempfile::tempdir().unwrap();
-    let base = spawn(store_dir.path()).await;
+    let lake_dir = tempfile::tempdir().unwrap();
+    let base = spawn_with_lake(store_dir.path(), lake_dir.path()).await;
     let client = reqwest::Client::new();
 
     for ts in [1_000u64, 2_000] {
@@ -133,40 +135,33 @@ async fn a_bundle_opens_in_a_warehouse_reader_that_never_saw_k10r() {
         .await
         .unwrap();
 
-    let bundle = client
-        .get(format!("{base}/export"))
-        .send()
-        .await
-        .unwrap()
-        .bytes()
-        .await
-        .unwrap();
-    let work = tempfile::tempdir().unwrap();
-    let archive = work.path().join("backup.tar.zst");
-    std::fs::write(&archive, &bundle).unwrap();
-    let dest = work.path().join("restored");
-    std::fs::create_dir_all(&dest).unwrap();
-    let root = mem_core::bundle::unpack(&archive, &dest).unwrap();
-
-    // One directory per table, catalog at the root — the layout a reader is
-    // pointed at.
-    for table in ["facts", "entities", "code", "messages"] {
-        assert!(
-            mem_core::bundle::table_file(&root, table).is_file(),
-            "{table} exported"
+    // The publisher runs at boot and then every second; a publish is a whole snapshot, so
+    // waiting for the LAST of the four tables to carry its rows is waiting for the snapshot
+    // that names them all.
+    let root = lake_dir.path().to_path_buf();
+    let mut caught_up = false;
+    for _ in 0..150 {
+        let seen = (
+            rows(&root.join("facts")),
+            rows(&root.join("entities")),
+            rows(&root.join("code")),
+            rows(&root.join("messages")),
         );
-        assert!(
-            root.join(table)
-                .join("_delta_log/00000000000000000000.json")
-                .is_file(),
-            "{table} carries the log a directory read needs"
-        );
+        if seen == (Some(2), Some(4), Some(1), Some(4)) {
+            caught_up = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 
     let Some(facts) = rows(&root.join("facts")) else {
         eprintln!("skipped: no duckdb + delta extension on this machine");
         return;
     };
+    assert!(
+        caught_up,
+        "the lake caught up with the writes (facts = {facts})"
+    );
     assert_eq!(facts, 2, "both facts in the reader");
     // THREE facts' entities plus the code row's own VERTEX (k10r ADR-0023: a
     // code row is a node, so facts — and tasks — can point at it).

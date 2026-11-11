@@ -7,6 +7,11 @@ beside warehouse metadata, and restore is a door. §2's per-table granularity an
 the old §4's rejection of "one archive per backup" are superseded. **Re-ruled
 2026-11-10**: the metadata is Delta's — okm ADR-0058 replaced its `bridge::iceberg`
 with `okm_parquet::delta` and deleted the Iceberg writer; §7 records why.
+**Withdrawn 2026-11-11**: the transport is gone, not the format. ADR-0014 replaced the
+request-driven bundle with a service that publishes itself into a Delta lake (a directory or
+a bucket), and removed `GET /export`, `GET /export/{table}` and `POST /import` with it. What
+this ADR says about the shape of a kept table still holds; there is simply no door that
+hands one over.
 
 ## 1. Context
 
