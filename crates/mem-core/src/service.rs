@@ -57,7 +57,7 @@ pub fn open_service(path: &std::path::Path) -> Result<ServiceStores, String> {
 
 impl ServiceStores {
     /// Land one table's batches, wherever that table lives — the restore's
-    /// dispatch (ADR-0015). `None` = no store serves the table.
+    /// dispatch (ADR-0026). `None` = no store serves the table.
     pub fn land(
         &mut self,
         table: &str,

@@ -444,7 +444,7 @@ impl ChannelStore {
         ]
     }
 
-    /// Land one table's rows at `ns` — the restore's per-table door (ADR-0015).
+    /// Land one table's rows at `ns` — the restore's per-table door (ADR-0026).
     /// `None` = this group holds no such table.
     pub fn restore(
         &mut self,
@@ -487,7 +487,7 @@ impl ChannelStore {
         }
     }
 
-    /// Whether a table's namespace is untouched (the restore's refusal, ADR-0015).
+    /// Whether a table's namespace is untouched (the restore's refusal, ADR-0026).
     pub fn ns_is_empty(&self, table: &str, ns: u16) -> Option<Result<bool, String>> {
         if table == <MessageRow as Document>::TABLE_NAME {
             Some(crate::export::ns_is_empty_into(&self.messages.rebased(ns)))

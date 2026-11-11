@@ -34,7 +34,7 @@ usage: krystallizer [--config <path>] [--addr <ip:port>]
   --addr <ip:port>   where the HTTP door listens (default 127.0.0.1:7760)
   --restore <target> land a lake back into storage.data-dir, then exit
                      (<target> is a directory or s3://bucket/prefix)
-  --map <table>=<ns> restore only this table, into namespace <ns> (ADR-0015:
+  --map <table>=<ns> restore only this table, into namespace <ns> (ADR-0026:
                      the application creates the namespace; a restore never
                      lands on top of rows that are already there)
   -h, --help         this text
@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse()
         .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 7760)));
 
-    // The restore's two shapes (ADR-0015): a target, and optionally the mapping
+    // The restore's two shapes (ADR-0026): a target, and optionally the mapping
     // that says which tables go where. No mapping = full restore.
     let mut restore: Option<String> = None;
     let mut mapping: std::collections::BTreeMap<String, u16> = std::collections::BTreeMap::new();
@@ -119,7 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // The restore is an OPERATOR action on a stopped service, not a door: the store
     // has one writer, so it runs here, lands the lake, and exits before any door
-    // exists (ADR-0015).
+    // exists (ADR-0026).
     if let Some(target) = restore {
         let lake = okm_lake::store::open(&target, None)?;
         let mut stores = mem_core::service::open_service(&data_dir)?;

@@ -1281,7 +1281,7 @@ impl GraphStore {
     /// the declaration's fields, and the edge's open attributes as a `variant`
     /// column — which is why that segment lives on the graph rather than in a
     /// consumer. `None` = not this graph's table.
-    /// Land one table's rows at `ns` — the restore's per-table door (ADR-0015).
+    /// Land one table's rows at `ns` — the restore's per-table door (ADR-0026).
     ///
     /// `ns_of` answers a lake table's DESTINATION ns, because an edge's endpoints
     /// are `[ns 2B]` refs: a mapped restore that moved the node table and left the
@@ -2219,7 +2219,7 @@ impl GraphStore {
     }
 
     /// Declare one node directly — the write face for a node that is not an
-    /// endpoint of a fact (a skill, ADR-0015).
+    /// endpoint of a fact (a skill, ADR-0026).
     ///
     /// Resolution is the rule `ingest` already follows: a name that exists in
     /// the scope IS the same node and the props merge, so declaring twice is

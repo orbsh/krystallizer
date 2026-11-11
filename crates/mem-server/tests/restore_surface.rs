@@ -1,4 +1,4 @@
-//! The restore surface (ADR-0015): a lake lands in an EMPTY namespace, all of it
+//! The restore surface (ADR-0026): a lake lands in an EMPTY namespace, all of it
 //! or the part a mapping names, and a namespace that already holds anything is
 //! refused before a single row is written.
 #![allow(

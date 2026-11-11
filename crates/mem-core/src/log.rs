@@ -366,7 +366,7 @@ impl LogStore {
     }
 
     /// Land the table (or its `seq` watermark) at `ns` — the restore's door
-    /// (ADR-0015). The issuer and the trim index are recomputed from what landed,
+    /// (ADR-0026). The issuer and the trim index are recomputed from what landed,
     /// so a restored log does not reissue numbers its rows already carry.
     pub fn restore(
         &mut self,

@@ -163,7 +163,7 @@ pub fn reduces_bytes<A: okm_core::model::reduce::Reduce>(
 }
 
 /// Land batches into an already-rooted collection: the restore's write seam
-/// (ADR-0015). The caller hands the collection it means — `collection.rebased(ns)`
+/// (ADR-0026). The caller hands the collection it means — `collection.rebased(ns)`
 /// for a mapped table — so this function never names a key or row type.
 pub fn land_into<S, K, R>(
     collection: &mut Collection<S, K, R>,
@@ -183,7 +183,7 @@ where
 }
 
 /// Whether the namespace this handle would write into is untouched: one key
-/// under its header is enough to refuse a restore (ADR-0015: a restore only goes
+/// under its header is enough to refuse a restore (ADR-0026: a restore only goes
 /// into an empty namespace). Faces, index entries and reduce rows share the
 /// header, so this sees them too, not just the rows a scan of documents finds.
 pub fn ns_is_empty_into<S, K, R>(collection: &Collection<S, K, R>) -> Result<bool, String>

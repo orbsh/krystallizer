@@ -1,4 +1,4 @@
-//! Landing a lake back into a store (ADR-0015).
+//! Landing a lake back into a store (ADR-0026).
 //!
 //! The ruling this module implements is narrow on purpose: **a restore only goes
 //! into an empty namespace.** There is no merge, no overwrite, no "skip what is
