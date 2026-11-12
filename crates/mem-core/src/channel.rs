@@ -1208,14 +1208,12 @@ impl ChannelStore {
             .finish();
         let hits = self
             .memberships
-            .scan::<__OkmLead_MembershipRow_by_member, (parts::Fields, parts::Key, parts::Row)>(
-                &probe,
-            )
+            .scan::<__OkmLead_MembershipRow_by_member, (parts::Key, parts::Row)>(&probe)
             .collect::<okm_core::error::Result<Vec<_>>>()
             .map_err(|e| e.to_string())?;
         let mut out: Vec<(u64, MembershipRow)> = hits
             .into_iter()
-            .filter_map(|(_, key, row)| row.map(|r| (key.decoded.channel_id, r)))
+            .filter_map(|(key, row)| row.map(|r| (key.decoded.channel_id, r)))
             .collect();
         out.sort_by_key(|(channel_id, _)| *channel_id);
         Ok(out)

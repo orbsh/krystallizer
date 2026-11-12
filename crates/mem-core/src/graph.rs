@@ -1170,12 +1170,12 @@ impl GraphStore {
     ) -> Result<Option<(u64, EntityRow)>, IngestError> {
         let hits = self
             .entities
-            .scan::<ByName, (parts::Fields, parts::Key, parts::Row)>(name.as_bytes())
+            .scan::<ByName, (parts::Key, parts::Row)>(name.as_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()
             .map_err(|e| IngestError::Storage(e.to_string()))?;
         Ok(hits
             .into_iter()
-            .filter_map(|(_, key, row)| row.map(|row| (key.decoded, row)))
+            .filter_map(|(key, row)| row.map(|row| (key.decoded, row)))
             .find(|(key, row)| key.scope == scope && row.name == name)
             .map(|(key, row)| (key.node_id, row)))
     }
@@ -3075,12 +3075,12 @@ impl GraphStore {
     ) -> Result<Vec<(u64, EntityRow)>, IngestError> {
         let hits = self
             .entities
-            .scan::<ByCommunity, (parts::Fields, parts::Key, parts::Row)>(&community.to_be_bytes())
+            .scan::<ByCommunity, (parts::Key, parts::Row)>(&community.to_be_bytes())
             .collect::<okm_core::error::Result<Vec<_>>>()
             .map_err(|e| IngestError::Storage(e.to_string()))?;
         Ok(hits
             .into_iter()
-            .filter_map(|(_, key, row)| row.map(|row| (key.decoded, row)))
+            .filter_map(|(key, row)| row.map(|row| (key.decoded, row)))
             .filter(|(key, row)| key.scope == scope && row.community_id == community)
             .map(|(key, row)| (key.node_id, row))
             .collect())
