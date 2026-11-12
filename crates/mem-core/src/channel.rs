@@ -31,6 +31,7 @@
 //! time inside that turn, so a prefix scan over `channel_id` returns the
 //! log in conversation order with no sort step (ADR-0024).
 
+use okm_core::parts;
 use okm_core::{Document, DocumentEncode, FjallStore, KeyEncode, Uuid7};
 
 /// Append-only message log (ns 33 — the channel-log band, next to flat
@@ -1207,7 +1208,10 @@ impl ChannelStore {
             .finish();
         let hits = self
             .memberships
-            .scan::<__OkmLead_MembershipRow_by_member>(&probe)
+            .scan::<__OkmLead_MembershipRow_by_member, (parts::Fields, parts::Key, parts::Row)>(
+                &probe,
+            )
+            .collect::<okm_core::error::Result<Vec<_>>>()
             .map_err(|e| e.to_string())?;
         let mut out: Vec<(u64, MembershipRow)> = hits
             .into_iter()

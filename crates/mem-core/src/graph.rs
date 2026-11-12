@@ -65,6 +65,7 @@ use crate::embedding::Embedder;
 use crate::render::RenderFormat;
 use crate::tasks::{TaskSheet, TASK_KIND};
 use okm_core::okm_value::DynamicValue;
+use okm_core::parts;
 use okm_core::Uuid7;
 use okm_core::{
     write_slot, Batch, Collection, Document, DocumentEncode, EdgeHead, FjallStore, Graph,
@@ -1169,7 +1170,8 @@ impl GraphStore {
     ) -> Result<Option<(u64, EntityRow)>, IngestError> {
         let hits = self
             .entities
-            .scan::<ByName>(name.as_bytes())
+            .scan::<ByName, (parts::Fields, parts::Key, parts::Row)>(name.as_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
             .map_err(|e| IngestError::Storage(e.to_string()))?;
         Ok(hits
             .into_iter()
@@ -3073,7 +3075,8 @@ impl GraphStore {
     ) -> Result<Vec<(u64, EntityRow)>, IngestError> {
         let hits = self
             .entities
-            .scan::<ByCommunity>(&community.to_be_bytes())
+            .scan::<ByCommunity, (parts::Fields, parts::Key, parts::Row)>(&community.to_be_bytes())
+            .collect::<okm_core::error::Result<Vec<_>>>()
             .map_err(|e| IngestError::Storage(e.to_string()))?;
         Ok(hits
             .into_iter()
