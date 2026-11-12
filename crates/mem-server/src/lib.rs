@@ -2351,7 +2351,7 @@ async fn fetch_graph(
             .map(|found| {
                 found
                     .into_iter()
-                    .map(|(name, value)| (name, dynamic_to_json(value)))
+                    .map(|(name, value)| (name, variant_to_json(value)))
                     .collect()
             })
             .unwrap_or_default();
@@ -2408,8 +2408,8 @@ impl IntoResponse for EngineError {
 /// `Str` / …); a renderer only ever needs JSON, and bytes are the one variant
 /// with no JSON counterpart — they are shown as a length, never as a wall of
 /// numbers that would bury the rest of the card.
-fn dynamic_to_json(value: mem_core::DynamicValue) -> serde_json::Value {
-    use mem_core::DynamicValue as D;
+fn variant_to_json(value: mem_core::Variant) -> serde_json::Value {
+    use mem_core::Variant as D;
     match value {
         // Widths are a Rust-side convenience: the wire is widthless, so every
         // unsigned variant is one number here.
@@ -2426,11 +2426,12 @@ fn dynamic_to_json(value: mem_core::DynamicValue) -> serde_json::Value {
         D::Null => serde_json::Value::Null,
         D::Bytes(bytes) => serde_json::Value::String(format!("<{} bytes>", bytes.len())),
         D::Array(items) => {
-            serde_json::Value::Array(items.into_iter().map(dynamic_to_json).collect())
+            serde_json::Value::Array(items.into_iter().map(variant_to_json).collect())
         }
-        D::Obj(map) => serde_json::Value::Object(
-            map.into_iter()
-                .map(|(name, value)| (name, dynamic_to_json(value)))
+        D::Map(names) => serde_json::Value::Object(
+            names
+                .into_iter()
+                .map(|(name, value)| (name, variant_to_json(value)))
                 .collect(),
         ),
     }

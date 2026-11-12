@@ -745,7 +745,7 @@ impl ChannelStore {
         let key = key.map_err(|e| e.to_string())?;
         Ok(self
             .messages
-            .get(&key)
+            .get_row(&key)
             .map_err(|e| e.to_string())?
             .is_some_and(|row| row.kind == kind::FINAL))
     }
@@ -769,7 +769,12 @@ impl ChannelStore {
         let key = MemberKey {
             member_id: default_member(),
         };
-        if self.members.get(&key).map_err(|e| e.to_string())?.is_none() {
+        if self
+            .members
+            .get_row(&key)
+            .map_err(|e| e.to_string())?
+            .is_none()
+        {
             self.put_member(default_member(), DEFAULT_MEMBER_NAME, member_role::HUMAN)?;
         }
         // The channel still needs its own relationship row: identity is global, membership is
@@ -780,7 +785,7 @@ impl ChannelStore {
         };
         if self
             .memberships
-            .get(&joined)
+            .get_row(&joined)
             .map_err(|e| e.to_string())?
             .is_none()
         {
@@ -845,7 +850,7 @@ impl ChannelStore {
             let key = key.map_err(|e| e.to_string())?;
             // A node that vanished between the scan and the read is absence; a
             // store that cannot answer is not, and it propagates.
-            if let Some(row) = self.checkpoints.get(&key).map_err(|e| e.to_string())? {
+            if let Some(row) = self.checkpoints.get_row(&key).map_err(|e| e.to_string())? {
                 out.push((key, row));
             }
         }
@@ -858,15 +863,16 @@ impl ChannelStore {
     fn checkpoint_head(&mut self, key: &CheckpointKey) -> Result<Option<Vec<u64>>, String> {
         // `None` here is a node with no stored head; a store that cannot answer
         // is not that, and it propagates.
-        let Some(doc) = self.checkpoints.fetch(key).map_err(|e| e.to_string())? else {
+        let Some(doc) = crate::document::at(&self.checkpoints, key).map_err(|e| e.to_string())?
+        else {
             return Ok(None);
         };
         Ok(match doc.get(checkpoint_field::HEAD) {
-            Some(okm_core::okm_value::DynamicValue::Array(items)) => Some(
+            Some(okm_core::okm_value::Variant::Array(items)) => Some(
                 items
                     .iter()
                     .filter_map(|item| match item {
-                        okm_core::okm_value::DynamicValue::U64(id) => Some(*id),
+                        okm_core::okm_value::Variant::U64(id) => Some(*id),
                         _ => None,
                     })
                     .collect(),
@@ -880,16 +886,20 @@ impl ChannelStore {
         let mut fields = std::collections::BTreeMap::new();
         fields.insert(
             checkpoint_field::HEAD.to_string(),
-            okm_core::okm_value::DynamicValue::Array(
+            okm_core::okm_value::Variant::Array(
                 head.iter()
-                    .map(|id| okm_core::okm_value::DynamicValue::U64(*id))
+                    .map(|id| okm_core::okm_value::Variant::U64(*id))
                     .collect(),
             ),
         );
-        // The head is a dynamic name, so `merge` routes it to the segment and
-        // leaves the row alone (ADR-0035: names decide the arm, not the verb).
+        // The head is a dynamic name, so a map payload routes it to the segment
+        // and leaves the row alone (ADR-0035: names decide the arm, not the
+        // verb).
         self.checkpoints
-            .merge(key, &fields)
+            .put(
+                key,
+                &okm_core::okm_value::Variant::Map(crate::document::dict(&fields)),
+            )
             .map_err(|e| e.to_string())
     }
 
@@ -1000,7 +1010,7 @@ impl ChannelStore {
         // the same defect as one outside the span.
         if suggested.is_some_and(|point| {
             self.messages
-                .get(&MessageKey {
+                .get_row(&MessageKey {
                     channel_id,
                     turn_id: point.turn_id,
                     ts_ms: point.ts_ms,
@@ -1080,7 +1090,7 @@ impl ChannelStore {
         // Never rewinds: an earlier clock leaves the stored one alone.
         if self
             .cursors
-            .get(&key)
+            .get_row(&key)
             .map_err(|e| e.to_string())?
             .is_some_and(|row| row.read_at >= read_at)
         {
@@ -1096,7 +1106,7 @@ impl ChannelStore {
     pub fn read_at(&self, channel_id: u64, member_id: Uuid7) -> Result<Option<u64>, String> {
         Ok(self
             .cursors
-            .get(&CursorKey {
+            .get_row(&CursorKey {
                 channel_id,
                 member_id,
             })
@@ -1149,7 +1159,7 @@ impl ChannelStore {
     /// One channel's row, if it was opened.
     pub fn channel(&self, channel_id: u64) -> Result<Option<ChannelRow>, String> {
         self.channels
-            .get(&ChannelKey { channel_id })
+            .get_row(&ChannelKey { channel_id })
             .map_err(|e| e.to_string())
     }
 
@@ -1208,7 +1218,8 @@ impl ChannelStore {
             .finish();
         let hits = self
             .memberships
-            .scan::<__OkmLead_MembershipRow_by_member, (parts::Key, parts::Row)>(&probe)
+            .scan::<__OkmLead_MembershipRow_by_member>(&probe)
+            .parts::<(parts::Key, parts::Row)>()
             .collect::<okm_core::error::Result<Vec<_>>>()
             .map_err(|e| e.to_string())?;
         let mut out: Vec<(u64, MembershipRow)> = hits
@@ -1243,7 +1254,7 @@ impl ChannelStore {
         let mut out = Vec::new();
         for key in self.channels.scan_keys(&okm_core::PrefixProbe::empty()) {
             let key = key.map_err(|e| e.to_string())?;
-            if let Some(row) = self.channels.get(&key).map_err(|e| e.to_string())? {
+            if let Some(row) = self.channels.get_row(&key).map_err(|e| e.to_string())? {
                 out.push((key, row));
             }
         }
@@ -1253,7 +1264,7 @@ impl ChannelStore {
     /// One member's identity, if registered.
     pub fn member(&self, member_id: Uuid7) -> Result<Option<MemberRow>, String> {
         self.members
-            .get(&MemberKey { member_id })
+            .get_row(&MemberKey { member_id })
             .map_err(|e| e.to_string())
     }
 
@@ -1267,7 +1278,7 @@ impl ChannelStore {
             let identity = MemberKey {
                 member_id: key.member_id,
             };
-            if let Some(row) = self.members.get(&identity).map_err(|e| e.to_string())? {
+            if let Some(row) = self.members.get_row(&identity).map_err(|e| e.to_string())? {
                 out.push((identity, row));
             }
         }
@@ -1337,7 +1348,7 @@ impl ChannelStore {
             }
             // A row that vanished between the scan and the read is absence; a
             // store that cannot answer is not, and it propagates.
-            if let Some(row) = self.messages.get(&key).map_err(|e| e.to_string())? {
+            if let Some(row) = self.messages.get_row(&key).map_err(|e| e.to_string())? {
                 out.push((key, row));
             }
         }

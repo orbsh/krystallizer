@@ -64,7 +64,7 @@ use crate::code::{CodeKey, CodeRow};
 use crate::embedding::Embedder;
 use crate::render::RenderFormat;
 use crate::tasks::{TaskSheet, TASK_KIND};
-use okm_core::okm_value::DynamicValue;
+use okm_core::okm_value::Variant;
 use okm_core::parts;
 use okm_core::Uuid7;
 use okm_core::{
@@ -581,7 +581,7 @@ pub struct CommunitySeqRow {
 pub struct Term {
     pub value: String,
     pub type_label: String,
-    pub props: BTreeMap<String, DynamicValue>,
+    pub props: BTreeMap<String, Variant>,
 }
 
 /// The relation: its name IS the edge's PREDICATE (the graph's kind
@@ -590,7 +590,7 @@ pub struct Term {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Relation {
     pub name: String,
-    pub props: BTreeMap<String, DynamicValue>,
+    pub props: BTreeMap<String, Variant>,
 }
 
 /// The 8-slot fact tuple, slots 0–7 in order: head value / head type /
@@ -646,7 +646,7 @@ fn text_slot(value: &serde_json::Value, slot: usize) -> Result<String, IngestErr
 fn props_slot(
     value: &serde_json::Value,
     slot: usize,
-) -> Result<BTreeMap<String, DynamicValue>, IngestError> {
+) -> Result<BTreeMap<String, Variant>, IngestError> {
     if !value.is_object() {
         return Err(IngestError::Slot {
             slot,
@@ -872,10 +872,10 @@ pub const SOURCE_FIELD: &str = "source";
 /// one thing a fact graph exists to avoid. Only `title` and `content` join the
 /// vector; every other attribute stays out, or an arbitrary prop would move the
 /// node's semantic position.
-fn embedding_text(value: &str, props: &BTreeMap<String, DynamicValue>) -> String {
+fn embedding_text(value: &str, props: &BTreeMap<String, Variant>) -> String {
     let mut parts: Vec<&str> = vec![value];
     for name in [TITLE_FIELD, CONTENT_FIELD] {
-        if let Some(DynamicValue::Str(text)) = props.get(name) {
+        if let Some(Variant::Str(text)) = props.get(name) {
             if !text.trim().is_empty() {
                 parts.push(text.as_str());
             }
@@ -887,13 +887,13 @@ fn embedding_text(value: &str, props: &BTreeMap<String, DynamicValue>) -> String
 /// The ids in a `ref` value: one id or an array of ids. Anything else (a string,
 /// a nested object) is not a reference and yields nothing — a writer's mistake
 /// must not turn into a phantom target.
-fn refs_of(value: &DynamicValue) -> Vec<u64> {
+fn refs_of(value: &Variant) -> Vec<u64> {
     match value {
-        DynamicValue::U64(id) => vec![*id],
-        DynamicValue::Array(items) => items
+        Variant::U64(id) => vec![*id],
+        Variant::Array(items) => items
             .iter()
             .filter_map(|item| match item {
-                DynamicValue::U64(id) => Some(*id),
+                Variant::U64(id) => Some(*id),
                 _ => None,
             })
             .collect(),
@@ -1154,7 +1154,7 @@ impl GraphStore {
     /// One node by id.
     pub fn entity(&self, scope: u64, node_id: u64) -> Result<Option<EntityRow>, IngestError> {
         self.entities
-            .get(&EntityKey { scope, node_id })
+            .get_row(&EntityKey { scope, node_id })
             .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
@@ -1170,7 +1170,8 @@ impl GraphStore {
     ) -> Result<Option<(u64, EntityRow)>, IngestError> {
         let hits = self
             .entities
-            .scan::<ByName, (parts::Key, parts::Row)>(name.as_bytes())
+            .scan::<ByName>(name.as_bytes())
+            .parts::<(parts::Key, parts::Row)>()
             .collect::<okm_core::error::Result<Vec<_>>>()
             .map_err(|e| IngestError::Storage(e.to_string()))?;
         Ok(hits
@@ -1181,19 +1182,17 @@ impl GraphStore {
     }
 
     /// The entity's open attributes: the document's names the schema does not
-    /// declare. `fetch` answers both halves (ADR-0035 — the document is one
-    /// map), so the row's own fields are dropped here; `None` = no props, the
-    /// same answer the retired segment-only read gave.
+    /// declare. The whole document is read (ADR-0035 — a document is the pair
+    /// of slots), so the row's own fields are dropped here; `None` = no props,
+    /// the same answer the retired segment-only read gave.
     pub fn entity_props(
         &mut self,
         scope: u64,
         node_id: u64,
-    ) -> Result<Option<BTreeMap<String, DynamicValue>>, IngestError> {
+    ) -> Result<Option<BTreeMap<String, Variant>>, IngestError> {
         // No stored document (either slot) is absence; a store that cannot
         // answer is not, and it propagates.
-        let Some(mut doc) = self
-            .entities
-            .fetch(&EntityKey { scope, node_id })
+        let Some(mut doc) = crate::document::at(&self.entities, &EntityKey { scope, node_id })
             .map_err(|e| IngestError::Storage(e.to_string()))?
         else {
             return Ok(None);
@@ -1702,7 +1701,7 @@ impl GraphStore {
         let key = EntityKey { scope, node_id };
         Ok(self
             .vectors
-            .get(&key)
+            .get_row(&key)
             .map_err(|e| IngestError::Storage(e.to_string()))?
             .map(|row| row.embedding)
             .filter(|embedding| !embedding.is_empty()))
@@ -1721,7 +1720,7 @@ impl GraphStore {
             // store that cannot answer is not, and it propagates.
             if let Some(row) = self
                 .entities
-                .get(&key)
+                .get_row(&key)
                 .map_err(|e| IngestError::Storage(e.to_string()))?
             {
                 out.push((key.node_id, row));
@@ -2045,7 +2044,7 @@ impl GraphStore {
             let key = key.map_err(|e| IngestError::Storage(e.to_string()))?;
             match self
                 .vectors
-                .get(&key)
+                .get_row(&key)
                 .map_err(|e| IngestError::Storage(e.to_string()))?
             {
                 Some(row) if !row.embedding.is_empty() => {
@@ -2114,7 +2113,7 @@ impl GraphStore {
             // person); a store that cannot answer is not, and it propagates.
             let name = match self.members.as_ref() {
                 Some(members) => members
-                    .get(&MemberKey { member_id: member })
+                    .get_row(&MemberKey { member_id: member })
                     .map_err(|e| IngestError::Storage(e.to_string()))?
                     .map(|row| row.display_name),
                 None => None,
@@ -2263,16 +2262,16 @@ impl GraphStore {
         let dst = self.resolve(scope, &fact.tail)?;
         let functional = matches!(
             fact.rel.props.get(FUNCTIONAL_PROP),
-            Some(DynamicValue::Bool(true))
+            Some(Variant::Bool(true))
         );
         let since = match fact.rel.props.get("since") {
-            Some(DynamicValue::U64(v)) => *v,
-            Some(DynamicValue::I64(v)) => *v as u64,
+            Some(Variant::U64(v)) => *v,
+            Some(Variant::I64(v)) => *v as u64,
             _ => 0,
         };
         let confidence = match fact.rel.props.get("confidence") {
-            Some(DynamicValue::U64(v)) => (*v).min(255) as u8,
-            Some(DynamicValue::I64(v)) => (*v).clamp(0, 255) as u8,
+            Some(Variant::U64(v)) => (*v).min(255) as u8,
+            Some(Variant::I64(v)) => (*v).clamp(0, 255) as u8,
             _ => 255,
         };
         // The rel props that ride the edge's dynamic segment: the open
@@ -2282,7 +2281,7 @@ impl GraphStore {
         // input, and is kept (the assertion's own record). The weight
         // system's five counters are the same kind of exclusion: system
         // metadata never rides the business layer (ADR-0005).
-        let props: BTreeMap<String, DynamicValue> = fact
+        let props: BTreeMap<String, Variant> = fact
             .rel
             .props
             .iter()
@@ -2447,7 +2446,7 @@ impl GraphStore {
                 )
             })?;
             let known = members
-                .get(&MemberKey { member_id: member })
+                .get_row(&MemberKey { member_id: member })
                 .map_err(|e| IngestError::Storage(e.to_string()))?
                 .is_some();
             if !known {
@@ -2524,10 +2523,10 @@ impl GraphStore {
         // than maintain it row by row (it reloads on the next retrieval).
         self.tables.forget(scope);
         if !term.props.is_empty() {
-            // Non-declared names: `merge` writes the segment, the row stays as
-            // written above.
+            // Non-declared names: a map payload writes the segment, the row
+            // stays as written above.
             self.entities
-                .merge(&key, &term.props)
+                .put(&key, &Variant::Map(crate::document::dict(&term.props)))
                 .map_err(|e| IngestError::Storage(e.to_string()))?;
         }
         Ok(Endpoint::Entity(node_id))
@@ -2540,7 +2539,7 @@ impl GraphStore {
         node_id: u64,
     ) -> Result<Option<TaskSheet>, IngestError> {
         self.sheets
-            .get(&EntityKey { scope, node_id })
+            .get_row(&EntityKey { scope, node_id })
             .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
@@ -2570,7 +2569,7 @@ impl GraphStore {
         rev: u64,
     ) -> Result<Option<CodeRow>, IngestError> {
         self.codes
-            .get(&CodeKey {
+            .get_row(&CodeKey {
                 scope,
                 code_id,
                 rev,
@@ -2603,7 +2602,7 @@ impl GraphStore {
         let key = key.map_err(|e| IngestError::Storage(e.to_string()))?;
         Ok(self
             .codes
-            .get(&key)
+            .get_row(&key)
             .map_err(|e| IngestError::Storage(e.to_string()))?
             .map(|row| (key.rev, row)))
     }
@@ -2664,16 +2663,19 @@ impl GraphStore {
         &mut self,
         scope: u64,
         node_id: u64,
-        props: &BTreeMap<String, DynamicValue>,
+        props: &BTreeMap<String, Variant>,
     ) -> Result<(), IngestError> {
         if props.is_empty() {
             return Ok(());
         }
-        // `merge` IS the delta write: it reads the stored segment, overwrites
-        // the names given and leaves the rest — so the read-modify-write that
-        // used to live here is the verb's own work now.
+        // A map payload IS the delta write: it reads the stored segment,
+        // overwrites the names given and leaves the rest — so the
+        // read-modify-write that used to live here is `put`'s own work now.
         self.entities
-            .merge(&EntityKey { scope, node_id }, props)
+            .put(
+                &EntityKey { scope, node_id },
+                &Variant::Map(crate::document::dict(props)),
+            )
             .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
@@ -2690,7 +2692,7 @@ impl GraphStore {
         src: Endpoint,
         dst: Endpoint,
         kind: &str,
-        props: &BTreeMap<String, DynamicValue>,
+        props: &BTreeMap<String, Variant>,
     ) -> Result<(), IngestError> {
         let mut batch = Batch::default();
         self.write_edge_into(&mut batch, edge_id, edge, scope, src, dst, kind, props)?;
@@ -2711,7 +2713,7 @@ impl GraphStore {
         src: Endpoint,
         dst: Endpoint,
         kind: &str,
-        props: &BTreeMap<String, DynamicValue>,
+        props: &BTreeMap<String, Variant>,
     ) -> Result<(), IngestError> {
         let head = EdgeHead {
             src: src.to_ref(scope),
@@ -2727,7 +2729,7 @@ impl GraphStore {
         // both. It deletes the previous assertion's segment first — props belong
         // to the claim being written, never to the one it replaces.
         facts
-            .replace_into(batch, edge_id, props)
+            .replace_into(batch, edge_id, &crate::document::dict(props))
             .map_err(|e| IngestError::Storage(e.to_string()))?;
         Ok(())
     }
@@ -2737,10 +2739,14 @@ impl GraphStore {
     pub fn fact_props(
         &self,
         edge_id: u64,
-    ) -> Result<Option<BTreeMap<String, DynamicValue>>, IngestError> {
-        self.facts()
+    ) -> Result<Option<BTreeMap<String, Variant>>, IngestError> {
+        // `attrs` answers okm's name map (`Dict`); this crate's bag is the
+        // sorted one, so the conversion is here, at the okm door.
+        Ok(self
+            .facts()
             .attrs(edge_id)
-            .map_err(|e| IngestError::Storage(e.to_string()))
+            .map_err(|e| IngestError::Storage(e.to_string()))?
+            .map(|names| names.into_iter().collect()))
     }
 
     /// One node as a graph endpoint: the ref carries the entity key's own
@@ -2792,7 +2798,7 @@ impl GraphStore {
             None => {
                 let stored = self
                     .seq()
-                    .get(&CommunitySeqKey { scope })
+                    .get_row(&CommunitySeqKey { scope })
                     .map_err(|e| IngestError::Storage(e.to_string()))?
                     .map_or(0, |row| row.high_water);
                 let live = self
@@ -3075,7 +3081,8 @@ impl GraphStore {
     ) -> Result<Vec<(u64, EntityRow)>, IngestError> {
         let hits = self
             .entities
-            .scan::<ByCommunity, (parts::Key, parts::Row)>(&community.to_be_bytes())
+            .scan::<ByCommunity>(&community.to_be_bytes())
+            .parts::<(parts::Key, parts::Row)>()
             .collect::<okm_core::error::Result<Vec<_>>>()
             .map_err(|e| IngestError::Storage(e.to_string()))?;
         Ok(hits

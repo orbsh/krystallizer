@@ -30,6 +30,7 @@ pub use okm_core::Uuid7;
 pub mod code;
 pub mod compress;
 pub mod config;
+mod document;
 pub mod embedding;
 pub mod export;
 pub mod graph;
@@ -86,7 +87,7 @@ pub use log::{
 };
 /// The props bag's value type, re-exported so a door can carry node attributes
 /// without taking its own dependency on the storage library.
-pub use okm_core::okm_value::DynamicValue;
+pub use okm_core::okm_value::Variant;
 pub use render::{render_head, render_memory, RenderFormat};
 pub use service::{open_service, ServiceStores};
 pub use tasks::{

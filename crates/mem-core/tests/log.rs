@@ -11,7 +11,7 @@
 
 use mem_core::log::{event, field, level, source};
 use mem_core::{LogKey, LogStore, DEFAULT_MAX_ROWS};
-use okm_core::okm_value::DynamicValue;
+use okm_core::okm_value::Variant;
 use okm_core::KeyEncode;
 use std::collections::BTreeMap;
 
@@ -19,7 +19,7 @@ fn tempdir() -> tempfile::TempDir {
     tempfile::tempdir().expect("temp dir")
 }
 
-fn fields(pairs: &[(&str, DynamicValue)]) -> BTreeMap<String, DynamicValue> {
+fn fields(pairs: &[(&str, Variant)]) -> BTreeMap<String, Variant> {
     pairs
         .iter()
         .map(|(k, v)| ((*k).to_string(), v.clone()))
@@ -57,28 +57,25 @@ fn a_row_round_trips_with_its_dynamic_fields() {
             source::COMPRESS,
             "",
             fields(&[
-                (field::CHANNEL, DynamicValue::U64(7)),
-                (field::TRIGGER, DynamicValue::Str("cache_clock".into())),
-                (field::IDLE_MS, DynamicValue::U64(301_000)),
+                (field::CHANNEL, Variant::U64(7)),
+                (field::TRIGGER, Variant::Str("cache_clock".into())),
+                (field::IDLE_MS, Variant::U64(301_000)),
             ]),
         )
         .unwrap();
 
     let doc = store.get(&key).expect("row present").expect("row present");
-    assert_eq!(
-        doc.get("level"),
-        Some(&DynamicValue::U64(level::WARN as u64))
-    );
+    assert_eq!(doc.get("level"), Some(&Variant::U64(level::WARN as u64)));
     assert_eq!(
         doc.get("event"),
-        Some(&DynamicValue::Str(event::COMPRESSION_VERDICT.into()))
+        Some(&Variant::Str(event::COMPRESSION_VERDICT.into()))
     );
-    assert_eq!(doc.get(field::CHANNEL), Some(&DynamicValue::U64(7)));
+    assert_eq!(doc.get(field::CHANNEL), Some(&Variant::U64(7)));
     assert_eq!(
         doc.get(field::TRIGGER),
-        Some(&DynamicValue::Str("cache_clock".into()))
+        Some(&Variant::Str("cache_clock".into()))
     );
-    assert_eq!(doc.get(field::IDLE_MS), Some(&DynamicValue::U64(301_000)));
+    assert_eq!(doc.get(field::IDLE_MS), Some(&Variant::U64(301_000)));
 }
 
 /// A bare event line needs no dynamic segment at all: `fields` empty is legal,
@@ -101,7 +98,7 @@ fn a_row_without_dynamic_fields_is_an_event_line() {
     assert_eq!(doc.get(field::CHANNEL), None);
     assert_eq!(
         doc.get("event"),
-        Some(&DynamicValue::Str(event::ENGINE_ERROR.into()))
+        Some(&Variant::Str(event::ENGINE_ERROR.into()))
     );
 }
 
@@ -126,7 +123,7 @@ fn rows_read_in_time_order_and_same_millisecond_rows_keep_their_order() {
         .unwrap()
         .into_iter()
         .filter_map(|(_, doc)| match doc.get("event") {
-            Some(DynamicValue::Str(s)) => Some(s.clone()),
+            Some(Variant::Str(s)) => Some(s.clone()),
             _ => None,
         })
         .collect();
@@ -172,7 +169,7 @@ fn the_ceiling_drops_the_oldest_rows() {
         .unwrap()
         .into_iter()
         .filter_map(|(_, doc)| match doc.get("event") {
-            Some(DynamicValue::Str(s)) => Some(s.clone()),
+            Some(Variant::Str(s)) => Some(s.clone()),
             _ => None,
         })
         .collect();
@@ -220,16 +217,16 @@ fn the_verdict_row_carries_the_decision_it_made() {
         .get(&key)
         .expect("the row lands")
         .expect("the row lands");
-    assert_eq!(row[field::CHANNEL], DynamicValue::U64(7));
-    assert_eq!(row[field::SPLIT_TS], DynamicValue::U64(1_500));
-    assert_eq!(row[field::SPLIT_SUB], DynamicValue::U64(2));
+    assert_eq!(row[field::CHANNEL], Variant::U64(7));
+    assert_eq!(row[field::SPLIT_TS], Variant::U64(1_500));
+    assert_eq!(row[field::SPLIT_SUB], Variant::U64(2));
     assert_eq!(
         row[field::TRIGGER],
-        DynamicValue::Str("cache_clock".into()),
+        Variant::Str("cache_clock".into()),
         "the trigger travels as a WORD: a log is read by people"
     );
-    assert_eq!(row[field::ASSEMBLED_BYTES], DynamicValue::U64(12_345));
-    assert_eq!(row[field::IDLE_MS], DynamicValue::U64(400_000));
+    assert_eq!(row[field::ASSEMBLED_BYTES], Variant::U64(12_345));
+    assert_eq!(row[field::IDLE_MS], Variant::U64(400_000));
     assert!(
         !row.contains_key(field::MAX_GAP_MS),
         "an absent signal writes no field — absence must not read as zero"

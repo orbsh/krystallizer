@@ -18,7 +18,7 @@
 //! Identity is the node's `name`: declaring twice is declaring once (the props
 //! merge, the id stays), which is the resolution rule `ingest` already follows.
 
-use okm_core::okm_value::DynamicValue;
+use okm_core::okm_value::Variant;
 use std::collections::BTreeMap;
 
 use crate::graph::{GraphStore, IngestError, Term, CONTENT_FIELD, TITLE_FIELD};
@@ -114,9 +114,9 @@ pub struct Skill {
 }
 
 impl Skill {
-    fn from_row(node_id: u64, name: String, props: BTreeMap<String, DynamicValue>) -> Self {
+    fn from_row(node_id: u64, name: String, props: BTreeMap<String, Variant>) -> Self {
         let text = |field: &str| match props.get(field) {
-            Some(DynamicValue::Str(value)) => value.clone(),
+            Some(Variant::Str(value)) => value.clone(),
             _ => String::new(),
         };
         Self {
@@ -179,7 +179,7 @@ impl GraphStore {
                 "a skill needs a name: it is the identity the resolver returns".to_string(),
             ));
         }
-        let mut props: BTreeMap<String, DynamicValue> = BTreeMap::new();
+        let mut props: BTreeMap<String, Variant> = BTreeMap::new();
         for (field, value) in [
             (TITLE_FIELD, &decl.title),
             (CONTENT_FIELD, &decl.content),
@@ -191,7 +191,7 @@ impl GraphStore {
             // an empty string would overwrite a part a previous declaration
             // filled — "undeclare this part" is not a call anyone makes.
             if !value.trim().is_empty() {
-                props.insert(field.to_string(), DynamicValue::Str(value.clone()));
+                props.insert(field.to_string(), Variant::Str(value.clone()));
             }
         }
         let term = Term {
@@ -249,10 +249,10 @@ impl GraphStore {
         }
         let calls = row.invoke_calls + u32::from(phase == TouchPhase::Attempt);
         let ok = row.invoke_ok + u32::from(phase == TouchPhase::Success);
-        let mut write: BTreeMap<String, DynamicValue> = BTreeMap::new();
-        write.insert(CALLS_FIELD.to_string(), DynamicValue::U64(u64::from(calls)));
-        write.insert(OK_FIELD.to_string(), DynamicValue::U64(u64::from(ok)));
-        write.insert(LAST_INVOKED_FIELD.to_string(), DynamicValue::U64(now));
+        let mut write: BTreeMap<String, Variant> = BTreeMap::new();
+        write.insert(CALLS_FIELD.to_string(), Variant::U64(u64::from(calls)));
+        write.insert(OK_FIELD.to_string(), Variant::U64(u64::from(ok)));
+        write.insert(LAST_INVOKED_FIELD.to_string(), Variant::U64(now));
         self.merge_props(scope, node_id, &write)?;
         Ok(SkillTouchOutcome::Counted(SkillTouch {
             node_id,

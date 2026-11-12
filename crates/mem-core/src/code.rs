@@ -49,7 +49,7 @@
 //! gravity is the only client (ADR-0001: the node never talks to krystallizer;
 //! the byte path is gravity → control path → node).
 
-use okm_core::okm_value::DynamicValue;
+use okm_core::okm_value::Variant;
 use okm_core::{Collection, Document, DocumentEncode, FjallStore, KeyEncode, ReduceCodec};
 use std::collections::BTreeMap;
 
@@ -284,10 +284,10 @@ impl GraphStore {
         }
         let calls = row.invoke_calls + u32::from(phase == TouchPhase::Attempt);
         let ok = row.invoke_ok + u32::from(phase == TouchPhase::Success);
-        let mut write: BTreeMap<String, DynamicValue> = BTreeMap::new();
-        write.insert(CALLS_FIELD.to_string(), DynamicValue::U64(u64::from(calls)));
-        write.insert(OK_FIELD.to_string(), DynamicValue::U64(u64::from(ok)));
-        write.insert(LAST_INVOKED_FIELD.to_string(), DynamicValue::U64(now));
+        let mut write: BTreeMap<String, Variant> = BTreeMap::new();
+        write.insert(CALLS_FIELD.to_string(), Variant::U64(u64::from(calls)));
+        write.insert(OK_FIELD.to_string(), Variant::U64(u64::from(ok)));
+        write.insert(LAST_INVOKED_FIELD.to_string(), Variant::U64(now));
         self.merge_props(scope, node_id, &write)?;
         Ok(CodeTouchOutcome::Counted(CodeTouch {
             code_id,

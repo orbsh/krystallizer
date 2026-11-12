@@ -15,7 +15,7 @@
 
 use mem_core::graph::{FactTuple, GraphStore, IngestError, IngestOutcome};
 use mem_core::{EntityKey, EntityRow, Facts, RenderFormat, LITERAL_KIND};
-use okm_core::okm_value::DynamicValue;
+use okm_core::okm_value::Variant;
 use okm_core::{Document, KeyEncode, NodeRef, Vector};
 
 /// A member id in these tests: the identity IS a uuid (ADR-0025 §4), so a small ordinal is spelled
@@ -44,7 +44,7 @@ fn fact_tuple_decode_locks_the_slots() {
     assert_eq!(fact.rel.name, "PIVOTED_TO");
     assert_eq!(
         fact.rel.props.get("reason"),
-        Some(&DynamicValue::Str("network_graph_too_heavy".into()))
+        Some(&Variant::Str("network_graph_too_heavy".into()))
     );
     assert_eq!(fact.tail.value, "k10r_core");
     assert_eq!(fact.tail.type_label, "system");
@@ -200,13 +200,10 @@ fn entity_props_land_on_the_node_and_merge() {
         .unwrap();
     assert_eq!(
         props.get("vcs"),
-        Some(&DynamicValue::Str("gitea".into())),
+        Some(&Variant::Str("gitea".into())),
         "the earlier fact's attribute survives the later one"
     );
-    assert_eq!(
-        props.get("stage"),
-        Some(&DynamicValue::Str("prototype".into()))
-    );
+    assert_eq!(props.get("stage"), Some(&Variant::Str("prototype".into())));
 }
 
 /// A relation that does NOT declare `functional` is multi-valued: two facts
@@ -298,7 +295,7 @@ fn functional_relation_rewrites_the_incumbent() {
     );
     assert_eq!(
         props.get("functional"),
-        Some(&DynamicValue::Bool(true)),
+        Some(&Variant::Bool(true)),
         "the new assertion's own declaration is what the entry holds"
     );
     assert_eq!(graph.fact(edge_id).unwrap().unwrap().edge.since, 200);
@@ -406,11 +403,11 @@ fn fact_open_props_ride_the_edge_dynamic_segment() {
         .unwrap();
     assert_eq!(
         props.get("reason"),
-        Some(&DynamicValue::Str("network_graph_too_heavy".into()))
+        Some(&Variant::Str("network_graph_too_heavy".into()))
     );
     assert_eq!(
         props.get("functional"),
-        Some(&DynamicValue::Bool(true)),
+        Some(&Variant::Bool(true)),
         "the caller's own declaration is kept on the assertion"
     );
     assert!(

@@ -29,7 +29,7 @@
 //! logged — trimming would emit rows, and rows would trigger trimming. Loss is
 //! the accepted price: a diagnostic table, not a ledger.
 
-use okm_core::okm_value::DynamicValue;
+use okm_core::okm_value::Variant;
 use okm_core::{Collection, Document, DocumentEncode, FjallStore, KeyEncode, ReduceCodec, Vocab};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -140,7 +140,7 @@ pub struct LogRow {
 }
 
 /// One read row: the whole document, fixed fields and dynamic ones together.
-pub type LogEntry = (LogKey, BTreeMap<String, DynamicValue>);
+pub type LogEntry = (LogKey, BTreeMap<String, Variant>);
 
 /// Default ceiling. Big enough for a long debugging session, small enough that
 /// the table never becomes a second storage problem.
@@ -230,7 +230,7 @@ impl LogStore {
         event: &str,
         source: &str,
         note: &str,
-        fields: BTreeMap<String, DynamicValue>,
+        fields: BTreeMap<String, Variant>,
     ) -> Result<LogKey, String> {
         let key = LogKey {
             ts_ms,
@@ -250,9 +250,12 @@ impl LogStore {
             .map_err(|e| e.to_string())?;
         if !fields.is_empty() {
             // The vocabulary-resolving write: names allocate on first sight.
-            // `merge` is the document write; these names are non-declared, so
-            // they land in the segment and the row written above is untouched.
-            self.table.merge(&key, &fields).map_err(|e| e.to_string())?;
+            // A map payload is the `put` merge arm; these names are
+            // non-declared, so they land in the segment and the row written
+            // above is untouched.
+            self.table
+                .put(&key, &Variant::Map(crate::document::dict(&fields)))
+                .map_err(|e| e.to_string())?;
         }
         // Keep the trim index in KEY order, not arrival order: a clock step
         // backwards makes the two differ, and "oldest" must mean the smallest
@@ -276,32 +279,32 @@ impl LogStore {
         verdict: &crate::compress::Verdict,
     ) -> Result<LogKey, String> {
         let mut fields = BTreeMap::new();
-        fields.insert(field::CHANNEL.to_string(), DynamicValue::U64(channel_id));
+        fields.insert(field::CHANNEL.to_string(), Variant::U64(channel_id));
         fields.insert(
             field::SPLIT_TURN.to_string(),
-            DynamicValue::U64(verdict.checkpoint.turn_id),
+            Variant::U64(verdict.checkpoint.turn_id),
         );
         fields.insert(
             field::SPLIT_TS.to_string(),
-            DynamicValue::U64(verdict.checkpoint.ts_ms),
+            Variant::U64(verdict.checkpoint.ts_ms),
         );
         fields.insert(
             field::SPLIT_SUB.to_string(),
-            DynamicValue::U64(u64::from(verdict.checkpoint.sub)),
+            Variant::U64(u64::from(verdict.checkpoint.sub)),
         );
         fields.insert(
             field::TRIGGER.to_string(),
-            DynamicValue::Str(verdict.trigger.name().to_string()),
+            Variant::Str(verdict.trigger.name().to_string()),
         );
         fields.insert(
             field::ASSEMBLED_BYTES.to_string(),
-            DynamicValue::U64(verdict.assembled_bytes as u64),
+            Variant::U64(verdict.assembled_bytes as u64),
         );
         if let Some(idle) = verdict.idle_ms {
-            fields.insert(field::IDLE_MS.to_string(), DynamicValue::U64(idle));
+            fields.insert(field::IDLE_MS.to_string(), Variant::U64(idle));
         }
         if let Some(gap) = verdict.max_gap_ms {
-            fields.insert(field::MAX_GAP_MS.to_string(), DynamicValue::U64(gap));
+            fields.insert(field::MAX_GAP_MS.to_string(), Variant::U64(gap));
         }
         // No `note`: the fields above already say what happened, and a sentence
         // repeating them is the kind of data that rots. `note` is for the rows
@@ -328,29 +331,29 @@ impl LogStore {
     /// their labels here). `get` returns the dynamic segment; this returns what
     /// the row itself declares, which is what a test or an analysis reads when it
     /// wants the level or the event without going through the map.
-    pub fn row(&mut self, key: &LogKey) -> Result<Option<LogRow>, String> {
-        self.table.get(key).map_err(|e| e.to_string())
+    pub fn row(&self, key: &LogKey) -> Result<Option<LogRow>, String> {
+        self.table.get_row(key).map_err(|e| e.to_string())
     }
 
     /// One row, fixed fields and dynamic ones together. `None` = absent.
     ///
-    /// `&mut` because the document read resolves field names through the
-    /// table's vocabulary (the same reason okm's own `fetch` is `&mut`-shaped
-    /// behind a `&self` door).
-    pub fn get(&mut self, key: &LogKey) -> Result<Option<BTreeMap<String, DynamicValue>>, String> {
-        self.table.fetch(key).map_err(|e| e.to_string())
+    /// A document is the PAIR of slots, so this is one point read per half
+    /// composed here ([`crate::document::at`]) — there is no `fetch` that hands
+    /// back the merged map any more.
+    pub fn get(&self, key: &LogKey) -> Result<Option<BTreeMap<String, Variant>>, String> {
+        crate::document::at(&self.table, key).map_err(|e| e.to_string())
     }
 
     /// Rows in time order, oldest first — the whole table as it stands. The
     /// table is bounded, so this is the analysis read; a windowed read is a
     /// range scan over the same key order (not built yet: no consumer).
-    pub fn entries(&mut self) -> Result<Vec<LogEntry>, String> {
+    pub fn entries(&self) -> Result<Vec<LogEntry>, String> {
         let keys: Vec<LogKey> = self.recent.iter().cloned().collect();
         let mut out = Vec::with_capacity(keys.len());
         for key in &keys {
             // A row that vanished between the scan and the read is absence; a
             // store that cannot answer is not, and it propagates.
-            if let Some(doc) = self.table.fetch(key).map_err(|e| e.to_string())? {
+            if let Some(doc) = crate::document::at(&self.table, key).map_err(|e| e.to_string())? {
                 out.push((key.clone(), doc));
             }
         }

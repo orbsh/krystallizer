@@ -26,7 +26,7 @@
 //! Re-labelling a node in place would need a write path the graph does not have,
 //! and it would lose the record of the run that suggested it.
 
-use okm_core::okm_value::DynamicValue;
+use okm_core::okm_value::Variant;
 use std::collections::BTreeMap;
 
 use crate::graph::{GraphStore, IngestError, Term};
@@ -121,17 +121,14 @@ impl GraphStore {
             None => 1,
         };
 
-        let mut props: BTreeMap<String, DynamicValue> = BTreeMap::new();
+        let mut props: BTreeMap<String, Variant> = BTreeMap::new();
         // An empty `steps` stays absent for the usual reason: props merge, so
         // writing "" would erase what a previous walk reported (ADR-0015).
         if !decl.steps.trim().is_empty() {
-            props.insert(
-                STEPS_FIELD.to_string(),
-                DynamicValue::Str(decl.steps.clone()),
-            );
+            props.insert(STEPS_FIELD.to_string(), Variant::Str(decl.steps.clone()));
         }
-        props.insert(COUNT_FIELD.to_string(), DynamicValue::U64(count));
-        props.insert(LAST_SEEN_FIELD.to_string(), DynamicValue::U64(decl.ts_ms));
+        props.insert(COUNT_FIELD.to_string(), Variant::U64(count));
+        props.insert(LAST_SEEN_FIELD.to_string(), Variant::U64(decl.ts_ms));
         let term = Term {
             value: name,
             type_label: PROPOSAL_KIND.to_string(),
@@ -242,10 +239,10 @@ impl GraphStore {
         // Record the outcome on the proposal. Same name and kind, so resolution
         // merges this prop onto the row it already is — `count` and `steps`
         // survive because an absent prop is never a deletion.
-        let mut props: BTreeMap<String, DynamicValue> = BTreeMap::new();
+        let mut props: BTreeMap<String, Variant> = BTreeMap::new();
         props.insert(
             PROMOTED_TO_FIELD.to_string(),
-            DynamicValue::Str(name.to_string()),
+            Variant::Str(name.to_string()),
         );
         let term = Term {
             value: format!("proposal:{}", proposal.key),
@@ -268,21 +265,21 @@ fn strip_prefix(name: &str) -> String {
     name.strip_prefix("proposal:").unwrap_or(name).to_string()
 }
 
-fn text_of(props: &BTreeMap<String, DynamicValue>, field: &str) -> String {
+fn text_of(props: &BTreeMap<String, Variant>, field: &str) -> String {
     match props.get(field) {
-        Some(DynamicValue::Str(value)) => value.clone(),
+        Some(Variant::Str(value)) => value.clone(),
         _ => String::new(),
     }
 }
 
-fn uint_of(props: &BTreeMap<String, DynamicValue>, field: &str) -> u64 {
+fn uint_of(props: &BTreeMap<String, Variant>, field: &str) -> u64 {
     match props.get(field) {
-        Some(DynamicValue::U64(value)) => *value,
-        Some(DynamicValue::I64(value)) => (*value).max(0) as u64,
+        Some(Variant::U64(value)) => *value,
+        Some(Variant::I64(value)) => (*value).max(0) as u64,
         _ => 0,
     }
 }
 
-fn count_of(props: &BTreeMap<String, DynamicValue>) -> u64 {
+fn count_of(props: &BTreeMap<String, Variant>) -> u64 {
     uint_of(props, COUNT_FIELD)
 }
