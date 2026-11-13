@@ -194,8 +194,14 @@ where
 {
     let prefix = collection.header();
     let end = okm_core::engine::storage::prefix_end(&prefix);
-    let mut it = collection.store().scan_range_iter(&prefix, end.as_deref());
-    Ok(it.next().is_none())
+    // One key under the header is enough, so the FIRST row is the whole answer — the
+    // separate streaming entry (`scan_range_iter`) is gone from okm's storage trait and
+    // `scan_range` is the one shape every backend answers.
+    let rows = collection
+        .store()
+        .scan_range(&prefix, end.as_deref())
+        .map_err(|e| e.to_string())?;
+    Ok(rows.is_empty())
 }
 
 /// Land a reduce table's entries at `ns`: each row is `(reduce slot, group,
