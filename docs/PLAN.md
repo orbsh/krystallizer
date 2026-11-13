@@ -653,6 +653,8 @@ Phases reference ADRs; design content lives in the ADRs, never here.
 
 ## Repo hygiene (maintenance, not phase work)
 
+**THE NAMESPACE PROBE FOLLOWS OKM'S SCAN (2026-11-09).** `scan_range_iter` is gone from okm's storage trait: `scan_range` IS the streaming shape and errors ride the items, so emptiness is read off the FIRST item — an engine failure there is a failure, not an empty namespace.
+
 - [x] Store error face LANDED 2026-10-24 — okm moved its storage and read
   primitives to `Result` (okm ADR-0037/0038/0039), so every door mem-core puts in
   front of it can say "the store could not answer" instead of folding that into an
