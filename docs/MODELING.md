@@ -804,3 +804,23 @@ okm's `commit_batch` writes every op into the store handle it was called
 on — i.e. into ONE keyspace. A batch that mixed channel ops with code ops
 would land them in whichever keyspace received the call, so batches stay
 within one keyspace (reads and writes never needed to span the two).
+
+
+## Fact granularity and identity
+
+**One edge, one assertion.** A node is a concept (a noun you would draw a box around), an edge is an assertion (a verb or preposition you would draw as an arrow), and a modifier is a field on the edge — never a node of its own. One arrow on the map is one fact in the store.
+
+Two tests fix the size, and they are more usable than any statement of an ideal:
+
+- **Can it be refuted alone?** If this arrow could be false while its neighbours stay true, the size is right. If it cannot be imagined false on its own, it is a paragraph — split it.
+- **Would it ever be queried alone?** If no question targets it by itself, it is too fine — fold it into a larger assertion, or demote it to a payload field.
+
+**Modifiers do not become nodes.** "In 2022 it was considered overhyped" is not a new node; it is a time and a source on an existing assertion. Minting a node per qualifier explodes the node count while the relations stay as few as before.
+
+**The predicate vocabulary is closed.** Relations are a controlled set of tens (`is_a`, `part_of`, `causes`, `requires`, `contradicts`, `prefers`, `said_by`, `observed_at`, `supersedes`), not one invented per write. A new shade of meaning is an existing predicate plus payload; a change of surface form ("metaverse" / "元宇宙") is absorbed by an alias edge, not by a new relation.
+
+**Identity is separate from the fact.** A fact, once written, is not edited; "these two entities are the same" is the edge `surface_form --alias_of--> canonical_id`, and getting it wrong costs only that edge. Merging therefore never rewrites a fact, and no one-off global deduplication is needed.
+
+The decision has three tiers: an exact key collision merges silently (counters move); same subject and relation with a different object and high similarity goes to the LLM to decide synonym or distinct fact; everything else is a new fact. Most writes should land in the first tier — which requires candidates to be normalised to canonical ids first.
+
+Three numbers show whether the granularity has drifted: facts per `(subject, relation)` bucket (huge: too fine or too generic; always one: too coarse or not normalised), the share of writes choosing an existing node over a new one, and the count and growth of alias edges.
