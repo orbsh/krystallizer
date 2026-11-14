@@ -109,11 +109,12 @@ keyed `[scope][weight][edge_id]`, is probed per scope, and
 `top_by_weight(scope, k)` decodes k rows — O(k rows) + O(scope keys), no
 projection table to maintain beside the row. Nor does a weight bump leave it
 dangling: okm's raw-collection overwrite does not delete an entry keyed by the
-OLD value, but a graph write goes through `link_into`, which unlinks what the
-row used to derive, so a rewrite is one batch and a test pins one fact to one
-ranking entry. Recall's ranking needs none of it: the set it ranks is already
-in hand, and its recency re-rank happens there. `by_confidence` stays
-undeclared on the same ground as the bare weight face: neither has a reader.
+OLD value, but a rewrite declares the edge at its own id and k10r retires the
+entries the old payload wrote in the same batch as the dynamic segment, so a
+test pins one fact to one ranking entry. Recall's ranking needs none of it: the
+set it ranks is already in hand, and its recency re-rank happens there.
+`by_confidence` stays undeclared on the same ground as the bare weight face:
+neither has a reader.
 
 ## Consequences
 

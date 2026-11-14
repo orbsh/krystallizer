@@ -68,8 +68,9 @@ use okm_core::okm_value::Variant;
 use okm_core::parts;
 use okm_core::Uuid7;
 use okm_core::{
-    write_slot, Batch, Collection, Document, DocumentEncode, EdgeHead, FjallStore, Graph,
-    GraphEncode, KeyEncode, NodeRef, Vector, VectorElem, VirtualStorage, Vocab, PRIMARY_SLOT,
+    write_slot, Batch, Collection, Decl, Document, DocumentEncode, EdgeHead, FjallStore, Fragment,
+    Graph, GraphEncode, KeyEncode, NodeRef, Vector, VectorElem, VirtualStorage, Vocab,
+    PRIMARY_SLOT,
 };
 use okm_lake::bridge::EdgeTable;
 use okm_lake::snapshot::parquet_io::EdgeRestore;
@@ -1439,10 +1440,10 @@ impl GraphStore {
         self.fact_view(edge_id)
     }
 
-    /// Withdraw one fact: its row and every derived face entry go in ONE batch
-    /// (okm's `unlink` — the same path a functional rewrite takes for the
-    /// incumbent). `false` = no such edge in this scope, so the caller can answer
-    /// 404 without guessing.
+    /// Withdraw one fact: its row and every derived face entry in ONE batch
+    /// (okm's `retract` — the same path a functional rewrite takes for the
+    /// incumbent). `false` = no such edge in this scope, so the caller can
+    /// answer 404 without guessing.
     pub fn withdraw(&mut self, scope: u64, edge_id: u64) -> Result<bool, IngestError> {
         let Some(body) = self
             .facts()
@@ -1454,8 +1455,13 @@ impl GraphStore {
         if EntityKey::decode(&body.src.pkey).scope != scope {
             return Ok(false);
         }
+        // The delete verb declares what goes: `delete_edge` on the id, and the
+        // fragment carries nothing else (a fragment with writes belongs to
+        // `incorporate`).
+        let mut fragment = Fragment::<Facts>::new([]);
+        fragment.delete_edge(edge_id);
         self.facts()
-            .unlink(edge_id)
+            .retract(fragment)
             .map_err(|e| IngestError::Storage(e.to_string()))?;
         Ok(true)
     }
@@ -1979,10 +1985,11 @@ impl GraphStore {
     }
 
     /// The shared write half of a touch: decode the edge, bump the counter,
-    /// re-fold the weight, and rewrite the row in ONE batch. The declared
-    /// faces are derived from the row, so `by_weight` follows — which is
-    /// why this is `unlink_into` + `link_into` rather than a bare put: the
-    /// old weight entry must not survive the new weight.
+    /// re-fold the weight, and land the row again at its own id. The declared
+    /// faces are derived from the row, so `by_weight` follows — which is why
+    /// this is a re-assertion of the id (`Decl::edge_at`, same head, one
+    /// reduce): okm retires the entries the old payload wrote and puts the new
+    /// ones in the same batch, so the old weight never survives beside the new.
     fn bump_view(
         &mut self,
         edge_id: u64,
@@ -2008,18 +2015,18 @@ impl GraphStore {
             dst: body.dst.clone(),
             predicate: predicate.clone(),
         };
-        let mut batch = Batch::default();
+        // Naming the id with the SAME head is the update: the row stands and the
+        // conflict hook answers the whole payload change, so the id is never
+        // absent. The bumped row was read a few lines up, and both sides the hook
+        // is handed are older than that read, so its answer is the row itself.
+        let next = edge.clone();
+        let mut fragment = Fragment::<Facts>::new([Decl::edge_at(head, edge_id)]);
+        fragment.on_edge_conflict(move |_stored, _declared| next.clone());
         facts
-            .unlink_into(&mut batch, edge_id)
+            .incorporate(fragment)
             .map_err(|e| IngestError::Storage(e.to_string()))?;
-        facts
-            .link_into(&mut batch, &head, &edge, edge_id)
-            .map_err(|e| IngestError::Storage(e.to_string()))?;
-        self.store
-            .commit_batch(batch)
-            .map_err(|e| IngestError::Storage(e.to_string()))?;
-        // The dynamic segment is untouched by a rewrite, so the reference links a
-        // writer left are still the ones this row carries.
+        // The dynamic segment is untouched by a re-assertion, so the reference
+        // links a writer left are still the ones this row carries.
         let refs = self
             .fact_props(edge_id)?
             .and_then(|props| props.get(REF_FIELD).map(refs_of))
@@ -2333,23 +2340,11 @@ impl GraphStore {
                     ..old
                 }
                 .touched(Touch::Write, since);
-                let mut batch = Batch::default();
-                self.facts()
-                    .unlink_into(&mut batch, existing)
-                    .map_err(|e| IngestError::Storage(e.to_string()))?;
-                self.write_edge_into(
-                    &mut batch,
-                    existing,
-                    &next,
-                    scope,
-                    src,
-                    dst,
-                    &fact.rel.name,
-                    &props,
-                )?;
-                self.store
-                    .commit_batch(batch)
-                    .map_err(|e| IngestError::Storage(e.to_string()))?;
+                // Same head, same id: the write is the payload's, so it goes
+                // through `write_edge` — the fragment re-asserts the row (id,
+                // faces and attributes standing, no gap) and the assertion's
+                // open props follow in their own carrier.
+                self.write_edge(existing, &next, scope, src, dst, &fact.rel.name, &props)?;
                 self.bin(scope, &[src, dst])?;
                 return Ok(IngestOutcome::Rewritten { edge_id: existing });
             }
@@ -2379,28 +2374,16 @@ impl GraphStore {
                         ..old
                     }
                     .touched(Touch::Write, since);
-                    // Rewrite in place: same edge_id, new endpoints and
-                    // attributes, in ONE engine batch (okm's `unlink_into` +
-                    // `link_into` — ADR-0010's owed item, paid 2026-10-19).
-                    // The old props entry is deleted in the same batch, so a
-                    // rewrite with no props leaves none behind.
-                    let mut batch = Batch::default();
-                    self.facts()
-                        .unlink_into(&mut batch, incumbent)
-                        .map_err(|e| IngestError::Storage(e.to_string()))?;
-                    self.write_edge_into(
-                        &mut batch,
-                        incumbent,
-                        &next,
-                        scope,
-                        src,
-                        dst,
-                        &fact.rel.name,
-                        &props,
-                    )?;
-                    self.store
-                        .commit_batch(batch)
-                        .map_err(|e| IngestError::Storage(e.to_string()))?;
+                    // Rewrite in place: same edge_id, new endpoint and new
+                    // attributes. A DIFFERENT head at a live id IS the
+                    // removal-plus-write — okm's fragment takes the old
+                    // assertion's rows out and puts the new ones in one batch,
+                    // so the id is never absent (ADR-0010's arbitration).
+                    // The open props are a carrier of their own and follow the
+                    // row: `replace_into` deletes the previous assertion's
+                    // segment first, so a rewrite with no props leaves none
+                    // behind.
+                    self.write_edge(incumbent, &next, scope, src, dst, &fact.rel.name, &props)?;
                     self.bin(scope, &[src, dst])?;
                     return Ok(IngestOutcome::Rewritten { edge_id: incumbent });
                 }
@@ -2679,34 +2662,21 @@ impl GraphStore {
             .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
-    /// Write one edge and its open props in ONE engine batch (ADR-0002:
-    /// one WriteBatch = one transaction — kind allocation is the only
-    /// thing okm commits separately, and an extra dictionary entry is
-    /// harmless by its own rule).
+    /// Write one edge at `edge_id` and its open props — the one write path for
+    /// a create, a re-assertion and an in-place rewrite.
+    ///
+    /// Two carriers: the edge's rows go through okm's single write verb
+    /// ([`Graph::incorporate`], a fragment naming the id), which owns its own
+    /// engine batch and — create, same-head re-assertion or different-head
+    /// rewrite alike — retires the rows and declared faces the previous payload
+    /// wrote before putting the new ones, so no face ever carries the id twice;
+    /// and the open attributes ride their own segment (0x01) in a second batch.
+    /// The ordering is the one that keeps the id whole: the ROW lands first, so
+    /// the id is never observable as absent, which is also why the props cannot
+    /// precede it: a replaced assertion drops the old segment.
     #[allow(clippy::too_many_arguments)]
     fn write_edge(
         &mut self,
-        edge_id: u64,
-        edge: &Facts,
-        scope: u64,
-        src: Endpoint,
-        dst: Endpoint,
-        kind: &str,
-        props: &BTreeMap<String, Variant>,
-    ) -> Result<(), IngestError> {
-        let mut batch = Batch::default();
-        self.write_edge_into(&mut batch, edge_id, edge, scope, src, dst, kind, props)?;
-        self.store
-            .commit_batch(batch)
-            .map_err(|e| IngestError::Storage(e.to_string()))
-    }
-
-    /// The edge's full write set into an externally owned batch — the
-    /// cross-collection atomic path, and the rewrite's write half.
-    #[allow(clippy::too_many_arguments)] // one edge's own fields, not a grab bag
-    fn write_edge_into(
-        &mut self,
-        batch: &mut Batch,
         edge_id: u64,
         edge: &Facts,
         scope: u64,
@@ -2720,18 +2690,28 @@ impl GraphStore {
             dst: dst.to_ref(scope),
             predicate: kind.to_string(),
         };
-        let mut facts = self.facts();
-        facts
-            .link_into(batch, &head, edge, edge_id)
+        // Naming the id IS the write: a free id creates the edge there (the
+        // create path, and the restore's own ids), a live id with this head
+        // re-asserts it, and a live id with another head rewrites it — one
+        // batch, one commit, the id never absent. The conflict hook answers the
+        // payload, so it does not read either side: the caller already decided.
+        let next = edge.clone();
+        let mut fragment = Fragment::<Facts>::new([Decl::edge_at(head, edge_id)]);
+        fragment.on_edge_conflict(move |_stored, _declared| next.clone());
+        self.facts()
+            .incorporate(fragment)
             .map_err(|e| IngestError::Storage(e.to_string()))?;
+        let mut batch = Batch::default();
         // The edge's open attributes (okm ADR-0034 §4): the 0x01 segment is the
-        // GRAPH's, written in the same batch as the row so one commit carries
-        // both. It deletes the previous assertion's segment first — props belong
-        // to the claim being written, never to the one it replaces.
-        facts
-            .replace_into(batch, edge_id, &crate::document::dict(props))
+        // GRAPH's, and `replace_into` deletes the previous assertion's segment
+        // first — props belong to the claim being written, never to the one it
+        // replaces.
+        self.facts()
+            .replace_into(&mut batch, edge_id, &crate::document::dict(props))
             .map_err(|e| IngestError::Storage(e.to_string()))?;
-        Ok(())
+        self.store
+            .commit_batch(batch)
+            .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
     /// The fact's open props (its dynamic segment), when it has one — the

@@ -282,9 +282,10 @@ fn functional_relation_rewrites_the_incumbent() {
         .unwrap()
         .is_empty());
 
-    // The rewrite is ONE batch (unlink_into + link_into), and the dynamic
-    // segment is k10r's entry: the old assertion's props must not survive
-    // into the new one.
+    // The rewrite is one in-place commit at the same id: the old head's rows
+    // leave and the new head's land together, so no reader observes the id as
+    // absent — and the dynamic segment is k10r's entry, so the old assertion's
+    // props must not survive into the new one.
     let props = graph
         .fact_props(edge_id)
         .unwrap()
@@ -302,7 +303,16 @@ fn functional_relation_rewrites_the_incumbent() {
     assert_eq!(
         graph.out_edges(1, core_id).unwrap(),
         vec![edge_id],
-        "one edge, one commit"
+        "the id is the one edge, never a second under a new head"
+    );
+    // The declared faces follow the new payload, not both payloads: the time
+    // face is keyed by `since`, which the rewrite moved, so a stale entry would
+    // list this fact at the old year as well.
+    let timeline = graph.timeline(1, 50).unwrap();
+    assert_eq!(
+        timeline.iter().filter(|f| f.edge_id == edge_id).count(),
+        1,
+        "one time entry for the one edge after a rewrite that moved `since`"
     );
 }
 
@@ -1295,8 +1305,10 @@ fn the_timeline_skips_other_scopes_on_a_scope_blind_face() {
 }
 
 /// A weight change rewrites the row — and the ranking face must follow it, not
-/// keep the old entry beside the new one. If okm's `link_into` overwrote without
-/// unlinking, the same fact would appear twice in the ranking.
+/// keep the old entry beside the new one. The rewrite is okm's `incorporate`
+/// naming the live id with the SAME head, so okm owes the retirement of the
+/// entries the old payload wrote; if it kept them, this list would serve the
+/// same fact twice.
 #[test]
 fn a_rewrite_does_not_leave_the_fact_in_the_ranking_twice() {
     let dir = tempfile::tempdir().unwrap();

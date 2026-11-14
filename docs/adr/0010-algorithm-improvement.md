@@ -464,12 +464,15 @@ memory — the binning itself — is inspectable straight from
   answers typed reads with no priming — the `facts_primed` shim is deleted.
   The ENTITY side is symmetric (its kinds at 0x04/0x05, prop names at
   0x02/0x03), so the one-cache-per-call discipline retires there too.
-- **The functional rewrite is ONE engine commit — PAID (2026-10-19).** okm's
-  `Graph::unlink_into` puts the delete set into a caller-owned batch, so a
-  rewrite is `unlink_into` + `link_into` in a single commit, which is what
-  ADR-0002's rule wants. The edge's dynamic segment is k10r's own entry (not
-  okm's), so the same batch deletes it first — a rewrite can never inherit the
-  previous assertion's props. The gap is closed, not mitigated by re-ingest.
+- **The functional rewrite is ONE engine commit — PAID (2026-10-19, respelled
+  2026-11).** okm's delete-then-write pair is gone from its public surface: a
+  rewrite is `incorporate` with `Decl::edge_at`, which takes the old head's rows
+  out and puts the new ones in one batch — the same assertion, one commit, the
+  id never absent. The edge's dynamic segment is k10r's own entry (not okm's),
+  so it goes in a second batch with the retirement of the declared-face entries
+  the old payload wrote: a rewrite can never inherit the previous assertion's
+  props, and a weight or time face never lists one fact twice. The gap is
+  closed, not mitigated by re-ingest.
 - **The edge's payload codec is the declaration's — PAID (2026-10-19).** The
   edge's payload is an obj (okm ADR-0017 §3) and the declaration is
   `GraphEncode`, so one declaration generates both codec directions and the

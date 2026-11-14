@@ -763,14 +763,16 @@ and `resolve_ref` answers a `NodeId` (`Entity { scope, node_id }` or
 (the visualization door) `scope_entities(scope)` and `scope_facts(scope)`
 return one scope whole — the scan is bounded by the primary-key prefix
 `[scope]`, and each edge is reached once because `ingest` puts both
-endpoints in the scope it was called with. A functional rewrite is ONE engine
-batch — okm's `unlink_into` + `link_into` plus k10r's own dynamic-segment
-entry, same `edge_id`, no window between two commits (ADR-0010, paid
-2026-10-19).
+endpoints in the scope it was called with. A functional rewrite keeps the
+`edge_id` and never leaves it absent: a new head at a live id IS one
+`incorporate` batch (okm takes the old head's rows out and puts the new ones in),
+and the payload's own carriers follow in one second batch — the retirement of
+the declared-face entries the old payload wrote, and k10r's dynamic segment
+(ADR-0010).
 
 Three verbs, and the doors mirror them: `ingest` LINKS (or rewrites in place
 when the relation is functional), `withdraw(scope, edge_id)` removes one fact —
-row and every derived face entry in one batch (okm's `unlink`) — and
+row and every derived face entry in one batch (okm's `retract`) — and
 `fact_in_scope(scope, edge_id)` is the deterministic read that answers with the
 same `edge_id` the write returned. Nothing in that loop needs a search: a
 reference is an id.

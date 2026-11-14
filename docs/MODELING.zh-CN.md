@@ -616,13 +616,14 @@ pub struct Facts { /* scope / since / confidence / weight / 三个计数 / 两�
 或 `User { channel, member }`），不再是裸节点 id。批量消费者
 （可视化门）用 `scope_entities(scope)` 与 `scope_facts(scope)` 整取一个 scope——
 扫描以主键前缀 `[scope]` 为界，而每条边只被走到一次（`ingest` 把两个端点都建在
-调用时给的 scope 里）。函数式改写是**一个**引擎批——okm 的 `unlink_into` +
-`link_into`，加上 k10r 自己那条例子的动态段条目，边 id 不变，两次提交之间的窗口
-不存在（ADR-0010，2026-10-19 付清）。
+调用时给的 scope 里）。函数式改写保住 `edge_id`，且它从不缺席：同一 id 上的新 head
+**就是**一个 `incorporate` 批（okm 把旧 head 的行拿出去、把新的放进来），随后一个
+第二批带走载荷自己的两条载体——旧载荷写下的声明面条目，以及 k10r 自己的动态段条目
+（ADR-0010）。
 
 三个动词，门与之一一对应：`ingest` **链接**（关系声明为 functional 时就地改写）、
 `withdraw(scope, edge_id)` 撤掉一条事实——行与全部派生面条目在**一个**批里删净
-（okm 的 `unlink`）、`fact_in_scope(scope, edge_id)` 是确定性点读，答的正是写返回的
+（okm 的 `retract`）、`fact_in_scope(scope, edge_id)` 是确定性点读，答的正是写返回的
 那个 `edge_id`。这个回路里没有任何一步需要搜索：引用就是一个 id。
 
 **参考链接。** 一条事实在 props 的 `ref` 名下写下另一条事实的 id——一个 id 或一串 id——

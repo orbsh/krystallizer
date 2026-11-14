@@ -2069,7 +2069,7 @@ async fn fetch_fact(
 }
 
 /// Withdraw one fact — the write side's third verb, beside link and rewrite. The
-/// row goes with every derived face entry in one batch (okm's `unlink`), so no
+/// row goes with every derived face entry in one batch (okm's `retract`), so no
 /// stale weight or community entry survives it. `204` on success, `404` when the
 /// id names nothing here.
 async fn withdraw_fact(
