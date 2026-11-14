@@ -107,7 +107,7 @@ dump 会是真正那份格式旁边的第二种格式。
 
 ## 6. 恢复：按 key 并，签发者跟着行
 
-`POST /import` 走**与活路径同一份写契约**（`put`、`link_into`、`put_fields_into`、reduce 条目），
+`POST /import` 走**与活路径同一份写契约**（`put`、`Fragment` 里携带的边声明走 `incorporate`、reduce 条目），
 顺序由 catalog 声明——节点和人在命名它们的边之前，水位在它统计的行之后。运维不用排文件顺序。
 
 - **只并，不清。** 同 key 覆盖，新 key 插入；这扇门永不删。一扇能清空库的门，就是一个打错字能

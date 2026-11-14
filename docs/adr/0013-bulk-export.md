@@ -142,8 +142,8 @@ never lowers a watermark, because a lower one re-issues ids live rows still carr
 
 ## 6. Restore: merge by key, and the issuers follow the rows
 
-`POST /import` writes through the SAME contracts the live paths use (`put`,
-`link_into`, `put_fields_into`, the reduce entry), in the dependency order the
+`POST /import` writes through the SAME contracts the live paths use (`put`, the edge declaration a `Fragment` carries into `incorporate`, the reduce
+entry), in the dependency order the
 catalog declares — nodes and people before the edges that name them, a watermark
 after the rows it counts. The operator never sorts files.
 
