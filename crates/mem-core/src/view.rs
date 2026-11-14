@@ -84,11 +84,14 @@ pub fn assemble(
     let head = match &view.head {
         Some(ids) => {
             let mut head = Vec::with_capacity(ids.len());
-            for id in ids {
-                // An id whose edge is gone is absence (the frozen set outlived
-                // its row); a store that cannot answer is not, and it
-                // propagates.
-                if let Some(fact) = graph.fact_view(*id)? {
+            for wire in ids {
+                // A stored head that no longer parses, or whose edge is gone,
+                // is absence (the frozen set outlived its row); a store that
+                // cannot answer is not, and it propagates.
+                let Some(key) = graph.key_of_wire(wire) else {
+                    continue;
+                };
+                if let Some(fact) = graph.fact_view(&key)? {
                     head.push(fact);
                 }
             }
@@ -187,7 +190,7 @@ pub fn messages_of(
 /// ADR-0009 §1: a member's facts live on the node `member-{channel}-{id}`, and
 /// the head is what that node touches, for all of them (the agent included: its
 /// facts are as much initialization memory as the user's). Member order is the
-/// store's (by id); the sort is weight-descending, ties by edge id, so repeated
+/// store's (by id); the sort is weight-descending, ties by head, so repeated
 /// reads of one corpus answer identically.
 pub fn member_memory(
     channels: &mut ChannelStore,
@@ -205,12 +208,12 @@ pub fn member_memory(
         };
         let edges = graph.out_edges(scope, node)?;
         let incoming = graph.in_edges(scope, node)?;
-        for edge_id in edges.into_iter().chain(incoming) {
-            if !seen.insert(edge_id) {
+        for key in edges.into_iter().chain(incoming) {
+            if !seen.insert(key.clone()) {
                 continue;
             }
-            // An id whose edge is gone is absence, not a failure.
-            if let Some(fact) = graph.fact_view(edge_id)? {
+            // A head whose edge is gone is absence, not a failure.
+            if let Some(fact) = graph.fact_view(&key)? {
                 head.push(fact);
             }
         }
@@ -219,7 +222,7 @@ pub fn member_memory(
         b.edge
             .weight
             .cmp(&a.edge.weight)
-            .then_with(|| a.edge_id.cmp(&b.edge_id))
+            .then_with(|| a.key.cmp(&b.key))
     });
     Ok(head)
 }

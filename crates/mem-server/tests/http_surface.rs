@@ -446,10 +446,10 @@ async fn the_top_face_ranks_a_scope_by_weight() {
         .await
         .unwrap();
     assert_eq!(all.len(), 2, "both facts of the scope");
-    let plain = all[0]["edge_id"].as_u64().unwrap();
+    let plain = all[0]["key"].as_str().unwrap().to_string();
 
     // Boost the OTHER one: a write touch folds new counters into its weight.
-    let other = all[1]["edge_id"].as_u64().unwrap();
+    let other = all[1]["key"].as_str().unwrap().to_string();
     client
         .post(format!("{base}/memories/1/edges/{other}/touch"))
         .json(&json!({"kind": 1, "ts_ms": 5000}))
@@ -467,11 +467,11 @@ async fn the_top_face_ranks_a_scope_by_weight() {
         .unwrap();
     assert_eq!(top.len(), 1, "k bounds the result");
     assert_eq!(
-        top[0]["edge_id"].as_u64().unwrap(),
+        top[0]["key"].as_str().unwrap(),
         other,
         "the touched fact is now the heaviest"
     );
-    assert_ne!(top[0]["edge_id"].as_u64().unwrap(), plain);
+    assert_ne!(top[0]["key"].as_str().unwrap(), plain);
 
     let empty: Vec<serde_json::Value> = client
         .get(format!("{base}/graph/9/top?k=5"))
@@ -487,11 +487,12 @@ async fn the_top_face_ranks_a_scope_by_weight() {
     );
 }
 
-/// The deterministic read and the third write verb: a fact fetched BY ID (the
-/// mirror of the `edge_id` the write answered with), withdrawn in one call, then
-/// absent — and an id from another scope is a clean 404, never a leak.
+/// The deterministic read and the third write verb: a fact fetched BY ITS
+/// ADDRESS (the mirror of the `key` the write answered with), withdrawn in one
+/// call, then absent — and an address from another scope is a clean 404, never a
+/// leak.
 #[tokio::test]
-async fn a_fact_is_read_and_withdrawn_by_its_id() {
+async fn a_fact_is_read_and_withdrawn_by_its_address() {
     let (base, _dir) = spawn_server().await;
     let client = reqwest::Client::new();
     let key: serde_json::Value = client
@@ -513,23 +514,23 @@ async fn a_fact_is_read_and_withdrawn_by_its_id() {
         .await
         .unwrap()
         .remove(0);
-    let edge_id = key["edge_id"].as_u64().unwrap();
+    let key = key["key"].as_str().unwrap().to_string();
 
     let fetched: serde_json::Value = client
-        .get(format!("{base}/graph/1/facts/{edge_id}"))
+        .get(format!("{base}/graph/1/facts/{key}"))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    assert_eq!(fetched["edge_id"].as_u64().unwrap(), edge_id);
+    assert_eq!(fetched["key"].as_str().unwrap(), key);
     assert_eq!(fetched["kind"], "POINTS_AT");
     assert_eq!(fetched["src"]["name"], "alpha");
 
     assert_eq!(
         client
-            .get(format!("{base}/graph/2/facts/{edge_id}"))
+            .get(format!("{base}/graph/2/facts/{key}"))
             .send()
             .await
             .unwrap()
@@ -540,7 +541,7 @@ async fn a_fact_is_read_and_withdrawn_by_its_id() {
 
     assert_eq!(
         client
-            .delete(format!("{base}/graph/1/facts/{edge_id}"))
+            .delete(format!("{base}/graph/1/facts/{key}"))
             .send()
             .await
             .unwrap()
@@ -549,7 +550,7 @@ async fn a_fact_is_read_and_withdrawn_by_its_id() {
     );
     assert_eq!(
         client
-            .get(format!("{base}/graph/1/facts/{edge_id}"))
+            .get(format!("{base}/graph/1/facts/{key}"))
             .send()
             .await
             .unwrap()
@@ -559,7 +560,7 @@ async fn a_fact_is_read_and_withdrawn_by_its_id() {
     );
     assert_eq!(
         client
-            .delete(format!("{base}/graph/1/facts/{edge_id}"))
+            .delete(format!("{base}/graph/1/facts/{key}"))
             .send()
             .await
             .unwrap()
@@ -578,9 +579,9 @@ async fn a_fact_is_read_and_withdrawn_by_its_id() {
     assert!(top.is_empty(), "the ranking no longer sees it");
 }
 
-/// PLAN 4c over the wire: a fact's reference links ride the answer as ids, and
-/// each one is an address the caller can fetch on its own. Nothing validates the
-/// target — following it is where the 404 lives.
+/// PLAN 4c over the wire: a fact's reference links ride the answer as ADDRESSES
+/// (each a head's tuple hex), and each one is a URL the caller can fetch on its
+/// own. Nothing validates the target — following it is where the 404 lives.
 #[tokio::test]
 async fn a_reference_link_rides_the_answer_as_an_address() {
     let (base, _dir) = spawn_server().await;
@@ -604,7 +605,7 @@ async fn a_reference_link_rides_the_answer_as_an_address() {
         .await
         .unwrap()
         .remove(0);
-    let detail_id = detail["edge_id"].as_u64().unwrap();
+    let detail_key = detail["key"].as_str().unwrap().to_string();
 
     let anchor: serde_json::Value = client
         .post(format!("{base}/memories/1"))
@@ -613,7 +614,7 @@ async fn a_reference_link_rides_the_answer_as_an_address() {
             "thing",
             {},
             "PREFERS",
-            {"ref": detail_id},
+            {"ref": detail_key},
             "x",
             "thing",
             {}
@@ -625,10 +626,10 @@ async fn a_reference_link_rides_the_answer_as_an_address() {
         .await
         .unwrap()
         .remove(0);
-    let anchor_id = anchor["edge_id"].as_u64().unwrap();
+    let anchor_key = anchor["key"].as_str().unwrap().to_string();
 
     let fetched: serde_json::Value = client
-        .get(format!("{base}/graph/1/facts/{anchor_id}"))
+        .get(format!("{base}/graph/1/facts/{anchor_key}"))
         .send()
         .await
         .unwrap()
@@ -637,12 +638,12 @@ async fn a_reference_link_rides_the_answer_as_an_address() {
         .unwrap();
     assert_eq!(
         fetched["refs"],
-        json!([detail_id]),
-        "the pointer travels as an id, not as an inlined fact"
+        json!([detail_key]),
+        "the pointer travels as an address, not as an inlined fact"
     );
     assert_eq!(
         client
-            .get(format!("{base}/graph/1/facts/{detail_id}"))
+            .get(format!("{base}/graph/1/facts/{detail_key}"))
             .send()
             .await
             .unwrap()

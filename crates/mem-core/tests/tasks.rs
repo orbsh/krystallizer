@@ -215,11 +215,11 @@ fn a_dependency_is_an_ordinary_edge() {
         graph.entity_by_name(1, "task-12").unwrap().unwrap().0,
         later.node_id
     );
-    // `typed_out` answers EDGE ids; the endpoints come off the row, which is
+    // `typed_out` answers HEADS; the endpoints come off the row, which is
     // where a dependency lives.
     let out = graph.typed_out(1, later.node_id, "depends_on").unwrap();
     assert_eq!(out.len(), 1);
-    let edge = graph.fact_view(out[0]).unwrap().unwrap();
+    let edge = graph.fact_view(&out[0]).unwrap().unwrap();
     assert_eq!(
         (edge.src.id.entity_id(), edge.dst.id.entity_id()),
         (Some(later.node_id), Some(earlier.node_id))

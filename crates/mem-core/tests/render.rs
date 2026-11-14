@@ -15,6 +15,7 @@
 
 use mem_core::graph::{CommunitySlice, FactView, Facts, ResolvedNode};
 use mem_core::{render_head, render_memory, RenderFormat};
+use okm_core::{EdgeKey, NodeRef};
 
 fn node(node_id: u64, name: &str, kind: &str) -> ResolvedNode {
     ResolvedNode {
@@ -25,9 +26,19 @@ fn node(node_id: u64, name: &str, kind: &str) -> ResolvedNode {
     }
 }
 
-fn fact(edge_id: u64, kind: &str, src: ResolvedNode, dst: ResolvedNode) -> FactView {
+/// A fact's HEAD — `(src, predicate, dst)`, the tuple's own address (okm
+/// ADR-0067). A renderer only ever reads it, so these tests build it by hand.
+fn key(pred: u16, src: u64, dst: u64) -> EdgeKey {
+    EdgeKey::new(
+        NodeRef::new(&[0, 36], &src.to_be_bytes()),
+        pred,
+        NodeRef::new(&[0, 36], &dst.to_be_bytes()),
+    )
+}
+
+fn fact(key: EdgeKey, kind: &str, src: ResolvedNode, dst: ResolvedNode) -> FactView {
     FactView {
-        edge_id,
+        key,
         kind: kind.to_string(),
         src,
         dst,
@@ -42,13 +53,14 @@ fn fact(edge_id: u64, kind: &str, src: ResolvedNode, dst: ResolvedNode) -> FactV
 }
 
 /// The same fact, but carrying a reference link (PLAN 4c): the plaintext line
-/// prints the target as an ADDRESS — `#41` — so a reader can see that there is
-/// more without the answer inlining it. A fact with no refs prints no tail at
-/// all: absence must not look like an empty pointer.
+/// prints each target as an ADDRESS — its tuple hex, the same string the facts
+/// door takes — so a reader can see that there is more without the answer
+/// inlining it. A fact with no refs prints no tail at all: absence must not look
+/// like an empty pointer.
 #[test]
 fn a_reference_link_prints_as_an_address_and_nothing_else() {
     let plain = fact(
-        34,
+        key(34, 12, 15),
         "PREFERS",
         node(12, "Alice", "person"),
         node(15, "terse", "style"),
@@ -59,12 +71,17 @@ fn a_reference_link_prints_as_an_address_and_nothing_else() {
         "no refs, no tail"
     );
 
-    let mut linked = plain.clone();
-    linked.refs = vec![41, 57];
+    let mut linked = plain;
+    linked.refs = vec![key(41, 1, 2), key(57, 1, 3)];
+    let expected = format!(
+        "refs={},{}",
+        mem_core::graph::key_hex(&linked.refs[0]),
+        mem_core::graph::key_hex(&linked.refs[1])
+    );
     let text = mem_core::render::render_head(&[linked], RenderFormat::Plaintext);
     assert!(
-        text.contains("refs=#41,#57"),
-        "the pointer is printed as addresses: {text}"
+        text.contains(&expected),
+        "the pointer is printed as an address: {text}"
     );
 }
 
@@ -79,15 +96,15 @@ fn elided_slice() -> CommunitySlice {
         members: 3,
         total: 3,
         facts: vec![
-            fact(34, "PREFERS", alice.clone(), terse),
-            fact(35, "WRITES", alice, rust),
+            fact(key(34, 12, 15), "PREFERS", alice.clone(), terse),
+            fact(key(35, 12, 18), "WRITES", alice, rust),
         ],
     }
 }
 
 fn head() -> Vec<FactView> {
     vec![fact(
-        34,
+        key(34, 12, 15),
         "PREFERS",
         node(12, "Alice", "person"),
         node(15, "terse replies", "style"),
@@ -131,8 +148,10 @@ fn every_text_format_carries_the_same_content() {
     }
 }
 
-/// The plaintext form is the dense prompt form, and its ids are the answer's
-/// handles — every node and edge line carries the id it points at.
+/// The plaintext form is the dense prompt form, and its node ids are the
+/// answer's handles. A fact carries no number (okm ADR-0067), so its line is
+/// the two endpoints and the relation — the only addresses a line prints are
+/// the `refs` tail's.
 #[test]
 fn plaintext_names_the_ids_the_caller_points_at() {
     let text = render_memory(&[elided_slice()], RenderFormat::Plaintext);
@@ -141,7 +160,8 @@ fn plaintext_names_the_ids_the_caller_points_at() {
         "{text}"
     );
     assert!(text.contains("n12 Alice [person]"), "{text}");
-    assert!(text.contains("e34 n12 -[PREFERS]-> n15"), "{text}");
+    assert!(text.contains("n12 -[PREFERS]-> n15"), "{text}");
+    assert!(!text.contains("e34"), "a fact has no number: {text}");
 }
 
 /// Markdown is the same content with headings and bullets.
@@ -153,7 +173,7 @@ fn markdown_is_headings_and_bullets() {
         "{text}"
     );
     assert!(text.contains("\n- `n12` Alice [person]"), "{text}");
-    assert!(text.contains("- `e34` `n12` -[PREFERS]-> `n15`"), "{text}");
+    assert!(text.contains("- `n12` -[PREFERS]-> `n15`"), "{text}");
 }
 
 /// Mermaid is a diagram a renderer consumes: a directed graph, one subgraph

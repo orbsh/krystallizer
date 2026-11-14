@@ -15,9 +15,11 @@
 //! The three text forms carry the SAME facts, nodes and community and differ
 //! only in syntax — with one deliberate exception: a diagram's edge label
 //! carries the relation alone, because the counters (weight, confidence) are
-//! read off a LINE, where a picture's label is noise. Ids are the caller's
-//! handles in a recall answer (a later precise read or edit points at `n12` /
-//! `e34`); the head carries no ids because it is injected, not cited.
+//! read off a LINE, where a picture's label is noise. Node ids are the caller's
+//! handles in a recall answer (a later precise read points at `n12`); a fact has
+//! no number, so the only address a line prints is the `refs` tail, where each
+//! pointer is the target tuple's hex. The head carries no ids because it is
+//! injected, not cited.
 
 use crate::graph::{CommunitySlice, FactView, WEIGHT_SCALE};
 
@@ -165,8 +167,7 @@ fn render_memory_markdown(slices: &[CommunitySlice]) -> String {
         }
         for fact in &slice.facts {
             out.push_str(&format!(
-                "- `e{}` `{}` -[{}]-> `{}` · {}\n",
-                fact.edge_id,
+                "- `{}` -[{}]-> `{}` · {}\n",
                 fact.src.id.label(),
                 fact.kind,
                 fact.dst.id.label(),
@@ -213,15 +214,15 @@ fn header(slice: &CommunitySlice) -> String {
     out
 }
 
-/// `e34 n12 -[PREFERS]-> n15 · w=1.400 · c=0.90 · since=… · refs=#41,#57`
+/// `n12 -[PREFERS]-> n15 · w=1.400 · c=0.90 · since=… · refs=<hex>,<hex>`
 ///
-/// The `refs` tail is the reference link (PLAN 4c): the ids this fact points at,
-/// printed so the reader can SEE there is more and decide for itself. Each id is
-/// an address — `GET /graph/{scope}/facts/{id}` — not an inlined subtree.
+/// The `refs` tail is the reference link (PLAN 4c): the facts this fact points
+/// at, printed so the reader can SEE there is more and decide for itself. Each
+/// address is the target's tuple hex — `GET /graph/{scope}/facts/{key}` — not an
+/// inlined subtree, and not a number (okm ADR-0067).
 fn fact_line_plaintext(fact: &FactView) -> String {
     let base = format!(
-        "e{} {} -[{}]-> {} · {} · since={}",
-        fact.edge_id,
+        "{} -[{}]-> {} · {} · since={}",
         fact.src.id.label(),
         fact.kind,
         fact.dst.id.label(),
@@ -241,10 +242,11 @@ fn counters(fact: &FactView) -> String {
     )
 }
 
-/// The reference-link tail (PLAN 4c): ` · refs=#41,#57`, or empty when the fact
-/// points at nothing. An id here is an ADDRESS the reader may fetch —
-/// `GET /graph/{scope}/facts/{id}` — so the head keeps its "names, not ids" rule
-/// for identity while still telling the reader where a pointer leads.
+/// The reference-link tail (PLAN 4c): ` · refs=<hex>,<hex>`, or empty when the
+/// fact points at nothing. An address here is a fact's tuple hex — the same
+/// string `GET /graph/{scope}/facts/{key}` takes — so the head keeps its "names,
+/// not ids" rule for identity while still telling the reader where a pointer
+/// leads.
 fn refs_tail(fact: &FactView) -> String {
     if fact.refs.is_empty() {
         return String::new();
@@ -252,7 +254,7 @@ fn refs_tail(fact: &FactView) -> String {
     let refs = fact
         .refs
         .iter()
-        .map(|id| format!("#{id}"))
+        .map(crate::graph::key_hex)
         .collect::<Vec<_>>()
         .join(",");
     format!(" · refs={refs}")

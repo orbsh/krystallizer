@@ -16,7 +16,7 @@
 use mem_core::graph::{FactTuple, GraphStore, IngestError, IngestOutcome};
 use mem_core::{EntityKey, EntityRow, Facts, RenderFormat, LITERAL_KIND};
 use okm_core::okm_value::Variant;
-use okm_core::{Document, KeyEncode, NodeRef, Vector};
+use okm_core::{Document, EdgeKey, KeyEncode, Members, NodeRef, Vector};
 
 /// A member id in these tests: the identity IS a uuid (ADR-0025 §4), so a small ordinal is spelled
 /// as one — the same value the production path carries, not a test-only number.
@@ -28,6 +28,27 @@ fn m(n: u8) -> mem_core::Uuid7 {
 
 fn tuple(text: &str) -> FactTuple {
     FactTuple::from_json(text).expect("the tuple decodes")
+}
+
+/// Ingest one tuple into scope 1 and answer its HEAD — the tuple's own address
+/// (okm ADR-0067: an edge has no number, so the write's answer IS the address).
+fn link(graph: &mut GraphStore, text: &str) -> EdgeKey {
+    match graph.ingest(1, &tuple(text)).expect("the write lands") {
+        IngestOutcome::Linked { key } => key,
+        other => panic!("expected a link, got {other:?}"),
+    }
+}
+
+/// A well-formed head that names no row: a real ns and key width, an endpoint
+/// that was never created — what a dangling reference looks like.
+fn dangling(scope: u64, node_id: u64) -> EdgeKey {
+    let entity = |node_id: u64| {
+        NodeRef::new(
+            <EntityRow as Document>::NS_PREFIX,
+            &EntityKey { scope, node_id }.encode(),
+        )
+    };
+    EdgeKey::new(entity(node_id), 0, entity(node_id + 1))
 }
 
 /// The canonical example from PROMPTS §1 (the paste-source of the form).
@@ -208,31 +229,31 @@ fn entity_props_land_on_the_node_and_merge() {
 
 /// A relation that does NOT declare `functional` is multi-valued: two facts
 /// with the same (source, kind) are two edges (parallel edges are separate
-/// facts, okm ADR-0017).
+/// facts, okm ADR-0017) — separate because their tails differ, so their heads
+/// differ.
 #[test]
 fn multi_valued_relation_links_parallel_edges() {
     let dir = tempfile::tempdir().unwrap();
     let mut graph = GraphStore::open(dir.path()).unwrap();
 
-    let first = tuple(r#"["user","person",{},"PREFERS",{},"iced_americano","coffee",{}]"#);
-    let second = tuple(r#"["user","person",{},"PREFERS",{},"cappuccino","coffee",{}]"#);
-    assert_eq!(
-        graph.ingest(1, &first).unwrap(),
-        IngestOutcome::Linked { edge_id: 1 }
+    let first = link(
+        &mut graph,
+        r#"["user","person",{},"PREFERS",{},"iced_americano","coffee",{}]"#,
     );
-    assert_eq!(
-        graph.ingest(1, &second).unwrap(),
-        IngestOutcome::Linked { edge_id: 2 }
+    let second = link(
+        &mut graph,
+        r#"["user","person",{},"PREFERS",{},"cappuccino","coffee",{}]"#,
     );
+    assert_ne!(first, second, "two tails, two heads, two facts");
 
     let (user_id, _) = graph.entity_by_name(1, "user").unwrap().unwrap();
     assert_eq!(graph.typed_out(1, user_id, "PREFERS").unwrap().len(), 2);
     assert_eq!(graph.out_edges(1, user_id).unwrap().len(), 2);
 }
 
-/// A relation declaring `functional` at one source has ONE incumbent: a
-/// newer fact rewrites that edge in place (same edge_id, new endpoints and
-/// attributes) instead of accumulating a second.
+/// A relation declaring `functional` at one source has ONE incumbent: a newer
+/// fact withdraws it and lands its own tuple (a different tail is a different
+/// head — okm ADR-0067) instead of accumulating a second.
 #[test]
 fn functional_relation_rewrites_the_incumbent() {
     let dir = tempfile::tempdir().unwrap();
@@ -244,13 +265,15 @@ fn functional_relation_rewrites_the_incumbent() {
     let second = tuple(
         r#"["k10r_core","system",{},"STORAGE_ENGINE",{"functional":true,"since":200},"slatedb_engine","system",{}]"#,
     );
-    let IngestOutcome::Linked { edge_id } = graph.ingest(1, &first).unwrap() else {
+    let IngestOutcome::Linked { key: first_key } = graph.ingest(1, &first).unwrap() else {
         panic!("the first fact links");
     };
-    assert_eq!(
-        graph.ingest(1, &second).unwrap(),
-        IngestOutcome::Rewritten { edge_id },
-        "the winner keeps the incumbent's edge id"
+    let IngestOutcome::Rewritten { key } = graph.ingest(1, &second).unwrap() else {
+        panic!("a functional relation rewrites");
+    };
+    assert_ne!(
+        key, first_key,
+        "the winner's tuple is a different head: the incumbent's is gone"
     );
 
     let (core_id, _) = graph.entity_by_name(1, "k10r_core").unwrap().unwrap();
@@ -259,7 +282,7 @@ fn functional_relation_rewrites_the_incumbent() {
         1
     );
 
-    let fact = graph.fact(edge_id).unwrap().unwrap();
+    let fact = graph.fact(&key).unwrap().unwrap();
     assert_eq!(fact.kind, "STORAGE_ENGINE");
     assert_eq!(fact.edge.since, 200);
     let (slatedb_id, _) = graph.entity_by_name(1, "slatedb_engine").unwrap().unwrap();
@@ -282,12 +305,11 @@ fn functional_relation_rewrites_the_incumbent() {
         .unwrap()
         .is_empty());
 
-    // The rewrite is one in-place commit at the same id: the old head's rows
-    // leave and the new head's land together, so no reader observes the id as
-    // absent — and the dynamic segment is k10r's entry, so the old assertion's
-    // props must not survive into the new one.
+    // The rewrite is withdraw + write: the incumbent's rows and its own
+    // attributes go before the new tuple lands, so the old assertion's props
+    // must not survive into the new one.
     let props = graph
-        .fact_props(edge_id)
+        .fact_props(&key)
         .unwrap()
         .expect("the assertion's own record");
     assert!(
@@ -299,18 +321,18 @@ fn functional_relation_rewrites_the_incumbent() {
         Some(&Variant::Bool(true)),
         "the new assertion's own declaration is what the entry holds"
     );
-    assert_eq!(graph.fact(edge_id).unwrap().unwrap().edge.since, 200);
+    assert_eq!(graph.fact(&key).unwrap().unwrap().edge.since, 200);
     assert_eq!(
         graph.out_edges(1, core_id).unwrap(),
-        vec![edge_id],
-        "the id is the one edge, never a second under a new head"
+        vec![key.clone()],
+        "one functional edge leaves the source, never a second"
     );
     // The declared faces follow the new payload, not both payloads: the time
     // face is keyed by `since`, which the rewrite moved, so a stale entry would
     // list this fact at the old year as well.
     let timeline = graph.timeline(1, 50).unwrap();
     assert_eq!(
-        timeline.iter().filter(|f| f.edge_id == edge_id).count(),
+        timeline.iter().filter(|f| f.key == key).count(),
         1,
         "one time entry for the one edge after a rewrite that moved `since`"
     );
@@ -329,15 +351,18 @@ fn functional_relation_drops_an_older_weaker_fact() {
     let weak = tuple(
         r#"["k10r_core","system",{},"STORAGE_ENGINE",{"functional":true,"since":100,"confidence":10},"slatedb_engine","system",{}]"#,
     );
-    let IngestOutcome::Linked { edge_id } = graph.ingest(1, &strong).unwrap() else {
+    let IngestOutcome::Linked { key: strong_key } = graph.ingest(1, &strong).unwrap() else {
         panic!("the first fact links");
     };
     assert_eq!(
         graph.ingest(1, &weak).unwrap(),
-        IngestOutcome::Dropped { edge_id }
+        IngestOutcome::Dropped {
+            key: strong_key.clone()
+        },
+        "the loser names the incumbent's head"
     );
 
-    let fact = graph.fact(edge_id).unwrap().unwrap();
+    let fact = graph.fact(&strong_key).unwrap().unwrap();
     assert_eq!(fact.edge.since, 200, "the incumbent is untouched");
     let (fjall_id, _) = graph.entity_by_name(1, "fjall_engine").unwrap().unwrap();
     let expected = NodeRef::new(
@@ -395,7 +420,7 @@ fn fact_open_props_ride_the_edge_dynamic_segment() {
     let dir = tempfile::tempdir().unwrap();
     let mut graph = GraphStore::open(dir.path()).unwrap();
 
-    let IngestOutcome::Linked { edge_id } = graph
+    let IngestOutcome::Linked { key } = graph
         .ingest(
             1,
             &tuple(
@@ -407,10 +432,7 @@ fn fact_open_props_ride_the_edge_dynamic_segment() {
         panic!("the first fact links");
     };
 
-    let props = graph
-        .fact_props(edge_id)
-        .expect("the edge has props")
-        .unwrap();
+    let props = graph.fact_props(&key).expect("the edge has props").unwrap();
     assert_eq!(
         props.get("reason"),
         Some(&Variant::Str("network_graph_too_heavy".into()))
@@ -425,25 +447,30 @@ fn fact_open_props_ride_the_edge_dynamic_segment() {
         "a declared field is not also a dynamic one"
     );
 
-    let fact = graph.fact(edge_id).unwrap().unwrap();
+    let fact = graph.fact(&key).unwrap().unwrap();
     assert_eq!(fact.edge.since, 5, "the declared field carries the value");
     assert_eq!(fact.edge.confidence, 255, "absent confidence is full");
 }
 
-/// The endpoints are self-describing refs: `[ns 2B][len varint][pkey]`, the
-/// pkey being the entity key's own bytes — no registry, no shared shape.
+/// The endpoints are refs of their own: `[ns 2B][pkey]`, the pkey being the
+/// entity key's own bytes — no registry, no length prefix (okm ADR-0067: the
+/// declaration's width is the whole parse).
 #[test]
 fn node_refs_are_self_describing() {
     let dir = tempfile::tempdir().unwrap();
     let mut graph = GraphStore::open(dir.path()).unwrap();
-    let text = r#"["ADG","doc",{},"CITES",{},"RFC_2119","doc",{}]"#;
-    let IngestOutcome::Linked { edge_id } = graph.ingest(1, &tuple(text)).unwrap() else {
-        panic!("links");
-    };
+    let key = link(
+        &mut graph,
+        r#"["ADG","doc",{},"CITES",{},"RFC_2119","doc",{}]"#,
+    );
 
-    let fact = graph.fact(edge_id).unwrap().unwrap();
-    let (decoded, taken) = NodeRef::decode(&fact.src.encode()).expect("ref decodes");
-    assert_eq!(taken, fact.src.encode().len());
+    let fact = graph.fact(&key).unwrap().unwrap();
+    // The width table is the graph's own declaration: entity pkeys are the
+    // entity key's fixed width, so the ref parses with nothing else.
+    let members = Members::new(vec![(mem_core::ENTITY_NS, EntityKey::KEY_LEN)]);
+    let wire = fact.src.wire();
+    let (decoded, taken) = NodeRef::parse(&wire, &members).expect("the declaration parses the ref");
+    assert_eq!(taken, wire.len());
     assert_eq!(decoded, fact.src);
     assert_eq!(decoded.ns_id(), mem_core::ENTITY_NS);
 
@@ -458,9 +485,10 @@ fn node_refs_are_self_describing() {
     );
 }
 
-/// Ids survive a reopen: the counters are recovered from the tables (the
-/// last key in key order), so a fresh process never hands out an id that
-/// collides with a stored row.
+/// The NODE counter survives a reopen: it is recovered from the table (the last
+/// key in key order), so a fresh process never hands out an id that collides
+/// with a stored row. An EDGE needs no recovery — its address is the tuple
+/// (okm ADR-0067), so the tuple a reopen inherited is the tuple it answers.
 #[test]
 fn ids_are_recovered_across_reopen() {
     let dir = tempfile::tempdir().unwrap();
@@ -478,18 +506,19 @@ fn ids_are_recovered_across_reopen() {
     let (existing, _) = graph.entity_by_name(1, "galaxy_repo").unwrap().unwrap();
     assert_eq!(existing, 1, "the stored node is still the first");
 
-    let IngestOutcome::Linked { edge_id } = graph
-        .ingest(
-            1,
-            &tuple(r#"["user","person",{},"PREFERS",{},"cappuccino","coffee",{}]"#),
-        )
-        .unwrap()
-    else {
-        panic!("links");
+    // The edge the reopen inherited is addressable with no counter at all: the
+    // same tuple is the same head, so re-ingesting it answers `bumped`.
+    let IngestOutcome::Bumped { key: inherited } = graph.ingest(1, &tuple(PIVOT)).unwrap() else {
+        panic!("the same triple is the same head across a reopen");
     };
-    assert_eq!(edge_id, 3, "the edge counter continues past the stored ids");
+
+    let key = link(
+        &mut graph,
+        r#"["user","person",{},"PREFERS",{},"cappuccino","coffee",{}]"#,
+    );
+    assert_ne!(key, inherited, "a new fact is a new head");
     let (user_id, _) = graph.entity_by_name(1, "user").unwrap().unwrap();
-    assert_eq!(user_id, 3, "the node counter continues too");
+    assert_eq!(user_id, 3, "the node counter continues past the stored ids");
 }
 
 // ---- retrieval (ADR-0003): vector landing ------------------------------
@@ -637,8 +666,13 @@ fn recall_returns_the_landed_community_as_text() {
         assert!(text.contains("community c"), "{text}");
         for fact in &recall.facts {
             assert!(
-                text.contains(&format!("e{} ", fact.edge_id)),
-                "the edge line carries its id: {text}"
+                text.contains(&format!(
+                    "{} -[{}]-> {}",
+                    fact.src.id.label(),
+                    fact.kind,
+                    fact.dst.id.label()
+                )),
+                "the fact line carries both endpoints and the relation: {text}"
             );
             assert!(
                 text.contains(&format!("{} {}", fact.src.id.label(), fact.src.name)),
@@ -671,14 +705,12 @@ fn recall_returns_the_landed_community_as_text() {
 fn a_landed_fact_carries_one_write_and_the_folded_weight() {
     let dir = tempfile::tempdir().unwrap();
     let mut graph = GraphStore::open(dir.path()).unwrap();
-    graph
-        .ingest(
-            1,
-            &tuple(r#"["alpha","thing",{},"IS",{"since":1000000},"beta","thing",{}]"#),
-        )
-        .unwrap();
 
-    let edge = graph.fact(1).unwrap().unwrap().edge;
+    let key = link(
+        &mut graph,
+        r#"["alpha","thing",{},"IS",{"since":1000000},"beta","thing",{}]"#,
+    );
+    let edge = graph.fact(&key).unwrap().unwrap().edge;
     assert_eq!(edge.write_count, 1);
     assert_eq!(edge.read_count, 0);
     assert_eq!(edge.last_write, 1_000_000);
@@ -710,11 +742,13 @@ fn recall_counts_reads_and_orders_the_served_facts_by_weight() {
     let (beta, beta_row) = graph.entity_by_name(1, "beta").unwrap().unwrap();
     let alpha = graph.entity_by_name(1, "alpha").unwrap().unwrap().0;
     let gamma = graph.entity_by_name(1, "gamma").unwrap().unwrap().0;
-    let edge_a = graph.out_facts(1, alpha).unwrap()[0].edge_id;
-    let edge_b = graph.out_facts(1, gamma).unwrap()[0].edge_id;
+    let edge_a = graph.out_facts(1, alpha).unwrap()[0].key.clone();
+    let edge_b = graph.out_facts(1, gamma).unwrap()[0].key.clone();
 
     // A boosted fact is reached and it is the one ranked first.
-    graph.touch(1, edge_b, mem_core::Touch::Tool, 2000).unwrap();
+    graph
+        .touch(1, &edge_b, mem_core::Touch::Tool, 2000)
+        .unwrap();
     let seed = mem_core::Seed {
         node_id: beta,
         score: 1.0,
@@ -724,7 +758,7 @@ fn recall_counts_reads_and_orders_the_served_facts_by_weight() {
     let facts = graph.expand(1, &[seed], Some(3000)).unwrap();
     assert_eq!(facts.len(), 2);
     assert_eq!(
-        facts[0].edge_id, edge_b,
+        facts[0].key, edge_b,
         "the tool-consulted fact outranks the merely-served one"
     );
     // Both were served, so both counted one read.
@@ -741,7 +775,7 @@ fn recall_counts_reads_and_orders_the_served_facts_by_weight() {
     );
     assert_eq!(read_once, 1040, "ln(2) + ln(2)×0.5");
     assert_eq!(boosted, 2079, "plus ln(2)×1.5 for the tool consult");
-    assert_eq!(edge_a, edge_b - 1, "the two facts are separate edges");
+    assert_ne!(edge_a, edge_b, "the two facts are separate edges");
 }
 
 /// The deep-water quadrant (read many, write few) earns the rarity bonus:
@@ -752,17 +786,15 @@ fn recall_counts_reads_and_orders_the_served_facts_by_weight() {
 fn the_deep_water_quadrant_earns_the_rarity_bonus() {
     let dir = tempfile::tempdir().unwrap();
     let mut graph = GraphStore::open(dir.path()).unwrap();
-    graph
-        .ingest(
-            1,
-            &tuple(r#"["alpha","thing",{},"IS",{"since":1000},"beta","thing",{}]"#),
-        )
-        .unwrap();
 
+    let key = link(
+        &mut graph,
+        r#"["alpha","thing",{},"IS",{"since":1000},"beta","thing",{}]"#,
+    );
     let mut edge = Facts::default();
     for _ in 0..4 {
         edge = graph
-            .touch(1, 1, mem_core::Touch::Read, 2000)
+            .touch(1, &key, mem_core::Touch::Read, 2000)
             .unwrap()
             .unwrap()
             .edge;
@@ -773,19 +805,25 @@ fn the_deep_water_quadrant_earns_the_rarity_bonus() {
     assert_eq!(edge.weight, 2956);
 
     // A second assertion keeps the bonus (write 2 is still under the
-    // ceiling); the third forfeits it.
+    // ceiling); the third forfeits it. Each rewrite lands its own head, so the
+    // address the later touches use is the one the last write answered with.
+    let mut key = key;
     for since in [5000u64, 6000] {
-        graph
+        key = match graph
             .ingest(
                 1,
                 &tuple(&format!(
                     r#"["alpha","thing",{{}},"IS",{{"since":{since},"functional":true}},"gamma","thing",{{}}]"#
                 )),
             )
-            .unwrap();
+            .unwrap()
+        {
+            IngestOutcome::Rewritten { key } | IngestOutcome::Bumped { key } => key,
+            other => panic!("a newer assertion rewrites the incumbent, got {other:?}"),
+        };
     }
     let rewritten = graph
-        .touch(1, 1, mem_core::Touch::Read, 7000)
+        .touch(1, &key, mem_core::Touch::Read, 7000)
         .unwrap()
         .unwrap()
         .edge;
@@ -801,16 +839,14 @@ fn the_deep_water_quadrant_earns_the_rarity_bonus() {
 fn time_decay_is_charged_at_the_fold_it_elapsed_for() {
     let dir = tempfile::tempdir().unwrap();
     let mut graph = GraphStore::open(dir.path()).unwrap();
-    graph
-        .ingest(
-            1,
-            &tuple(r#"["alpha","thing",{},"IS",{"since":1000000},"beta","thing",{}]"#),
-        )
-        .unwrap();
 
     let two_days = 2 * mem_core::graph::DAY_MS;
+    let key = link(
+        &mut graph,
+        r#"["alpha","thing",{},"IS",{"since":1000000},"beta","thing",{}]"#,
+    );
     let edge = graph
-        .touch(1, 1, mem_core::Touch::Read, 1_000_000 + two_days)
+        .touch(1, &key, mem_core::Touch::Read, 1_000_000 + two_days)
         .unwrap()
         .unwrap()
         .edge;
@@ -826,22 +862,20 @@ fn time_decay_is_charged_at_the_fold_it_elapsed_for() {
 fn a_touch_answers_none_for_an_unknown_edge_or_another_scope() {
     let dir = tempfile::tempdir().unwrap();
     let mut graph = GraphStore::open(dir.path()).unwrap();
-    graph
-        .ingest(
-            1,
-            &tuple(r#"["alpha","thing",{},"IS",{"since":1000},"beta","thing",{}]"#),
-        )
-        .unwrap();
+    let key = link(
+        &mut graph,
+        r#"["alpha","thing",{},"IS",{"since":1000},"beta","thing",{}]"#,
+    );
     assert!(graph
-        .touch(1, 99, mem_core::Touch::Tool, 2000)
+        .touch(1, &dangling(1, 900), mem_core::Touch::Tool, 2000)
         .unwrap()
         .is_none());
     assert!(graph
-        .touch(2, 1, mem_core::Touch::Tool, 2000)
+        .touch(2, &key, mem_core::Touch::Tool, 2000)
         .unwrap()
         .is_none());
     assert!(graph
-        .touch(1, 1, mem_core::Touch::Tool, 2000)
+        .touch(1, &key, mem_core::Touch::Tool, 2000)
         .unwrap()
         .is_some());
 }
@@ -927,7 +961,7 @@ fn the_answer_is_budgeted_and_states_the_elision() {
     assert!(!full.text.as_deref().unwrap().contains("showing"));
     for fact in &capped.facts {
         assert!(
-            full.facts.iter().any(|f| f.edge_id == fact.edge_id),
+            full.facts.iter().any(|f| f.key == fact.key),
             "the capped answer is a prefix of the full one"
         );
     }
@@ -1012,7 +1046,7 @@ fn communities_are_per_scope() {
 }
 
 /// Phase 4's progressive read: the heaviest facts of a scope, weight-descending,
-/// ties by edge id — and a `k` that bounds the RESULT (the read is still O(n)
+/// ties by head — and a `k` that bounds the RESULT (the read is still O(n)
 /// until okm's graph gains a lazy range walk over the face).
 #[test]
 fn top_by_weight_ranks_the_scope_and_stops_at_k() {
@@ -1036,25 +1070,25 @@ fn top_by_weight_ranks_the_scope_and_stops_at_k() {
         )
         .unwrap();
 
-    let base: Vec<u64> = graph
+    let base: Vec<EdgeKey> = graph
         .scope_facts(1)
         .unwrap()
         .iter()
-        .map(|fact| fact.edge_id)
+        .map(|fact| fact.key.clone())
         .collect();
     assert_eq!(base.len(), 3);
     // Boost one of them: a touch folds new counters into the weight.
     graph
-        .touch(1, base[1], mem_core::Touch::Write, 5_000)
+        .touch(1, &base[1], mem_core::Touch::Write, 5_000)
         .unwrap();
     graph
-        .touch(1, base[1], mem_core::Touch::Write, 6_000)
+        .touch(1, &base[1], mem_core::Touch::Write, 6_000)
         .unwrap();
 
     let top = graph.top_by_weight(1, 2).unwrap();
     assert_eq!(top.len(), 2, "k bounds the result");
     assert_eq!(
-        top[0].edge_id, base[1],
+        top[0].key, base[1],
         "the touched fact is heaviest and comes first"
     );
     assert!(
@@ -1065,7 +1099,7 @@ fn top_by_weight_ranks_the_scope_and_stops_at_k() {
     );
     assert!(
         top.iter()
-            .all(|fact| fact.edge_id != base[0] || top[1].edge_id == base[0]),
+            .all(|fact| fact.key != base[0] || top[1].key == base[0]),
         "the ranking is the scope's own three edges"
     );
     assert_eq!(
@@ -1076,78 +1110,68 @@ fn top_by_weight_ranks_the_scope_and_stops_at_k() {
     assert!(graph.top_by_weight(1, 0).unwrap().is_empty());
 }
 
-/// PLAN 4c: a fact may name ANOTHER fact by id in its props, and the reader
-/// decides whether to follow it. One id or an array of ids; nothing validates the
-/// target on write, because a dangling pointer is the reader's 404, not a write
-/// error — and a value that is not an id is not a reference at all.
+/// PLAN 4c: a fact may name ANOTHER fact by its ADDRESS in its props — the
+/// tuple's own hex, the same string the facts door takes (okm ADR-0067) — and
+/// the reader decides whether to follow it. One address or an array of them;
+/// nothing validates the target on write, because a dangling pointer is the
+/// reader's 404, not a write error — and a value that is not an address is not a
+/// reference at all.
 #[test]
 fn a_fact_can_point_at_another_fact_and_nothing_validates_the_pointer() {
     let dir = tempfile::tempdir().unwrap();
     let mut graph = GraphStore::open(dir.path()).unwrap();
 
-    let IngestOutcome::Linked { edge_id: detail } = graph
-        .ingest(
-            1,
-            &tuple(r#"["the_detail","note",{},"MENTIONS",{},"thing","thing",{}]"#),
-        )
-        .unwrap()
-    else {
-        panic!("the detail links");
-    };
-    let IngestOutcome::Linked { edge_id: single } = graph
-        .ingest(
-            1,
-            &tuple(&format!(
-                r#"["anchor","thing",{{}},"PREFERS",{{"ref":{detail}}},"x","thing",{{}}]"#
-            )),
-        )
-        .unwrap()
-    else {
-        panic!("the pointing fact links");
-    };
-    let IngestOutcome::Linked { edge_id: many } = graph
-        .ingest(
-            1,
-            &tuple(&format!(
-                r#"["anchor2","thing",{{}},"PREFERS",{{"ref":[{detail},{single},999999]}},"y","thing",{{}}]"#
-            )),
-        )
-        .unwrap()
-    else {
-        panic!("the multi-pointing fact links");
-    };
-    let IngestOutcome::Linked { edge_id: not_an_id } = graph
-        .ingest(
-            1,
-            &tuple(r#"["anchor3","thing",{},"PREFERS",{"ref":"the detail"},"z","thing",{}]"#),
-        )
-        .unwrap()
-    else {
-        panic!("the malformed pointer still links: the writer's value is stored verbatim");
-    };
+    let detail = link(
+        &mut graph,
+        r#"["the_detail","note",{},"MENTIONS",{},"thing","thing",{}]"#,
+    );
+    let detail_hex = mem_core::graph::key_hex(&detail);
+    let single = link(
+        &mut graph,
+        &format!(r#"["anchor","thing",{{}},"PREFERS",{{"ref":"{detail_hex}"}},"x","thing",{{}}]"#),
+    );
+    let single_hex = mem_core::graph::key_hex(&single);
+    let many = link(
+        &mut graph,
+        &format!(
+            r#"["anchor2","thing",{{}},"PREFERS",{{"ref":["{detail_hex}","{single_hex}",999999]}},"y","thing",{{}}]"#
+        ),
+    );
+    let not_an_address = link(
+        &mut graph,
+        r#"["anchor3","thing",{},"PREFERS",{"ref":"the detail"},"z","thing",{}]"#,
+    );
 
     assert_eq!(
-        graph.fact_view(single).unwrap().unwrap().refs,
-        vec![detail],
-        "one id is one reference"
+        graph.fact_view(&single).unwrap().unwrap().refs,
+        vec![detail.clone()],
+        "one address is one reference"
     );
     assert_eq!(
-        graph.fact_view(many).unwrap().unwrap().refs,
-        vec![detail, single, 999_999],
-        "an array is kept in order, dangling id and all"
+        graph.fact_view(&many).unwrap().unwrap().refs,
+        vec![detail.clone(), single.clone()],
+        "an array is kept in order, and a value that is not an address is skipped"
     );
     assert!(
-        graph.fact_view(detail).unwrap().unwrap().refs.is_empty(),
+        graph.fact_view(&detail).unwrap().unwrap().refs.is_empty(),
         "a fact with no `ref` points at nothing"
     );
     assert!(
-        graph.fact_view(not_an_id).unwrap().unwrap().refs.is_empty(),
-        "a string is not a reference — a writer's mistake must not become a target"
+        graph
+            .fact_view(&not_an_address)
+            .unwrap()
+            .unwrap()
+            .refs
+            .is_empty(),
+        "a string that is not an address is not a reference — a writer's mistake          must not become a target"
     );
 
     // Following the pointer is the deterministic read, and a dangling one is a miss.
-    assert!(graph.fact_in_scope(1, detail).unwrap().is_some());
-    assert!(graph.fact_in_scope(1, 999_999).unwrap().is_none());
+    assert!(graph.fact_in_scope(1, &detail).unwrap().is_some());
+    assert!(graph
+        .fact_in_scope(1, &dangling(1, 999_999))
+        .unwrap()
+        .is_none());
 }
 
 /// PLAN 4b: the three entrances read the write-time structure instead of asking a
@@ -1158,13 +1182,8 @@ fn a_fact_can_point_at_another_fact_and_nothing_validates_the_pointer() {
 fn the_three_entrances_need_no_query() {
     let dir = tempfile::tempdir().unwrap();
     let mut graph = GraphStore::open(dir.path()).unwrap();
-    let ingest = |graph: &mut GraphStore, json: String| -> u64 {
-        match graph.ingest(1, &tuple(&json)).unwrap() {
-            IngestOutcome::Linked { edge_id }
-            | IngestOutcome::Rewritten { edge_id }
-            | IngestOutcome::Dropped { edge_id }
-            | IngestOutcome::Bumped { edge_id } => edge_id,
-        }
+    let ingest = |graph: &mut GraphStore, json: String| -> EdgeKey {
+        graph.ingest(1, &tuple(&json)).unwrap().key().clone()
     };
 
     let a_leads_b = ingest(
@@ -1190,14 +1209,18 @@ fn the_three_entrances_need_no_query() {
     // FIRST — the community's other facts, if any, follow it.
     let anchored = graph.anchored(1, a).expect("a is a node").unwrap();
     assert_eq!(anchored.node_id, a);
-    let touch_a: Vec<u64> = anchored
+    let touch_a: Vec<EdgeKey> = anchored
         .facts
         .iter()
         .filter(|f| f.src.id.entity_id() == Some(a) || f.dst.id.entity_id() == Some(a))
-        .map(|f| f.edge_id)
+        .map(|f| f.key.clone())
         .collect();
-    for id in [a_leads_b, c_leads_a] {
-        assert!(touch_a.contains(&id), "the anchor's own fact {id} is shown");
+    for key in [&a_leads_b, &c_leads_a] {
+        assert!(
+            touch_a.contains(key),
+            "the anchor's own fact {} is shown",
+            mem_core::graph::key_hex(key)
+        );
     }
     assert!(
         anchored
@@ -1222,9 +1245,9 @@ fn the_three_entrances_need_no_query() {
     let chain = graph.chain(1, a, "LEADS_TO", 5).unwrap();
     let depths: Vec<usize> = chain.iter().map(|hop| hop.depth).collect();
     assert_eq!(depths, vec![0, 1, 2], "a → b → c → a closes the loop");
-    assert_eq!(chain[0].fact.edge_id, a_leads_b);
-    assert_eq!(chain[1].fact.edge_id, b_leads_c);
-    assert_eq!(chain[2].fact.edge_id, c_leads_a);
+    assert_eq!(chain[0].fact.key, a_leads_b);
+    assert_eq!(chain[1].fact.key, b_leads_c);
+    assert_eq!(chain[2].fact.key, c_leads_a);
     assert!(
         graph.chain(1, a, "LEADS_TO", 2).unwrap().len() <= 2,
         "the hop bound is a bound"
@@ -1237,13 +1260,13 @@ fn the_three_entrances_need_no_query() {
 
 /// PLAN 4a: the scope rides the row because a face cannot be probed by something
 /// the index does not carry. It is a copy — the endpoints stay the authority — so
-/// the test pins both the copy and the fact that a functional rewrite (same
-/// `edge_id`, new payload) keeps it.
+/// the test pins both the copy and the fact that a functional rewrite (a new
+/// head, withdraw plus write) carries it to the row that stands.
 #[test]
 fn the_scope_is_denormalized_onto_the_row_and_a_rewrite_keeps_it() {
     let dir = tempfile::tempdir().unwrap();
     let mut graph = GraphStore::open(dir.path()).unwrap();
-    let IngestOutcome::Linked { edge_id } = graph
+    let IngestOutcome::Linked { key } = graph
         .ingest(
             7,
             &tuple(
@@ -1254,16 +1277,13 @@ fn the_scope_is_denormalized_onto_the_row_and_a_rewrite_keeps_it() {
     else {
         panic!("first fact links");
     };
-    assert_eq!(
-        graph.fact_in_scope(7, edge_id).unwrap().unwrap().edge.scope,
-        7
-    );
+    assert_eq!(graph.fact_in_scope(7, &key).unwrap().unwrap().edge.scope, 7);
     assert!(
-        graph.fact_in_scope(8, edge_id).unwrap().is_none(),
+        graph.fact_in_scope(8, &key).unwrap().is_none(),
         "the copy agrees with the endpoints, which is what the face depends on"
     );
 
-    let IngestOutcome::Rewritten { edge_id: again } = graph
+    let IngestOutcome::Rewritten { key: again } = graph
         .ingest(
             7,
             &tuple(
@@ -1274,10 +1294,14 @@ fn the_scope_is_denormalized_onto_the_row_and_a_rewrite_keeps_it() {
     else {
         panic!("a functional relation rewrites");
     };
-    assert_eq!(again, edge_id, "same row");
-    let view = graph.fact_in_scope(7, edge_id).unwrap().unwrap();
-    assert_eq!(view.edge.scope, 7, "the copy survives the rewrite");
+    assert_ne!(again, key, "a different tail is a different head");
+    let view = graph.fact_in_scope(7, &again).unwrap().unwrap();
+    assert_eq!(view.edge.scope, 7, "the copy rides the row that stands");
     assert_eq!(view.dst.name, "box_b", "the endpoints are the new ones");
+    assert!(
+        graph.fact_in_scope(7, &key).unwrap().is_none(),
+        "the incumbent's row went with its head"
+    );
 }
 
 /// The time face is scope-blind, so the walk skips other scopes' keys instead of
@@ -1306,34 +1330,34 @@ fn the_timeline_skips_other_scopes_on_a_scope_blind_face() {
 
 /// A weight change rewrites the row — and the ranking face must follow it, not
 /// keep the old entry beside the new one. The rewrite is okm's `incorporate`
-/// naming the live id with the SAME head, so okm owes the retirement of the
-/// entries the old payload wrote; if it kept them, this list would serve the
-/// same fact twice.
+/// naming the live head, so okm owes the retirement of the entries the old
+/// payload wrote; if it kept them, this list would serve the same fact twice.
 #[test]
 fn a_rewrite_does_not_leave_the_fact_in_the_ranking_twice() {
     let dir = tempfile::tempdir().unwrap();
     let mut graph = GraphStore::open(dir.path()).unwrap();
-    let IngestOutcome::Linked { edge_id } = graph
-        .ingest(
-            1,
-            &tuple(r#"["x","thing",{},"KNOWS",{"functional":true,"since":10},"y","thing",{}]"#),
-        )
-        .unwrap()
-    else {
-        panic!("links");
-    };
+    let mut key = link(
+        &mut graph,
+        r#"["x","thing",{},"KNOWS",{"functional":true,"since":10},"y","thing",{}]"#,
+    );
     for _ in 0..3 {
-        graph
+        key = match graph
             .ingest(
                 1,
                 &tuple(r#"["x","thing",{},"KNOWS",{"functional":true,"since":20},"y","thing",{}]"#),
             )
-            .unwrap();
+            .unwrap()
+        {
+            // The first re-assertion is news (newer `since`) and rewrites; the
+            // identical repeats after it are the assertion already standing.
+            IngestOutcome::Rewritten { key } | IngestOutcome::Bumped { key } => key,
+            other => panic!("a newer assertion adjudicates, got {other:?}"),
+        };
     }
 
     let top = graph.top_by_weight(1, 10).unwrap();
-    let ids: Vec<u64> = top.iter().map(|fact| fact.edge_id).collect();
-    assert_eq!(ids, vec![edge_id], "one fact, one entry: {ids:?}");
+    let ids: Vec<EdgeKey> = top.iter().map(|fact| fact.key.clone()).collect();
+    assert_eq!(ids, vec![key], "one fact, one entry: {ids:?}");
 }
 
 // ---- ADR-0014: the user node -------------------------------------------
@@ -1359,16 +1383,16 @@ fn a_user_endpoint_is_a_node_of_the_identity_collection() {
     let fact = tuple(&format!(
         r#"["{reference}","user",{{}},"PREFERS",{{}},"coffee","drink",{{}}]"#
     ));
-    let edge_id = match graph.ingest(1, &fact).unwrap() {
-        IngestOutcome::Linked { edge_id } => edge_id,
+    let key = match graph.ingest(1, &fact).unwrap() {
+        IngestOutcome::Linked { key } => key,
         other => panic!("expected a link, got {other:?}"),
     };
 
     // The person is a NODE: the traversal from the member ref finds the fact,
     // and the fact resolves that endpoint through the identity row.
     let user = graph.user_ref(m(1));
-    assert_eq!(graph.out_edges_of(&user).unwrap(), vec![edge_id]);
-    let view = graph.fact_view(edge_id).unwrap().unwrap();
+    assert_eq!(graph.out_edges_of(&user).unwrap(), vec![key.clone()]);
+    let view = graph.fact_view(&key).unwrap().unwrap();
     assert_eq!(
         view.src.name, "orbit",
         "the display name comes from the row"
@@ -1390,14 +1414,14 @@ fn a_user_endpoint_is_a_node_of_the_identity_collection() {
         .iter()
         .all(|(_, row)| row.name != reference));
 
-    // A rename touches the ROW and nothing else: same edge id, new name.
+    // A rename touches the ROW and nothing else: same head, new name.
     stores
         .channels
         .put_member(m(1), "orbit2", mem_core::channel::member_role::AGENT)
         .unwrap();
-    let renamed = graph.fact_view(edge_id).unwrap().unwrap();
+    let renamed = graph.fact_view(&key).unwrap().unwrap();
     assert_eq!(renamed.src.name, "orbit2");
-    assert_eq!(renamed.edge_id, edge_id);
+    assert_eq!(renamed.key, key);
 }
 
 #[test]
@@ -1491,20 +1515,17 @@ fn an_identical_assertion_lands_once() {
     let dir = tempfile::TempDir::new().unwrap();
     let mut graph = GraphStore::open(dir.path()).unwrap();
     let fact = tuple(PIVOT);
+    let key = link(&mut graph, PIVOT);
     assert_eq!(
         graph.ingest(1, &fact).unwrap(),
-        IngestOutcome::Linked { edge_id: 1 }
-    );
-    assert_eq!(
-        graph.ingest(1, &fact).unwrap(),
-        IngestOutcome::Bumped { edge_id: 1 },
+        IngestOutcome::Bumped { key: key.clone() },
         "the same triple is the same edge"
     );
-    // One edge out of the subject: a second row would be a second id here.
+    // One edge out of the subject: a second row would be a second head here.
     let (subject, _row) = graph.entity_by_name(1, "galaxy_repo").unwrap().unwrap();
     assert_eq!(
         graph.typed_out(1, subject, "PIVOTED_TO").unwrap(),
-        vec![1],
+        vec![key],
         "one assertion, one edge"
     );
 }

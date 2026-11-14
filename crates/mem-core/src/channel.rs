@@ -331,12 +331,13 @@ pub struct SessionView {
     /// is still cut at `coverage`. A tail operation reads from here so its range
     /// follows a model's view of the conversation's structure.
     pub suggested: Pointer,
-    /// The FROZEN initialization memory of that compression: the edge ids the
-    /// head was built from (ADR-0008 §2). Frozen as a SET and rendered per
-    /// request, so the head's bytes stay stable while `?format=` still picks
-    /// the representation. `None` = no checkpoint yet, so the head is the
-    /// live traversal.
-    pub head: Option<Vec<u64>>,
+    /// The FROZEN initialization memory of that compression: the heads the
+    /// head was built from (ADR-0008 §2), each one a fact's tuple bytes —
+    /// a fact has no number to freeze (okm ADR-0067). Frozen as a SET and
+    /// rendered per request, so the head's bytes stay stable while `?format=`
+    /// still picks the representation. `None` = no checkpoint yet, so the head
+    /// is the live traversal.
+    pub head: Option<Vec<HeadKey>>,
     /// A newer node without a summary exists above the coverage point: a
     /// compression is in flight, so a second pass over the same span would be
     /// a wasted model call.
@@ -349,9 +350,15 @@ pub struct SessionView {
     pub read_at: Option<u64>,
 }
 
+/// One frozen head: a fact's identity as its tuple's own bytes
+/// (`EdgeKey::wire`) — the only name an edge has (okm ADR-0067). The channel
+/// stores it verbatim and the graph parses it back against its own declaration
+/// (`GraphStore::key_of_wire`), so no layer in between has to know a width.
+pub type HeadKey = Vec<u8>;
+
 /// Dynamic-segment names the channel tables use.
 pub mod checkpoint_field {
-    /// The frozen head of a compression: an array of edge ids (u64 as UInt).
+    /// The frozen head of a compression: an array of `HeadKey` bytes.
     pub const HEAD: &str = "head";
 }
 
@@ -858,9 +865,9 @@ impl ChannelStore {
     }
 
     /// The frozen head stored with one node, if any (ADR-0008 §2: the
-    /// initialization memory is snapshotted as a SET of edge ids, so the head
+    /// initialization memory is snapshotted as a SET of heads, so the head
     /// stays byte-stable while `?format=` keeps choosing the representation).
-    fn checkpoint_head(&mut self, key: &CheckpointKey) -> Result<Option<Vec<u64>>, String> {
+    fn checkpoint_head(&mut self, key: &CheckpointKey) -> Result<Option<Vec<HeadKey>>, String> {
         // `None` here is a node with no stored head; a store that cannot answer
         // is not that, and it propagates.
         let Some(doc) = crate::document::at(&self.checkpoints, key).map_err(|e| e.to_string())?
@@ -872,7 +879,7 @@ impl ChannelStore {
                 items
                     .iter()
                     .filter_map(|item| match item {
-                        okm_core::okm_value::Variant::U64(id) => Some(*id),
+                        okm_core::okm_value::Variant::Bytes(wire) => Some(wire.clone()),
                         _ => None,
                     })
                     .collect(),
@@ -881,14 +888,15 @@ impl ChannelStore {
         })
     }
 
-    /// Write the frozen head ids into a node's dynamic segment.
-    fn write_head(&mut self, key: &CheckpointKey, head: &[u64]) -> Result<(), String> {
+    /// Write the frozen heads into a node's dynamic segment, each one as the
+    /// tuple's own bytes.
+    fn write_head(&mut self, key: &CheckpointKey, head: &[HeadKey]) -> Result<(), String> {
         let mut fields = std::collections::BTreeMap::new();
         fields.insert(
             checkpoint_field::HEAD.to_string(),
             okm_core::okm_value::Variant::Array(
                 head.iter()
-                    .map(|id| okm_core::okm_value::Variant::U64(*id))
+                    .map(|wire| okm_core::okm_value::Variant::Bytes(wire.clone()))
                     .collect(),
             ),
         );
@@ -911,7 +919,7 @@ impl ChannelStore {
         &mut self,
         channel_id: u64,
         pointer: Pointer,
-        head: &[u64],
+        head: &[HeadKey],
     ) -> Result<(), String> {
         let key = CheckpointKey {
             channel_id,
@@ -1051,7 +1059,7 @@ impl ChannelStore {
         channel_id: u64,
         pointer: Pointer,
         summary: &str,
-        head: &[u64],
+        head: &[HeadKey],
     ) -> Result<(), String> {
         let key = CheckpointKey {
             channel_id,

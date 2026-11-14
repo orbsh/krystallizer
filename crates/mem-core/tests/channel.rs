@@ -531,6 +531,10 @@ fn the_read_at_stamps_advances_and_never_rewinds() {
 /// A compression OPENS a node at the pointer k10r served and COMPLETES it with
 /// the summary (ADR-0008 §2/§4). The key is the pointer, so nothing is
 /// overwritten: the previous node stays readable while this one is in flight.
+///
+/// The frozen head is a set of HEADS — each fact's tuple bytes (okm ADR-0067) —
+/// so these tests hand in two distinct byte strings and only prove the round
+/// trip through the node's dynamic segment.
 #[test]
 fn a_compression_opens_a_node_and_completes_it() {
     let (_d, mut store) = open();
@@ -544,7 +548,9 @@ fn a_compression_opens_a_node_and_completes_it() {
         say(&mut store, CH, ts, 0, role::USER, kind::TEXT, text);
     }
 
-    store.open_checkpoint(CH, at(2, 200, 0), &[7, 8]).unwrap();
+    store
+        .open_checkpoint(CH, at(2, 200, 0), &[vec![7, 8], vec![9]])
+        .unwrap();
     let open_view = store.fetch_full(CH, m(1)).unwrap();
     assert_eq!(
         open_view.coverage,
@@ -566,7 +572,11 @@ fn a_compression_opens_a_node_and_completes_it() {
     assert_eq!(view.coverage, at(2, 200, 0));
     assert_eq!(view.summary.as_deref(), Some("m1 and m2"));
     assert!(!view.compressing);
-    assert_eq!(view.head, Some(vec![7, 8]), "the frozen head rode the node");
+    assert_eq!(
+        view.head,
+        Some(vec![vec![7, 8], vec![9]]),
+        "the frozen head rode the node"
+    );
     assert_eq!(view.increment.len(), 1, "m3 alone is after the pointer");
 }
 
@@ -582,9 +592,11 @@ fn nodes_accumulate_and_the_read_follows_the_newest_complete_one() {
     say(&mut store, CH, 900, 0, role::USER, kind::TEXT, "m3");
 
     store
-        .append_checkpoint(CH, at(2, 200, 0), "first summary", &[1])
+        .append_checkpoint(CH, at(2, 200, 0), "first summary", &[vec![1]])
         .unwrap();
-    store.open_checkpoint(CH, at(3, 900, 0), &[2]).unwrap();
+    store
+        .open_checkpoint(CH, at(3, 900, 0), &[vec![2]])
+        .unwrap();
 
     let v = store.fetch_full(CH, m(1)).unwrap();
     assert_eq!(
@@ -605,7 +617,11 @@ fn nodes_accumulate_and_the_read_follows_the_newest_complete_one() {
     let v = store.fetch_full(CH, m(1)).unwrap();
     assert_eq!(v.coverage, at(3, 900, 0));
     assert_eq!(v.summary.as_deref(), Some("second summary"));
-    assert_eq!(v.head, Some(vec![2]), "the new node carries its own head");
+    assert_eq!(
+        v.head,
+        Some(vec![vec![2]]),
+        "the new node carries its own head"
+    );
     assert!(v.increment.is_empty());
     assert!(!v.compressing);
 }
@@ -617,8 +633,12 @@ fn re_opening_the_same_pointer_is_the_same_node() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
     say(&mut store, CH, 100, 0, role::USER, kind::TEXT, "m1");
-    store.open_checkpoint(CH, at(1, 100, 0), &[5]).unwrap();
-    store.open_checkpoint(CH, at(1, 100, 0), &[5]).unwrap();
+    store
+        .open_checkpoint(CH, at(1, 100, 0), &[vec![5]])
+        .unwrap();
+    store
+        .open_checkpoint(CH, at(1, 100, 0), &[vec![5]])
+        .unwrap();
     assert_eq!(
         store.complete_checkpoint(CH, "once", None).unwrap(),
         Some(at(1, 100, 0))

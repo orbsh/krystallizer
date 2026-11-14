@@ -338,11 +338,11 @@ fn build(
         .route("/graph/{scope}/timeline", get(timeline_facts))
         .route("/graph/{scope}/chain", get(chain_facts))
         .route(
-            "/graph/{scope}/facts/{edge_id}",
+            "/graph/{scope}/facts/{key}",
             get(fetch_fact).delete(withdraw_fact),
         )
         .route("/memories/{scope}/recall", post(recall_facts))
-        .route("/memories/{scope}/edges/{edge_id}/touch", post(touch_fact))
+        .route("/memories/{scope}/edges/{key}/touch", post(touch_fact))
         .route("/memories/{scope}/entities/{name}", get(fetch_entity))
         .route(
             "/graph/{scope}/entities/{node_id}/edges",
@@ -761,7 +761,7 @@ async fn fetch_session(
     // The head this read assembled is what the coming compression will have
     // been produced under, so the proposal freezes it NOW (ADR-0008 §2: the
     // checkpoint carries the persona, not a re-computation of it).
-    let head_ids: Vec<u64> = projection.head.iter().map(|fact| fact.edge_id).collect();
+    let head_ids: Vec<Vec<u8>> = projection.head.iter().map(|fact| fact.key.wire()).collect();
     let verdict =
         mem_core::compress::evaluate(&projection.view, assembled, idle_ms, &state.compression);
     if let Some(v) = &verdict {
@@ -1736,24 +1736,27 @@ pub struct CodeTouchDto {
 /// caller can tell a landed fact from an adjudicated loss.
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct IngestOutcomeDto {
-    /// `linked` (a new edge) | `rewritten` (the incumbent's row, same
-    /// `edge_id`) | `dropped` (the incumbent won) | `bumped` (the assertion
-    /// already stood: same head, kind and tail — nothing was written).
+    /// `linked` (a new edge) | `rewritten` (a new head: the old tuple was
+    /// withdrawn and this one written) | `dropped` (the incumbent won) |
+    /// `bumped` (the assertion already stood: same head, kind and tail —
+    /// nothing was written).
     pub outcome: String,
-    pub edge_id: u64,
+    /// The edge's address: its tuple's own hex (okm ADR-0067: an edge has no
+    /// number). The same string `GET /graph/{scope}/facts/{key}` takes.
+    pub key: String,
 }
 
 impl From<IngestOutcome> for IngestOutcomeDto {
     fn from(o: IngestOutcome) -> Self {
-        let (outcome, edge_id) = match o {
-            IngestOutcome::Linked { edge_id } => ("linked", edge_id),
-            IngestOutcome::Rewritten { edge_id } => ("rewritten", edge_id),
-            IngestOutcome::Dropped { edge_id } => ("dropped", edge_id),
-            IngestOutcome::Bumped { edge_id } => ("bumped", edge_id),
+        let outcome = match &o {
+            IngestOutcome::Linked { .. } => "linked",
+            IngestOutcome::Rewritten { .. } => "rewritten",
+            IngestOutcome::Dropped { .. } => "dropped",
+            IngestOutcome::Bumped { .. } => "bumped",
         };
         Self {
             outcome: outcome.to_string(),
-            edge_id,
+            key: mem_core::graph::key_hex(o.key()),
         }
     }
 }
@@ -2053,15 +2056,19 @@ async fn chain_facts(
     ))
 }
 
-/// One fact BY ITS ID — the deterministic read, the mirror of the write that
-/// answered with an `edge_id`: no query, no embedding, no ranking. `404` when the
-/// id names nothing in this scope, so a stale reference link is a clean miss.
+/// One fact BY ITS ADDRESS — the deterministic read, the mirror of the write
+/// that answered with a `key`: no query, no embedding, no ranking. `404` when the
+/// address names nothing in this scope (or is no tuple of this graph), so a stale
+/// reference link is a clean miss.
 async fn fetch_fact(
     State(state): State<Arc<MemState>>,
-    Path((scope, edge_id)): Path<(u64, u64)>,
+    Path((scope, key)): Path<(u64, String)>,
 ) -> axum::response::Response {
     let mut graph = state.graph.lock().await;
-    match graph.fact_in_scope(scope, edge_id) {
+    let Some(key) = graph.key_of_hex(&key) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match graph.fact_in_scope(scope, &key) {
         Ok(Some(fact)) => Json(FactViewDto::from(fact)).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => FactError::from(e).into_response(),
@@ -2071,13 +2078,16 @@ async fn fetch_fact(
 /// Withdraw one fact — the write side's third verb, beside link and rewrite. The
 /// row goes with every derived face entry in one batch (okm's `retract`), so no
 /// stale weight or community entry survives it. `204` on success, `404` when the
-/// id names nothing here.
+/// address names nothing here.
 async fn withdraw_fact(
     State(state): State<Arc<MemState>>,
-    Path((scope, edge_id)): Path<(u64, u64)>,
+    Path((scope, key)): Path<(u64, String)>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     let mut graph = state.graph.lock().await;
-    match graph.withdraw(scope, edge_id) {
+    let key = graph
+        .key_of_hex(&key)
+        .ok_or((StatusCode::NOT_FOUND, "no such fact".to_string()))?;
+    match graph.withdraw(scope, &key) {
         Ok(true) => Ok(StatusCode::NO_CONTENT),
         Ok(false) => Err((StatusCode::NOT_FOUND, "no such fact".into())),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
@@ -2153,18 +2163,21 @@ pub struct TouchFact {
     pub ts_ms: u64,
 }
 
-/// `POST /memories/{scope}/edges/{edge_id}/touch` — count one TOOL consult of
+/// `POST /memories/{scope}/edges/{key}/touch` — count one TOOL consult of
 /// a fact (ADR-0005's `tool_invoke_count`, the index that outranks a plain
-/// read) and answer the fact's new view. An unknown edge, or one whose
+/// read) and answer the fact's new view. An unknown address, or one whose
 /// source lives in another scope, is a 404: edges carry no scope segment,
 /// their endpoints do.
 async fn touch_fact(
     State(state): State<Arc<MemState>>,
-    Path((scope, edge_id)): Path<(u64, u64)>,
+    Path((scope, key)): Path<(u64, String)>,
     Json(body): Json<TouchFact>,
 ) -> axum::response::Response {
     let mut graph = state.graph.lock().await;
-    match graph.touch(scope, edge_id, mem_core::Touch::Tool, body.ts_ms) {
+    let Some(key) = graph.key_of_hex(&key) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match graph.touch(scope, &key, mem_core::Touch::Tool, body.ts_ms) {
         Ok(Some(view)) => Json(FactViewDto::from(view)).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => FactError::from(e).into_response(),
@@ -2172,10 +2185,11 @@ async fn touch_fact(
 }
 
 /// One fact with both endpoints resolved (what a renderer or a recall
-/// needs — an edge id alone is not renderable).
+/// needs — a head alone is not renderable).
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct FactViewDto {
-    pub edge_id: u64,
+    /// The fact's address: its tuple's own hex (okm ADR-0067).
+    pub key: String,
     pub kind: String,
     pub src: EntityDto,
     pub dst: EntityDto,
@@ -2188,10 +2202,10 @@ pub struct FactViewDto {
     pub tool_count: u32,
     pub last_read: u64,
     pub last_write: u64,
-    /// The fact ids this fact points at (PLAN 4c). Each one is an address a
-    /// caller may follow on its own — `GET /graph/{scope}/facts/{id}` — never a
-    /// subtree this answer inlined.
-    pub refs: Vec<u64>,
+    /// The facts this fact points at (PLAN 4c), each as the target's tuple hex.
+    /// Each one is an address a caller may follow on its own —
+    /// `GET /graph/{scope}/facts/{key}` — never a subtree this answer inlined.
+    pub refs: Vec<String>,
 }
 
 impl From<mem_core::graph::FactView> for FactViewDto {
@@ -2204,7 +2218,7 @@ impl From<mem_core::graph::FactView> for FactViewDto {
             name: n.name,
         };
         Self {
-            edge_id: v.edge_id,
+            key: mem_core::graph::key_hex(&v.key),
             kind: v.kind,
             src: node(v.src),
             dst: node(v.dst),
@@ -2216,7 +2230,7 @@ impl From<mem_core::graph::FactView> for FactViewDto {
             tool_count: v.edge.tool_count,
             last_read: v.edge.last_read,
             last_write: v.edge.last_write,
-            refs: v.refs,
+            refs: v.refs.iter().map(mem_core::graph::key_hex).collect(),
         }
     }
 }
@@ -2291,7 +2305,8 @@ pub struct GraphNodeDto {
 /// needs) plus the declared fields it may render or ignore.
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct GraphLinkDto {
-    pub edge_id: u64,
+    /// The fact's address: its tuple's own hex (okm ADR-0067).
+    pub key: String,
     /// The entity endpoint's id; absent when that endpoint is a user node
     /// (ADR-0014) — the link still exists, its end just is not a corpus node.
     pub source: Option<u64>,
@@ -2372,7 +2387,7 @@ async fn fetch_graph(
         .map_err(FactError::from)?
         .into_iter()
         .map(|fact| GraphLinkDto {
-            edge_id: fact.edge_id,
+            key: mem_core::graph::key_hex(&fact.key),
             source: fact.src.id.entity_id(),
             target: fact.dst.id.entity_id(),
             kind: fact.kind,

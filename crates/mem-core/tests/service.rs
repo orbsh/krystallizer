@@ -70,10 +70,15 @@ fn the_service_assembly_serves_every_group() {
             .language,
         "nu"
     );
-    assert_eq!(
-        outcome,
-        mem_core::IngestOutcome::Linked { edge_id: 1 },
-        "the graph's id counters work off the same assembly"
+    // The answer is the fact's HEAD (okm ADR-0067), and that head is what the
+    // same assembly reads back: one address, no id counters to agree on.
+    assert!(
+        matches!(outcome, mem_core::IngestOutcome::Linked { .. }),
+        "a fresh fact is a new edge: {outcome:?}"
+    );
+    assert!(
+        stores.graph.fact(outcome.key()).unwrap().is_some(),
+        "the head the write answered with is the row the read finds"
     );
     let (code_vertex, _) = stores
         .graph

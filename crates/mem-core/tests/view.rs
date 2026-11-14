@@ -163,15 +163,12 @@ fn head_is_both_directions_deduplicated() {
         2,
         "both outgoing facts are in the head"
     );
-    // Weights are fold-equal here, so the tiebreak (edge id, ascending)
-    // decides — repeated reads answer identically.
-    let ids: Vec<u64> = p.head.iter().map(|f| f.edge_id).collect();
-    let mut sorted = ids.clone();
+    // Weights are fold-equal here, so the tiebreak (the head's own bytes,
+    // ascending) decides — repeated reads answer identically.
+    let keys: Vec<_> = p.head.iter().map(|f| f.key.clone()).collect();
+    let mut sorted = keys.clone();
     sorted.sort_unstable();
-    assert_eq!(
-        ids, sorted,
-        "stable order: equal weights keep edge id order"
-    );
+    assert_eq!(keys, sorted, "stable order: equal weights keep head order");
     let weights: Vec<u32> = p.head.iter().map(|f| f.edge.weight).collect();
     assert!(weights.is_sorted_by(|a, b| a >= b), "weight-descending");
 }
@@ -241,7 +238,7 @@ fn the_head_is_frozen_at_the_compression() {
         !live.head.is_empty(),
         "before any compression the live traversal answers"
     );
-    let head_ids: Vec<u64> = live.head.iter().map(|f| f.edge_id).collect();
+    let head_ids: Vec<Vec<u8>> = live.head.iter().map(|f| f.key.wire()).collect();
 
     let verdict = mem_core::compress::Verdict {
         checkpoint: at(1, 1000, 0),
@@ -276,7 +273,7 @@ fn the_head_is_frozen_at_the_compression() {
         .unwrap();
 
     let frozen = projection(&mut stores);
-    let frozen_ids: Vec<u64> = frozen.head.iter().map(|f| f.edge_id).collect();
+    let frozen_ids: Vec<Vec<u8>> = frozen.head.iter().map(|f| f.key.wire()).collect();
     assert_eq!(
         frozen_ids, head_ids,
         "the head is the set frozen at the compression, re-rendered — not the live traversal"

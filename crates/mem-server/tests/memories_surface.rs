@@ -4,11 +4,14 @@
 //!
 //! The load-bearing assertions: the caller's three-way outcome comes back
 //! (linked / rewritten / dropped / bumped), a multi-valued relation accumulates
-//! parallel edges while a functional one rewrites its incumbent IN PLACE
-//! (which proves the incumbent scan read the stored edge through the
-//! door), a structural bug is a 400 carrying the core's own reason, and
-//! the graph shares the `memory` keyspace with the code store without
-//! either seeing the other.
+//! parallel edges while a functional one adjudicates its incumbent (which
+//! proves the incumbent scan read the stored edge through the door), a
+//! structural bug is a 400 carrying the core's own reason, and the graph shares
+//! the `memory` keyspace with the code store without either seeing the other.
+//!
+//! A fact is addressed by its HEAD (okm ADR-0067): the write answers with the
+//! tuple's own hex, and a rewrite to a different tail is a different head —
+//! withdraw plus write, never a renumbering in place.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -85,8 +88,19 @@ fn tuple(text: &str) -> serde_json::Value {
     serde_json::from_str(text).unwrap()
 }
 
-/// A fact lands and answers `linked` with the edge id; a relation that
-/// declares nothing is multi-valued, so the next fact is a SECOND edge.
+/// Is this a fact's ADDRESS — the tuple's own bytes, lowercase hex (okm
+/// ADR-0067: an edge has no number, so the write answers with its head).
+fn is_address(key: &str) -> bool {
+    !key.is_empty()
+        && key.len().is_multiple_of(2)
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// A fact lands and answers `linked` with its head's address; a relation that
+/// declares nothing is multi-valued, so the next fact is a SECOND edge, at a
+/// second address.
 #[tokio::test]
 async fn a_fact_round_trips_and_multi_valued_relations_accumulate() {
     let (base, _dir) = spawn_server().await;
@@ -103,7 +117,11 @@ async fn a_fact_round_trips_and_multi_valued_relations_accumulate() {
     .await
     .unwrap();
     assert_eq!(first.outcome, "linked");
-    assert_eq!(first.edge_id, 1, "the store assigns the edge id");
+    assert!(
+        is_address(&first.key),
+        "the answer carries the fact's address, not a number: {}",
+        first.key
+    );
 
     let second: IngestOutcomeDto = ingest(
         &client,
@@ -115,10 +133,10 @@ async fn a_fact_round_trips_and_multi_valued_relations_accumulate() {
     .json()
     .await
     .unwrap();
-    assert_eq!(
-        (second.outcome.as_str(), second.edge_id),
-        ("linked", 2),
-        "no declaration = parallel edges are separate facts"
+    assert_eq!(second.outcome, "linked");
+    assert_ne!(
+        second.key, first.key,
+        "no declaration = parallel edges are separate facts, each at its own head"
     );
 }
 
@@ -142,7 +160,8 @@ async fn a_functional_relation_rewrites_its_incumbent() {
     .json()
     .await
     .unwrap();
-    assert_eq!((first.outcome.as_str(), first.edge_id), ("linked", 1));
+    assert_eq!(first.outcome, "linked");
+    assert!(is_address(&first.key), "{}", first.key);
 
     let second: IngestOutcomeDto = ingest(
         &client,
@@ -155,9 +174,12 @@ async fn a_functional_relation_rewrites_its_incumbent() {
     .await
     .unwrap();
     assert_eq!(
-        (second.outcome.as_str(), second.edge_id),
-        ("rewritten", first.edge_id),
-        "the winner keeps the incumbent's edge id"
+        second.outcome, "rewritten",
+        "a functional relation adjudicates the incumbent"
+    );
+    assert_ne!(
+        second.key, first.key,
+        "a different tail is a different head: the rewrite is withdraw + write"
     );
 
     // A weaker, older fact is the loser: nothing is written.
@@ -171,7 +193,11 @@ async fn a_functional_relation_rewrites_its_incumbent() {
     .json()
     .await
     .unwrap();
-    assert_eq!((third.outcome.as_str(), third.edge_id), ("dropped", 1));
+    assert_eq!(
+        (third.outcome.as_str(), third.key.as_str()),
+        ("dropped", second.key.as_str()),
+        "the loser is dropped in favour of the incumbent's head"
+    );
 }
 
 /// The scope is the path segment, and it is the ownership boundary: the
@@ -202,7 +228,10 @@ async fn the_scope_rides_the_path() {
         theirs.outcome, "linked",
         "scope 2's source is a different node — no incumbent crosses the boundary"
     );
-    assert_eq!(theirs.edge_id, 2, "ids are global, the boundary is not");
+    assert_ne!(
+        theirs.key, mine.key,
+        "the address carries the scope, so the boundary is in the identity"
+    );
 }
 
 /// A malformed tuple is the caller's bug: 400, with the core's own reason
@@ -556,10 +585,10 @@ async fn recall_door_answers_an_empty_landing_without_an_engine() {
     );
 }
 
-/// `POST /memories/{scope}/edges/{id}/touch` — the caller reports a TOOL
+/// `POST /memories/{scope}/edges/{head}/touch` — the caller reports a TOOL
 /// consult (k10r cannot see one from inside), and the fact's new view
 /// comes back with the counter bumped and the weight re-folded. An unknown
-/// edge, or one from another scope, is a 404: the edge has no scope
+/// head, or one from another scope, is a 404: the edge has no scope
 /// segment, its endpoints do.
 #[tokio::test]
 async fn the_touch_door_counts_a_tool_consult_and_404s_for_a_foreign_edge() {
@@ -577,9 +606,11 @@ async fn the_touch_door_counts_a_tool_consult_and_404s_for_a_foreign_edge() {
     .await
     .unwrap();
     assert_eq!(outcome.outcome, "linked");
+    // The door takes the tuple's own address, never a number (okm ADR-0067).
+    let head = outcome.key.clone();
 
     let touched: FactViewDto = client
-        .post(format!("{base}/memories/1/edges/1/touch"))
+        .post(format!("{base}/memories/1/edges/{head}/touch"))
         .json(&serde_json::json!({ "ts_ms": 2000 }))
         .send()
         .await
@@ -599,20 +630,32 @@ async fn the_touch_door_counts_a_tool_consult_and_404s_for_a_foreign_edge() {
     );
 
     let unknown = client
-        .post(format!("{base}/memories/1/edges/99/touch"))
+        .post(format!(
+            "{base}/memories/1/edges/{}/touch",
+            another_head(&head)
+        ))
         .json(&serde_json::json!({ "ts_ms": 2000 }))
         .send()
         .await
         .unwrap();
-    assert_eq!(unknown.status(), 404);
+    assert_eq!(unknown.status(), 404, "a well-formed head no row holds");
 
     let foreign = client
-        .post(format!("{base}/memories/2/edges/1/touch"))
+        .post(format!("{base}/memories/2/edges/{head}/touch"))
         .json(&serde_json::json!({ "ts_ms": 2000 }))
         .send()
         .await
         .unwrap();
     assert_eq!(foreign.status(), 404, "another scope's edge is not ours");
+}
+
+/// A well-formed head that names no row: the landed address with its last byte
+/// moved, i.e. a `dst` node that was never created. The door's 404 for it is a
+/// real 404 (a tuple the graph can parse), not a malformed-string refusal.
+fn another_head(head: &str) -> String {
+    let (prefix, last) = head.split_at(head.len() - 2);
+    let byte = u8::from_str_radix(last, 16).unwrap();
+    format!("{prefix}{:02x}", byte.wrapping_add(1))
 }
 
 /// The read door's contract: the query lands, the answer is the landed

@@ -27,6 +27,12 @@
 //!   pkey width, so endpoints need no declaration. The relation NAME is the
 //!   edge's PREDICATE: it allocates in the graph's own predicate vocabulary
 //!   (0x04/0x05) and is listed by one prefix scan of it.
+//!
+//! - **A fact has no number** (okm ADR-0067): its identity is the tuple
+//!   `(src, predicate, dst)`, carried by okm's [`EdgeKey`]. Every verb here
+//!   takes that head, writing the same tuple twice is writing the same row,
+//!   and a fact is addressed on the wire by [`key_hex`] — the tuple's own
+//!   bytes, which is the only name an edge has.
 //! - **The relation's open props** (condition / cause / strength / the
 //!   per-assertion `functional` flag) ride the edge's dynamic segment
 //!   (okm's fixed face 0x01, one entry per edge), built by okm's segment
@@ -68,9 +74,9 @@ use okm_core::okm_value::Variant;
 use okm_core::parts;
 use okm_core::Uuid7;
 use okm_core::{
-    write_slot, Batch, Collection, Decl, Document, DocumentEncode, EdgeHead, FjallStore, Fragment,
-    Graph, GraphEncode, KeyEncode, NodeRef, Vector, VectorElem, VirtualStorage, Vocab,
-    PRIMARY_SLOT,
+    scan_suffix_kv, write_slot, Batch, Collection, Decl, Document, DocumentEncode, EdgeHead,
+    EdgeKey, FjallStore, Fragment, Graph, GraphEncode, KeyEncode, KvIndex, NodeRef, Vector,
+    VectorElem, VirtualStorage, Vocab, PRIMARY_SLOT,
 };
 use okm_lake::bridge::EdgeTable;
 use okm_lake::snapshot::parquet_io::EdgeRestore;
@@ -271,6 +277,16 @@ use __OkmIndex_EntityRow_by_name as ByName;
 use __OkmIndex_Facts_by_scope_weight as ByScopeWeight;
 /// The temporal face: ascending in `since`, walked in reverse for newest-first.
 use __OkmIndex_Facts_by_since as BySince;
+
+/// Bytes of the `by_since` face's declared field segment, under an empty probe:
+/// `since` is a `u64` and okm writes a declared field as its own fixed-width
+/// big-endian encoding (ADR-0016). A face entry is `[fields][head]`, so this is
+/// the offset the head starts at.
+const BY_SINCE_FIELDS: usize = 8;
+/// Bytes of the `by_scope_weight` segment under a `scope` probe: the declared
+/// fields are `(scope, weight)` in declaration order, so the probe eats `scope`
+/// (`u64`, 8) and `weight` (`u32`, 4) is what is left in front of the head.
+const BY_WEIGHT_FIELD: usize = 4;
 
 /// A fact: an edge of the graph. The declared fields are `since` (the
 /// caller's clock, the adjudication input), `confidence` (the write-side's,
@@ -675,22 +691,73 @@ fn decode_term(
 }
 
 /// What one ingest did — ADR-0010 §1's three-way outcome, reported so the
-/// caller can tell a landed fact from an adjudicated loss.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// caller can tell a landed fact from an adjudicated loss. The answer is the
+/// fact's HEAD (`(src, predicate, dst)`), because an edge has no number
+/// (okm ADR-0067): it is what the caller keeps, and what every read verb takes.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IngestOutcome {
     /// No incumbent: the fact is a new edge.
-    Linked { edge_id: u64 },
+    Linked { key: EdgeKey },
     /// The relation is functional at this source and this fact won the
-    /// adjudication: the incumbent's row was rewritten (same `edge_id`).
-    Rewritten { edge_id: u64 },
-    /// Functional relation, incumbent kept: nothing was written.
-    Dropped { edge_id: u64 },
+    /// adjudication. A rewrite is a DELETE plus a WRITE now — two different
+    /// heads are two different edges — so the key answered is the one that
+    /// stands, and the incumbent's head is gone.
+    Rewritten { key: EdgeKey },
+    /// Functional relation, incumbent kept: nothing was written. `key` is the
+    /// incumbent's head (it is gone from the graph only if the caller deletes
+    /// it).
+    Dropped { key: EdgeKey },
     /// The assertion already stands — same head, same kind, same tail — so the
     /// edge is the incumbent and nothing was written. Not an error and not a
     /// "drop": the fact is IN the graph, which is the answer the caller asked
     /// for. A second row for one assertion would double it in every read while
     /// adding no knowledge.
-    Bumped { edge_id: u64 },
+    Bumped { key: EdgeKey },
+}
+
+impl IngestOutcome {
+    /// The head this outcome is about — the tuple a caller addresses it by.
+    pub fn key(&self) -> &EdgeKey {
+        match self {
+            IngestOutcome::Linked { key }
+            | IngestOutcome::Rewritten { key }
+            | IngestOutcome::Dropped { key }
+            | IngestOutcome::Bumped { key } => key,
+        }
+    }
+}
+
+/// The wire spelling of a head: the tuple's own bytes, hex.
+///
+/// It is an ADDRESS, not a number (okm ADR-0067): one path segment, no escaping,
+/// and the same string in JSON, in a URL and in a rendered line. A caller that
+/// wants to point at a fact carries this back to [`GraphStore::key_of_hex`].
+pub fn key_hex(key: &EdgeKey) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let wire = key.wire();
+    let mut out = String::with_capacity(wire.len() * 2);
+    for byte in wire {
+        out.push(HEX[usize::from(byte >> 4)] as char);
+        out.push(HEX[usize::from(byte & 0x0F)] as char);
+    }
+    out
+}
+
+/// The bytes a hex address names, or `None` for a string that is not hex of an
+/// even length. A parse, never a guess: the tuple's width still has to be read
+/// by the graph's declaration, which is [`GraphStore::key_of_hex`]'s job.
+fn hex_bytes(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    text.as_bytes()
+        .chunks(2)
+        .map(|pair| {
+            let hi = (pair[0] as char).to_digit(16)?;
+            let lo = (pair[1] as char).to_digit(16)?;
+            u8::try_from(hi * 16 + lo).ok()
+        })
+        .collect()
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -715,7 +782,8 @@ pub enum IngestError {
 /// A decoded fact, read back from storage.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FactBody {
-    pub edge_id: u64,
+    /// The head this row was read at — the fact's whole identity.
+    pub key: EdgeKey,
     pub src: NodeRef,
     pub dst: NodeRef,
     pub kind: String,
@@ -781,19 +849,25 @@ pub struct ResolvedNode {
 }
 
 /// One fact with BOTH endpoints resolved — what a wire face or a
-/// renderer needs (an edge id alone is not renderable).
+/// renderer needs (a head alone is not renderable).
 #[derive(Clone, Debug, PartialEq)]
 pub struct FactView {
-    pub edge_id: u64,
+    /// The fact's identity: its head. No number (okm ADR-0067) — a caller
+    /// addresses it by [`key_hex`].
+    pub key: EdgeKey,
     pub kind: String,
     pub src: ResolvedNode,
     pub dst: ResolvedNode,
     pub edge: Facts,
-    /// The fact ids this fact POINTS AT (PLAN 4c): the reference links a writer
+    /// The facts this fact POINTS AT (PLAN 4c): the reference links a writer
     /// left when the referenced fact is not central enough to sit in the head.
     /// One extra point read per shown fact — the price of the pointer being
     /// visible in the answer instead of discoverable by a second query.
-    pub refs: Vec<u64>,
+    ///
+    /// Each entry is a HEAD, because that is what a fact is called now: the
+    /// `ref` prop carries the tuples' own bytes, not numbers that would have to
+    /// be allocated, preserved and looked up.
+    pub refs: Vec<EdgeKey>,
 }
 
 /// One landing seed (ADR-0003): the node the query landed on, its similarity
@@ -847,11 +921,13 @@ pub struct CommunitySlice {
     pub facts: Vec<FactView>,
 }
 
-/// The prop name a fact uses to point at ANOTHER fact (PLAN 4c): one fact id, or
-/// an array of them, in the same scope. It is a NAME the writer uses, not a
-/// schema — a dangling id is not an error, it is a 404 the reader meets when it
-/// chooses to follow (`fact_in_scope`). Nothing validates it on write: the reader
-/// owns the decision to descend.
+/// The prop name a fact uses to point at ANOTHER fact (PLAN 4c): one fact's
+/// address, or an array of them, in the same scope. The wire spelling of an
+/// address is the head's tuple hex ([`key_hex`]), and the write stores the bytes
+/// it names — an edge has no number to point at (okm ADR-0067). It is a NAME the
+/// writer uses, not a schema: a dangling address is not an error, it is a 404 the
+/// reader meets when it chooses to follow (`fact_in_scope`). Nothing validates it
+/// on write: the reader owns the decision to descend.
 pub const REF_FIELD: &str = "ref";
 
 /// The conventional props a node carries so a reader never needs the document.
@@ -885,19 +961,56 @@ fn embedding_text(value: &str, props: &BTreeMap<String, Variant>) -> String {
     parts.join("\n")
 }
 
-/// The ids in a `ref` value: one id or an array of ids. Anything else (a string,
-/// a nested object) is not a reference and yields nothing — a writer's mistake
-/// must not turn into a phantom target.
-fn refs_of(value: &Variant) -> Vec<u64> {
+/// The heads a `ref` value names: one head, or an array of heads. Anything else
+/// (a number, a name, a nested object) is not a reference and names nothing — a
+/// writer's mistake must not turn into a phantom target.
+///
+/// The value is the tuple's own bytes (`Variant::Bytes`), because a fact has no
+/// number to store (okm ADR-0067). A payload written by the numbered build
+/// carries `U64`s here; they are not heads, so they resolve to nothing rather
+/// than to a maybe-address.
+/// The WIRE form of a reference link: a fact's address is its tuple's own hex
+/// (okm ADR-0067), so a writer states `ref` as that string — or as an array of
+/// them — and the write stores the tuple's BYTES, which is what the reader
+/// parses back. Anything that is not hex is left as it came: a dangling pointer
+/// is the reader's 404, never a refused write.
+fn wire_refs(props: &mut BTreeMap<String, Variant>) {
+    let Some(value) = props.get_mut(REF_FIELD) else {
+        return;
+    };
+    let as_bytes = |item: &Variant| match item {
+        Variant::Str(text) => hex_bytes(text).map(Variant::Bytes),
+        _ => None,
+    };
     match value {
-        Variant::U64(id) => vec![*id],
-        Variant::Array(items) => items
-            .iter()
-            .filter_map(|item| match item {
-                Variant::U64(id) => Some(*id),
-                _ => None,
-            })
-            .collect(),
+        Variant::Str(text) => {
+            if let Some(bytes) = hex_bytes(text) {
+                *value = Variant::Bytes(bytes);
+            }
+        }
+        Variant::Array(items) => {
+            for item in items.iter_mut() {
+                if let Some(bytes) = as_bytes(item) {
+                    *item = bytes;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn refs_of(value: &Variant, members: &okm_core::Members) -> Vec<EdgeKey> {
+    fn head(wire: &[u8], members: &okm_core::Members) -> Option<EdgeKey> {
+        let (key, taken) = EdgeKey::parse(wire, members)?;
+        (taken == wire.len()).then_some(key)
+    }
+    let one = |item: &Variant| match item {
+        Variant::Bytes(wire) => head(wire, members),
+        _ => None,
+    };
+    match value {
+        Variant::Bytes(wire) => head(wire, members).into_iter().collect(),
+        Variant::Array(items) => items.iter().filter_map(one).collect(),
         _ => Vec::new(),
     }
 }
@@ -1034,7 +1147,6 @@ pub struct GraphStore {
     /// edge collection's own handle is built PER CALL — see `facts()`.
     store: FjallStore,
     next_node: u64,
-    next_edge: u64,
     /// The code id watermark (k10r ADR-0023), seeded from the sheets at open.
     next_code: u64,
     /// The embedding engine (ADR-0003). `None` = no engine attached:
@@ -1078,24 +1190,17 @@ impl GraphStore {
             .map(|key| key.code_id)
             .max()
             .map_or(1, |id| id.saturating_add(1));
-        // Id recovery, both tables: scan the last key in table order.
-        // Entity keys are `[scope][node_id]`, so the last key carries the
-        // global max node id; the edge primary keys are `[edge_id]` under
-        // ns 37's primary slot, in the same BE order. A fresh table
-        // starts at 1 — ids are unique but not contiguous per scope.
+        // Id recovery, nodes only: entity keys are `[scope][node_id]`, so the
+        // last key in table order carries the global max node id. A fresh table
+        // starts at 1 — ids are unique but not contiguous per scope. There is no
+        // edge watermark to recover: an edge has no number to issue (okm
+        // ADR-0067), so a restore cannot collide with one either.
         let next_node = entities
             .scan_keys(&okm_core::PrefixProbe::empty())
             .map(|r| r.map_err(|e| e.to_string()))
             .collect::<Result<Vec<_>, _>>()?
             .last()
             .map_or(1, |k| k.node_id.saturating_add(1));
-        // Edge ids come off the graph's own primary slot: the maximum is the
-        // last key, one reverse step inside okm, instead of collecting the
-        // whole id table here and slicing its bytes.
-        let next_edge = Graph::<FjallStore, Facts>::new(store.clone())
-            .max_edge_id()
-            .map_err(|e| e.to_string())?
-            .map_or(1, |id| id.saturating_add(1));
         Ok(Self {
             entities,
             vectors,
@@ -1103,7 +1208,6 @@ impl GraphStore {
             codes,
             store,
             next_node,
-            next_edge,
             next_code,
             embedder: None,
             members: None,
@@ -1150,6 +1254,29 @@ impl GraphStore {
     /// only grow).
     fn facts(&self) -> Graph<FjallStore, Facts> {
         Graph::new(self.store.clone())
+    }
+
+    /// The declaration's width table — how a head's bytes split into endpoints.
+    fn members(&self) -> okm_core::Members {
+        self.facts().member_widths().clone()
+    }
+
+    /// The head a hex address names ([`key_hex`]'s inverse), parsed by this
+    /// graph's own declaration: `None` for a string that is not hex, or is not a
+    /// tuple whose endpoints are the declared member tables at the declared
+    /// widths. A no-match is the caller's 404, never an invented key.
+    pub fn key_of_hex(&self, text: &str) -> Option<EdgeKey> {
+        self.key_of_wire(&hex_bytes(text)?)
+    }
+
+    /// The head a WIRE tuple names — `EdgeKey::wire`'s inverse, split by the
+    /// declaration's widths. This is the form a stored head takes: the channel
+    /// checkpoint freezes the head it built a summary under, and a document
+    /// field carries the tuple itself rather than a number (okm ADR-0067).
+    pub fn key_of_wire(&self, bytes: &[u8]) -> Option<EdgeKey> {
+        let members = self.members();
+        let (key, taken) = EdgeKey::parse(bytes, &members)?;
+        (taken == bytes.len()).then_some(key)
     }
 
     /// One node by id.
@@ -1202,11 +1329,11 @@ impl GraphStore {
         Ok((!doc.is_empty()).then_some(doc))
     }
 
-    /// One fact, read back by id.
-    pub fn fact(&mut self, edge_id: u64) -> Result<Option<FactBody>, IngestError> {
+    /// One fact, read back at its head.
+    pub fn fact(&mut self, key: &EdgeKey) -> Result<Option<FactBody>, IngestError> {
         let mut facts = self.facts();
         let Some(body) = facts
-            .get_edge(edge_id)
+            .get_edge(key)
             .map_err(|e| IngestError::Storage(e.to_string()))?
         else {
             return Ok(None);
@@ -1218,7 +1345,7 @@ impl GraphStore {
             return Ok(None);
         };
         Ok(Some(FactBody {
-            edge_id,
+            key: key.clone(),
             src: body.src,
             dst: body.dst,
             kind,
@@ -1230,10 +1357,10 @@ impl GraphStore {
     /// node rows (an absent endpoint renders as a node id and an empty
     /// name — never an error: the edge is truth even if its node row was
     /// removed).
-    pub fn fact_view(&mut self, edge_id: u64) -> Result<Option<FactView>, IngestError> {
+    pub fn fact_view(&mut self, key: &EdgeKey) -> Result<Option<FactView>, IngestError> {
         let mut facts = self.facts();
         let Some(body) = facts
-            .get_edge(edge_id)
+            .get_edge(key)
             .map_err(|e| IngestError::Storage(e.to_string()))?
         else {
             return Ok(None);
@@ -1244,12 +1371,13 @@ impl GraphStore {
         else {
             return Ok(None);
         };
+        let members = self.members();
         let refs = self
-            .fact_props(edge_id)?
-            .and_then(|props| props.get(REF_FIELD).map(refs_of))
+            .fact_props(key)?
+            .and_then(|props| props.get(REF_FIELD).map(|v| refs_of(v, &members)))
             .unwrap_or_default();
         Ok(Some(FactView {
-            edge_id,
+            key: key.clone(),
             kind,
             src: self.resolve_ref(&body.src)?,
             dst: self.resolve_ref(&body.dst)?,
@@ -1393,7 +1521,8 @@ impl GraphStore {
 
     /// Recompute every in-process issuer from the store — the open path, reused
     /// after a restore wrote rows underneath. A restore that skips this hands
-    /// out ids the restored rows already carry.
+    /// out ids the restored rows already carry. Edges have no issuer to seed:
+    /// their identity is the head, which no counter can collide with.
     pub fn reseed(&mut self) -> Result<(), String> {
         let next_node = self
             .entities
@@ -1402,34 +1531,28 @@ impl GraphStore {
             .collect::<Result<Vec<_>, _>>()?
             .last()
             .map_or(1, |k| k.node_id.saturating_add(1));
-        let next_edge = self
-            .facts()
-            .max_edge_id()
-            .map_err(|e| e.to_string())?
-            .map_or(1, |id| id.saturating_add(1));
         self.next_node = next_node;
-        self.next_edge = next_edge;
         self.next_community.clear();
         self.tables.clear();
         Ok(())
     }
 
-    /// One fact by ITS ID — the deterministic read (ADR-0004's identity), the
-    /// mirror of `ingest`'s `edge_id` answer: no search, no embedding, no
-    /// ranking. The scope is checked against the edge's own source endpoint, so
-    /// an id from another scope answers `None` rather than leaking.
+    /// One fact by ITS HEAD — the deterministic read (ADR-0004's identity), the
+    /// mirror of `ingest`'s answer: no search, no embedding, no ranking. The
+    /// scope is checked against the edge's own source endpoint, so a head from
+    /// another scope answers `None` rather than leaking.
     ///
     /// This is what a reference LINK resolves to: a fact can name a less central
-    /// fact by id in its props, and the reader decides whether to follow it — the
-    /// navigation shape skills use, one level down.
+    /// fact by head in its props, and the reader decides whether to follow it —
+    /// the navigation shape skills use, one level down.
     pub fn fact_in_scope(
         &mut self,
         scope: u64,
-        edge_id: u64,
+        key: &EdgeKey,
     ) -> Result<Option<FactView>, IngestError> {
         let Some(body) = self
             .facts()
-            .get_edge(edge_id)
+            .get_edge(key)
             .map_err(|e| IngestError::Storage(e.to_string()))?
         else {
             return Ok(None);
@@ -1437,17 +1560,21 @@ impl GraphStore {
         if EntityKey::decode(&body.src.pkey).scope != scope {
             return Ok(None);
         }
-        self.fact_view(edge_id)
+        self.fact_view(key)
     }
 
     /// Withdraw one fact: its row and every derived face entry in ONE batch
     /// (okm's `retract` — the same path a functional rewrite takes for the
     /// incumbent). `false` = no such edge in this scope, so the caller can
     /// answer 404 without guessing.
-    pub fn withdraw(&mut self, scope: u64, edge_id: u64) -> Result<bool, IngestError> {
-        let Some(body) = self
-            .facts()
-            .get_edge(edge_id)
+    ///
+    /// The head names the edge, and a delete is the ONLY way to take it away:
+    /// nothing can be "rewritten in place" into a different tuple (okm
+    /// ADR-0067), so a replacement is this verb plus a write.
+    pub fn withdraw(&mut self, scope: u64, key: &EdgeKey) -> Result<bool, IngestError> {
+        let facts = self.facts();
+        let Some(body) = facts
+            .get_edge(key)
             .map_err(|e| IngestError::Storage(e.to_string()))?
         else {
             return Ok(false);
@@ -1455,14 +1582,9 @@ impl GraphStore {
         if EntityKey::decode(&body.src.pkey).scope != scope {
             return Ok(false);
         }
-        // The delete verb declares what goes: `delete_edge` on the id, and the
-        // fragment carries nothing else (a fragment with writes belongs to
-        // `incorporate`).
-        let mut fragment = Fragment::<Facts>::new([]);
-        fragment.delete_edge(edge_id);
-        self.facts()
-            .retract(fragment)
-            .map_err(|e| IngestError::Storage(e.to_string()))?;
+        // The delete verb takes a head, and the head is what the caller
+        // already has — `purge_head` resolves the predicate name for it.
+        self.purge_head(key)?;
         Ok(true)
     }
 
@@ -1473,16 +1595,16 @@ impl GraphStore {
     /// entity id gets its facts without a query, an embedding, or a landing.
     pub fn neighbours(&mut self, scope: u64, node_id: u64) -> Result<Vec<FactView>, IngestError> {
         let node = self.node_ref(scope, node_id);
-        let mut ids = self
+        let mut keys = self
             .facts()
             .out_edges(&node)
             .map_err(|e| IngestError::Storage(e.to_string()))?;
-        ids.extend(
+        keys.extend(
             self.facts()
                 .in_edges(&node)
                 .map_err(|e| IngestError::Storage(e.to_string()))?,
         );
-        self.views_of(ids)
+        self.views_of(keys)
     }
 
     /// One node's anchored memory (PLAN 4b): the facts that touch it, heaviest
@@ -1495,19 +1617,19 @@ impl GraphStore {
             return Ok(None);
         };
         let own = self.neighbours(scope, node_id)?;
-        let mut seen: HashSet<u64> = own.iter().map(|f| f.edge_id).collect();
+        let mut seen: HashSet<EdgeKey> = own.iter().map(|f| f.key.clone()).collect();
         let mut facts = own;
         if row.community_id != 0 {
             let mut rest: Vec<FactView> = self
                 .community_facts(scope, row.community_id)?
                 .into_iter()
-                .filter(|view| seen.insert(view.edge_id))
+                .filter(|view| seen.insert(view.key.clone()))
                 .collect();
             rest.sort_by(|a, b| {
                 b.edge
                     .weight
                     .cmp(&a.edge.weight)
-                    .then_with(|| a.edge_id.cmp(&b.edge_id))
+                    .then_with(|| a.key.cmp(&b.key))
             });
             facts.extend(rest);
         }
@@ -1518,13 +1640,61 @@ impl GraphStore {
         }))
     }
 
+    /// The keys of one declared face under a probe that stops SHORT of the
+    /// declared fields, in the face's own order.
+    ///
+    /// okm's `by_attr_face` is an EQUALITY filter, not a range scan: it probes
+    /// `[ns][slot][encoded]` and keeps an entry only when the bytes left over
+    /// parse as a whole edge identity. That is the correct answer for a probe at
+    /// the face's full declared width, and the wrong one the moment a caller
+    /// omits a field — the declared fields then sit in front of the tail and
+    /// every entry is dropped (silently, because a face with no match is also
+    /// the honest answer to "nothing here").
+    ///
+    /// So a partial-prefix read is done here, over okm's public pieces: the
+    /// face's own prefix (`KvIndex::entry_prefix`, which is `[ns][slot][probe]`
+    /// — the declaration states its slot, never a hand-built number), the
+    /// suffix range under it, and the split of `[fields][head]` at the field
+    /// segment's known width. What parses as a head is kept; an entry with
+    /// bytes left over belongs to another layout and is skipped, exactly as
+    /// `by_attr_face` skips it.
+    ///
+    /// `fields_under_probe` is the width of the declared segment the probe did
+    /// NOT consume, in bytes — a fact of the face's declaration, which is why
+    /// its two values live beside the face names above.
+    fn face_keys<I: KvIndex>(
+        &self,
+        probe: &[u8],
+        fields_under_probe: usize,
+    ) -> Result<Vec<EdgeKey>, IngestError> {
+        let facts = self.facts();
+        let prefix = <I as KvIndex>::entry_prefix(&facts.ns().to_be_bytes(), probe);
+        let members = facts.member_widths();
+        let mut keys = Vec::new();
+        for (mut suffix, _) in scan_suffix_kv(facts.store(), &prefix)
+            .map_err(|e| IngestError::Storage(e.to_string()))?
+        {
+            if suffix.len() < fields_under_probe {
+                continue;
+            }
+            suffix.drain(..fields_under_probe);
+            if let Some((key, taken)) = EdgeKey::parse(&suffix, members) {
+                if taken == suffix.len() {
+                    keys.push(key);
+                }
+            }
+        }
+        Ok(keys)
+    }
+
     /// The scope's facts in the order they were LEARNED, newest first (PLAN 4b's
     /// temporal entrance).
     ///
-    /// It walks the `by_since` face instead of the rows: one probe (empty — the
-    /// whole face), reverse order, and only the rows it keeps are decoded and
-    /// resolved. The face carries `since` + edge id, so the walk's order IS the
-    /// answer's order, newest first, ties by edge id descending.
+    /// It walks the `by_since` face instead of the rows: the whole face (an
+    /// empty probe, its `since` segment split off), reverse order, and only the
+    /// rows it keeps are decoded and resolved. The face's tail IS the edge's
+    /// head (okm ADR-0067), so the walk's order is the answer's order, newest
+    /// first, ties by head descending.
     ///
     /// The face is scope-blind, so the walk skips the keys of other scopes; that
     /// costs a row read per key until `limit` of this scope are found. A
@@ -1535,22 +1705,14 @@ impl GraphStore {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let ids: Vec<u64> = {
-            let facts = self.facts();
-            let keys = okm_core::model::index::scan_index::<_, BySince>(
-                facts.store(),
-                Facts::NS_PREFIX,
-                &[],
-            )
-            .map_err(|e| IngestError::Storage(e.to_string()))?;
-            keys.into_iter()
-                .rev()
-                .map(|(_, key)| key.decoded.0)
-                .collect()
-        };
+        // An empty probe stops in front of `since`, so the read is the face's
+        // whole range with that one declared field split off (`face_keys`) —
+        // not `by_attr_face`, which would demand a `since` value and is an
+        // equality filter besides.
+        let keys: Vec<EdgeKey> = self.face_keys::<BySince>(&[], BY_SINCE_FIELDS)?;
         let mut out = Vec::new();
-        for id in ids {
-            let Some(fact) = self.fact_view(id)? else {
+        for key in keys.into_iter().rev() {
+            let Some(fact) = self.fact_view(&key)? else {
                 continue;
             };
             if fact.edge.scope != scope {
@@ -1583,9 +1745,9 @@ impl GraphStore {
         for depth in 0..max_hops {
             let mut next: Vec<u64> = Vec::new();
             for node_id in frontier {
-                let ids = self.typed_out(scope, node_id, kind)?;
-                for edge_id in ids {
-                    let Some(view) = self.fact_view(edge_id)? else {
+                let keys = self.typed_out(scope, node_id, kind)?;
+                for key in keys {
+                    let Some(view) = self.fact_view(&key)? else {
                         continue;
                     };
                     out.push(ChainHop {
@@ -1609,18 +1771,18 @@ impl GraphStore {
         Ok(out)
     }
 
-    /// Deduplicate edge ids and order them weight-descending, ties by edge id —
-    /// the ordering every read that shows facts uses (ADR-0005).
-    fn views_of(&mut self, ids: Vec<u64>) -> Result<Vec<FactView>, IngestError> {
+    /// Deduplicate heads and order them weight-descending, ties by head — the
+    /// ordering every read that shows facts uses (ADR-0005).
+    fn views_of(&mut self, keys: Vec<EdgeKey>) -> Result<Vec<FactView>, IngestError> {
         let mut seen = HashSet::new();
-        let mut facts: Vec<FactView> = Vec::with_capacity(ids.len());
-        for id in ids {
-            if !seen.insert(id) {
+        let mut facts: Vec<FactView> = Vec::with_capacity(keys.len());
+        for key in keys {
+            if !seen.insert(key.clone()) {
                 continue;
             }
-            // An id that names no edge is absence (the face outlived its row);
+            // A key that names no edge is absence (the face outlived its row);
             // a store that cannot answer is not, and it propagates.
-            if let Some(fact) = self.fact_view(id)? {
+            if let Some(fact) = self.fact_view(&key)? {
                 facts.push(fact);
             }
         }
@@ -1628,7 +1790,7 @@ impl GraphStore {
             b.edge
                 .weight
                 .cmp(&a.edge.weight)
-                .then_with(|| a.edge_id.cmp(&b.edge_id))
+                .then_with(|| a.key.cmp(&b.key))
         });
         Ok(facts)
     }
@@ -1646,36 +1808,24 @@ impl GraphStore {
         if k == 0 {
             return Ok(Vec::new());
         }
-        let ids: Vec<u64> = {
-            let facts = self.facts();
-            let keys = okm_core::model::index::scan_index::<_, ByScopeWeight>(
-                facts.store(),
-                Facts::NS_PREFIX,
-                &scope.to_be_bytes(),
-            )
-            .map_err(|e| IngestError::Storage(e.to_string()))?;
-            keys.into_iter()
-                .rev()
-                .take(k)
-                .map(|(_, key)| key.decoded.0)
-                .collect()
-        };
-        let mut facts: Vec<FactView> = Vec::with_capacity(ids.len());
-        for id in ids {
+        let keys: Vec<EdgeKey> =
+            self.face_keys::<ByScopeWeight>(&scope.to_be_bytes(), BY_WEIGHT_FIELD)?;
+        let mut facts: Vec<FactView> = Vec::with_capacity(k);
+        // The face orders by (scope, weight, head) ascending; reversed that is
+        // weight-descending with the tie on the head DESCENDING. The documented
+        // order keeps ties ascending, so the k rows are put back in it below — k
+        // rows, never the scope.
+        for key in keys.into_iter().rev().take(k) {
             // A face entry whose row is gone is absence, never a failure.
-            if let Some(fact) = self.fact_view(id)? {
+            if let Some(fact) = self.fact_view(&key)? {
                 facts.push(fact);
             }
         }
-        // The face orders by (scope, weight, edge_id) ascending; reversed that is
-        // weight-descending with the tie on edge id DESCENDING. The documented
-        // order keeps ties ascending, so the k rows are put back in it here — k
-        // rows, never the scope.
         facts.sort_by(|a, b| {
             b.edge
                 .weight
                 .cmp(&a.edge.weight)
-                .then_with(|| a.edge_id.cmp(&b.edge_id))
+                .then_with(|| a.key.cmp(&b.key))
         });
         Ok(facts)
     }
@@ -1685,11 +1835,11 @@ impl GraphStore {
     /// currency (untyped, no dictionary involved); each id is then read
     /// back as a whole fact.
     pub fn out_facts(&mut self, scope: u64, node_id: u64) -> Result<Vec<FactView>, IngestError> {
-        let ids = self.out_edges(scope, node_id)?;
-        let mut facts = Vec::with_capacity(ids.len());
-        for edge_id in ids {
-            // An id that names no edge is absence, never a failure.
-            if let Some(fact) = self.fact_view(edge_id)? {
+        let keys = self.out_edges(scope, node_id)?;
+        let mut facts = Vec::with_capacity(keys.len());
+        for key in keys {
+            // A key that names no edge is absence, never a failure.
+            if let Some(fact) = self.fact_view(&key)? {
                 facts.push(fact);
             }
         }
@@ -1849,13 +1999,13 @@ impl GraphStore {
             let mut facts: Vec<FactView> = self
                 .community_facts(scope, community)?
                 .into_iter()
-                .filter(|view| seen.insert(view.edge_id))
+                .filter(|view| seen.insert(view.key.clone()))
                 .collect();
             facts.sort_by(|a, b| {
                 b.edge
                     .weight
                     .cmp(&a.edge.weight)
-                    .then_with(|| a.edge_id.cmp(&b.edge_id))
+                    .then_with(|| a.key.cmp(&b.key))
             });
             slices.push(CommunitySlice {
                 community,
@@ -1884,7 +2034,7 @@ impl GraphStore {
                     // a read: the count is a by-product of serving, not part of
                     // the answer (ADR-0018). The view below is still the one
                     // built from the row as it was.
-                    if let Ok(Some(served)) = self.bump_view(view.edge_id, Touch::Read, now) {
+                    if let Ok(Some(served)) = self.bump_view(&view.key, Touch::Read, now) {
                         *view = served;
                     }
                 }
@@ -1892,7 +2042,7 @@ impl GraphStore {
                     b.edge
                         .weight
                         .cmp(&a.edge.weight)
-                        .then_with(|| a.edge_id.cmp(&b.edge_id))
+                        .then_with(|| a.key.cmp(&b.key))
                 });
             }
         }
@@ -1930,21 +2080,21 @@ impl GraphStore {
         let mut seen = HashSet::new();
         let mut facts = Vec::new();
         for seed in seeds {
-            let mut ids = self.out_edges(scope, seed.node_id)?;
-            ids.extend(self.in_edges(scope, seed.node_id)?);
-            for edge_id in ids {
-                if !seen.insert(edge_id) {
+            let mut keys = self.out_edges(scope, seed.node_id)?;
+            keys.extend(self.in_edges(scope, seed.node_id)?);
+            for key in keys {
+                if !seen.insert(key.clone()) {
                     continue;
                 }
                 // Same rule as the community path: counting is a by-product of
                 // serving, so a failed count answers the fact as it stands
                 // rather than failing the read (ADR-0018).
                 let view = match ts_ms {
-                    Some(now) => match self.bump_view(edge_id, Touch::Read, now) {
+                    Some(now) => match self.bump_view(&key, Touch::Read, now) {
                         Ok(served) => served,
-                        Err(_) => self.fact_view(edge_id)?,
+                        Err(_) => self.fact_view(&key)?,
                     },
-                    None => self.fact_view(edge_id)?,
+                    None => self.fact_view(&key)?,
                 };
                 if let Some(view) = view {
                     facts.push(view);
@@ -1967,13 +2117,13 @@ impl GraphStore {
     pub fn touch(
         &mut self,
         scope: u64,
-        edge_id: u64,
+        key: &EdgeKey,
         kind: Touch,
         now: u64,
     ) -> Result<Option<FactView>, IngestError> {
         let Some(body) = self
             .facts()
-            .get_edge(edge_id)
+            .get_edge(key)
             .map_err(|e| IngestError::Storage(e.to_string()))?
         else {
             return Ok(None);
@@ -1981,24 +2131,28 @@ impl GraphStore {
         if EntityKey::decode(&body.src.pkey).scope != scope {
             return Ok(None);
         }
-        self.bump_view(edge_id, kind, now)
+        self.bump_view(key, kind, now)
     }
 
     /// The shared write half of a touch: decode the edge, bump the counter,
-    /// re-fold the weight, and land the row again at its own id. The declared
-    /// faces are derived from the row, so `by_weight` follows — which is why
-    /// this is a re-assertion of the id (`Decl::edge_at`, same head, one
-    /// reduce): okm retires the entries the old payload wrote and puts the new
-    /// ones in the same batch, so the old weight never survives beside the new.
+    /// re-fold the weight, and land the row again at the SAME head. The declared
+    /// faces are derived from the row, so `by_scope_weight` follows — which is
+    /// why this is a re-assertion of the tuple (`Decl::edge`, one reduce): okm
+    /// retires the entries the old payload wrote and puts the new ones in the
+    /// same batch, so the old weight never survives beside the new.
+    ///
+    /// Same head means same edge (okm ADR-0067), so a bump is the one update
+    /// that stays in place — and the open attributes (0x01) are not touched by
+    /// a re-assertion.
     fn bump_view(
         &mut self,
-        edge_id: u64,
+        key: &EdgeKey,
         kind: Touch,
         now: u64,
     ) -> Result<Option<FactView>, IngestError> {
         let mut facts = self.facts();
         let Some(body) = facts
-            .get_edge(edge_id)
+            .get_edge(key)
             .map_err(|e| IngestError::Storage(e.to_string()))?
         else {
             return Ok(None);
@@ -2015,24 +2169,26 @@ impl GraphStore {
             dst: body.dst.clone(),
             predicate: predicate.clone(),
         };
-        // Naming the id with the SAME head is the update: the row stands and the
-        // conflict hook answers the whole payload change, so the id is never
-        // absent. The bumped row was read a few lines up, and both sides the hook
-        // is handed are older than that read, so its answer is the row itself.
+        // Declaring the SAME head is the update: the row stands and the
+        // conflict hook answers the whole payload change, so the edge is never
+        // absent. The bumped row was read a few lines up, and both sides the
+        // hook is handed are older than that read, so its answer is the row
+        // itself.
         let next = edge.clone();
-        let mut fragment = Fragment::<Facts>::new([Decl::edge_at(head, edge_id)]);
+        let mut fragment = Fragment::<Facts>::new([Decl::edge(head)]);
         fragment.on_edge_conflict(move |_stored, _declared| next.clone());
         facts
             .incorporate(fragment)
             .map_err(|e| IngestError::Storage(e.to_string()))?;
         // The dynamic segment is untouched by a re-assertion, so the reference
         // links a writer left are still the ones this row carries.
+        let members = self.members();
         let refs = self
-            .fact_props(edge_id)?
-            .and_then(|props| props.get(REF_FIELD).map(refs_of))
+            .fact_props(key)?
+            .and_then(|props| props.get(REF_FIELD).map(|v| refs_of(v, &members)))
             .unwrap_or_default();
         Ok(Some(FactView {
-            edge_id,
+            key: key.clone(),
             kind: predicate,
             src: self.resolve_ref(&body.src)?,
             dst: self.resolve_ref(&body.dst)?,
@@ -2154,31 +2310,36 @@ impl GraphStore {
         })
     }
 
-    /// Outgoing edge ids of one node (the traversal currency).
-    pub fn out_edges(&mut self, scope: u64, node_id: u64) -> Result<Vec<u64>, IngestError> {
+    /// Outgoing facts of one node as heads (the traversal currency).
+    pub fn out_edges(&mut self, scope: u64, node_id: u64) -> Result<Vec<EdgeKey>, IngestError> {
         self.facts()
             .out_edges(&self.node_ref(scope, node_id))
             .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
-    /// Outgoing edge ids of ANY node reference — the form a user node needs:
-    /// identity is not scoped to the corpus (ADR-0014).
-    pub fn out_edges_of(&mut self, node: &NodeRef) -> Result<Vec<u64>, IngestError> {
+    /// Outgoing facts of ANY node reference, as heads — the form a user node
+    /// needs: identity is not scoped to the corpus (ADR-0014).
+    pub fn out_edges_of(&mut self, node: &NodeRef) -> Result<Vec<EdgeKey>, IngestError> {
         self.facts()
             .out_edges(node)
             .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
-    /// Incoming edge ids of any node reference; see
+    /// Incoming facts of any node reference, as heads; see
     /// [`out_edges_of`](Self::out_edges_of).
-    pub fn in_edges_of(&mut self, node: &NodeRef) -> Result<Vec<u64>, IngestError> {
+    pub fn in_edges_of(&mut self, node: &NodeRef) -> Result<Vec<EdgeKey>, IngestError> {
         self.facts()
             .in_edges(node)
             .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
-    /// Edge ids of one predicate out of any node reference (the 0x09 face).
-    pub fn typed_out_of(&mut self, node: &NodeRef, kind: &str) -> Result<Vec<u64>, IngestError> {
+    /// Facts of one predicate out of any node reference, as heads (the 0x08
+    /// face).
+    pub fn typed_out_of(
+        &mut self,
+        node: &NodeRef,
+        kind: &str,
+    ) -> Result<Vec<EdgeKey>, IngestError> {
         self.facts()
             .typed_out(kind, node)
             .map_err(|e| IngestError::Storage(e.to_string()))
@@ -2201,8 +2362,8 @@ impl GraphStore {
     ) -> Result<Vec<u64>, IngestError> {
         let node = self.node_ref(scope, node_id);
         let mut out = Vec::new();
-        for edge_id in self.typed_out_of(&node, kind)? {
-            if let Some(fact) = self.fact(edge_id)? {
+        for key in self.typed_out_of(&node, kind)? {
+            if let Some(fact) = self.fact(&key)? {
                 if let Some(id) = entity_node_of(&fact.dst) {
                     out.push(id);
                 }
@@ -2220,23 +2381,23 @@ impl GraphStore {
         )
     }
 
-    /// Incoming edge ids of one node — the in-direction mirror of
+    /// Incoming facts of one node, as heads — the in-direction mirror of
     /// [`out_edges`](Self::out_edges). Both directions matter to a landing:
     /// a seed is useful through the facts pointing AT it as well.
-    pub fn in_edges(&mut self, scope: u64, node_id: u64) -> Result<Vec<u64>, IngestError> {
+    pub fn in_edges(&mut self, scope: u64, node_id: u64) -> Result<Vec<EdgeKey>, IngestError> {
         self.facts()
             .in_edges(&self.node_ref(scope, node_id))
             .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
-    /// Outgoing edge ids of one predicate out of one node — the 0x09 face,
-    /// and the resolution path's incumbent scan.
+    /// Facts of one predicate out of one node, as heads — the 0x08 face, and
+    /// the resolution path's incumbent scan.
     pub fn typed_out(
         &mut self,
         scope: u64,
         node_id: u64,
         kind: &str,
-    ) -> Result<Vec<u64>, IngestError> {
+    ) -> Result<Vec<EdgeKey>, IngestError> {
         self.facts()
             .typed_out(kind, &self.node_ref(scope, node_id))
             .map_err(|e| IngestError::Storage(e.to_string()))
@@ -2288,7 +2449,7 @@ impl GraphStore {
         // input, and is kept (the assertion's own record). The weight
         // system's five counters are the same kind of exclusion: system
         // metadata never rides the business layer (ADR-0005).
-        let props: BTreeMap<String, Variant> = fact
+        let mut props: BTreeMap<String, Variant> = fact
             .rel
             .props
             .iter()
@@ -2307,6 +2468,10 @@ impl GraphStore {
             })
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
+        // A reference link travels as an ADDRESS (the tuple's hex), and is
+        // stored as the tuple's bytes — one spelling in JSON, in a URL and in
+        // a rendered line.
+        wire_refs(&mut props);
 
         // ASSERTION IDENTITY (okm ADR-0041): `(head, kind, tail)` is ONE edge.
         // The pair lives in the index key, so this is a seek rather than a scan
@@ -2320,18 +2485,21 @@ impl GraphStore {
         // one that states the same thing is `Bumped` and writes nothing, so a
         // background pass reading the same material twice cannot inflate a
         // weight by repeating itself.
+        // One exact key, not a scan: the tuple IS the address, so the
+        // adjudication probe is a point read on the same key the write will
+        // name (okm ADR-0067, `Graph::edge_at`).
         if let Some(existing) = self
             .facts()
-            .typed_out_to(&fact.rel.name, &src.to_ref(scope), &dst.to_ref(scope))
+            .edge_at(&fact.rel.name, &src.to_ref(scope), &dst.to_ref(scope))
             .map_err(|e| IngestError::Storage(e.to_string()))?
-            .first()
-            .copied()
         {
             let body = self
                 .facts()
-                .get_edge(existing)
+                .get_edge(&existing)
                 .map_err(|e| IngestError::Storage(e.to_string()))?
-                .ok_or_else(|| IngestError::Storage(format!("edge {existing} unreadable")))?;
+                .ok_or_else(|| {
+                    IngestError::Storage(format!("edge {} unreadable", key_hex(&existing)))
+                })?;
             let old = Facts::decode_payload(&body.payload);
             if since > old.since || confidence > old.confidence {
                 let next = Facts {
@@ -2340,28 +2508,30 @@ impl GraphStore {
                     ..old
                 }
                 .touched(Touch::Write, since);
-                // Same head, same id: the write is the payload's, so it goes
-                // through `write_edge` — the fragment re-asserts the row (id,
-                // faces and attributes standing, no gap) and the assertion's
-                // open props follow in their own carrier.
-                self.write_edge(existing, &next, scope, src, dst, &fact.rel.name, &props)?;
+                // Same head, same edge: the write re-asserts the row (faces and
+                // attributes standing, no gap) and the assertion's open props
+                // follow in their own carrier.
+                let key = self.write_edge(&next, scope, src, dst, &fact.rel.name, &props)?;
                 self.bin(scope, &[src, dst])?;
-                return Ok(IngestOutcome::Rewritten { edge_id: existing });
+                return Ok(IngestOutcome::Rewritten { key });
             }
-            return Ok(IngestOutcome::Bumped { edge_id: existing });
+            return Ok(IngestOutcome::Bumped { key: existing });
         }
         if functional {
-            if let Some(&incumbent) = self
+            if let Some(incumbent) = self
                 .typed_out_of(&src.to_ref(scope), &fact.rel.name)?
                 .first()
+                .cloned()
             {
                 // The face named the incumbent, so a missing row is an
                 // inconsistency, not an absent fact.
                 let body = self
                     .facts()
-                    .get_edge(incumbent)
+                    .get_edge(&incumbent)
                     .map_err(|e| IngestError::Storage(e.to_string()))?
-                    .ok_or_else(|| IngestError::Storage(format!("edge {incumbent} unreadable")))?;
+                    .ok_or_else(|| {
+                        IngestError::Storage(format!("edge {} unreadable", key_hex(&incumbent)))
+                    })?;
                 let old = Facts::decode_payload(&body.payload);
                 if since > old.since || confidence >= old.confidence {
                     // The assertion's own write: the counters carry over,
@@ -2374,20 +2544,18 @@ impl GraphStore {
                         ..old
                     }
                     .touched(Touch::Write, since);
-                    // Rewrite in place: same edge_id, new endpoint and new
-                    // attributes. A DIFFERENT head at a live id IS the
-                    // removal-plus-write — okm's fragment takes the old
-                    // assertion's rows out and puts the new ones in one batch,
-                    // so the id is never absent (ADR-0010's arbitration).
-                    // The open props are a carrier of their own and follow the
-                    // row: `replace_into` deletes the previous assertion's
-                    // segment first, so a rewrite with no props leaves none
-                    // behind.
-                    self.write_edge(incumbent, &next, scope, src, dst, &fact.rel.name, &props)?;
+                    // A DIFFERENT head is a DIFFERENT edge (okm ADR-0067), so
+                    // this rewrite is a delete plus a write: the incumbent's
+                    // rows and its own attributes go, then the new tuple lands
+                    // with the props of THIS assertion. Two batches, in that
+                    // order — okm has no in-place renumbering to offer, and
+                    // inventing one would be the numbered model back again.
+                    self.purge_head(&incumbent)?;
+                    let key = self.write_edge(&next, scope, src, dst, &fact.rel.name, &props)?;
                     self.bin(scope, &[src, dst])?;
-                    return Ok(IngestOutcome::Rewritten { edge_id: incumbent });
+                    return Ok(IngestOutcome::Rewritten { key });
                 }
-                return Ok(IngestOutcome::Dropped { edge_id: incumbent });
+                return Ok(IngestOutcome::Dropped { key: incumbent });
             }
         }
         let edge = Facts {
@@ -2397,11 +2565,9 @@ impl GraphStore {
             ..Default::default()
         }
         .touched(Touch::Write, since);
-        let edge_id = self.next_edge;
-        self.next_edge += 1;
-        self.write_edge(edge_id, &edge, scope, src, dst, &fact.rel.name, &props)?;
+        let key = self.write_edge(&edge, scope, src, dst, &fact.rel.name, &props)?;
         self.bin(scope, &[src, dst])?;
-        Ok(IngestOutcome::Linked { edge_id })
+        Ok(IngestOutcome::Linked { key })
     }
 
     /// Resolve a term to a node id: the exact name entrance first, then a
@@ -2662,69 +2828,105 @@ impl GraphStore {
             .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
-    /// Write one edge at `edge_id` and its open props — the one write path for
-    /// a create, a re-assertion and an in-place rewrite.
+    /// Write one assertion at its HEAD and its open props — the one write path
+    /// for a create and a re-assertion.
     ///
     /// Two carriers: the edge's rows go through okm's single write verb
-    /// ([`Graph::incorporate`], a fragment naming the id), which owns its own
-    /// engine batch and — create, same-head re-assertion or different-head
-    /// rewrite alike — retires the rows and declared faces the previous payload
-    /// wrote before putting the new ones, so no face ever carries the id twice;
-    /// and the open attributes ride their own segment (0x01) in a second batch.
-    /// The ordering is the one that keeps the id whole: the ROW lands first, so
-    /// the id is never observable as absent, which is also why the props cannot
-    /// precede it: a replaced assertion drops the old segment.
+    /// ([`Graph::incorporate`], a fragment naming the head), which owns its own
+    /// engine batch and — create or re-assertion alike — retires the rows and
+    /// declared faces the previous payload wrote before putting the new ones, so
+    /// no face ever carries the edge twice; and the open attributes ride their
+    /// own segment (0x01) in a second batch. The ordering is what keeps the edge
+    /// whole: the ROW lands first, so the fact is never observable as absent, and
+    /// the props cannot precede it because attributes of a row that is not there
+    /// would describe nothing.
+    ///
+    /// There is no third case: a different tuple is a different edge, so a
+    /// "rewrite" is [`purge_head`](Self::purge_head) plus this call, never an
+    /// update in place (okm ADR-0067).
     #[allow(clippy::too_many_arguments)]
     fn write_edge(
         &mut self,
-        edge_id: u64,
         edge: &Facts,
         scope: u64,
         src: Endpoint,
         dst: Endpoint,
         kind: &str,
         props: &BTreeMap<String, Variant>,
-    ) -> Result<(), IngestError> {
+    ) -> Result<EdgeKey, IngestError> {
         let head = EdgeHead {
             src: src.to_ref(scope),
             dst: dst.to_ref(scope),
             predicate: kind.to_string(),
         };
-        // Naming the id IS the write: a free id creates the edge there (the
-        // create path, and the restore's own ids), a live id with this head
-        // re-asserts it, and a live id with another head rewrites it — one
-        // batch, one commit, the id never absent. The conflict hook answers the
-        // payload, so it does not read either side: the caller already decided.
+        // Naming the head IS the write: the tuple creates the edge when no row
+        // holds it and re-asserts it when one does — one batch, one commit. The
+        // conflict hook answers the payload, so it does not read either side:
+        // the caller already decided.
         let next = edge.clone();
-        let mut fragment = Fragment::<Facts>::new([Decl::edge_at(head, edge_id)]);
+        let mut fragment = Fragment::<Facts>::new([Decl::edge(head)]);
         fragment.on_edge_conflict(move |_stored, _declared| next.clone());
-        self.facts()
+        let report = self
+            .facts()
             .incorporate(fragment)
             .map_err(|e| IngestError::Storage(e.to_string()))?;
+        // The fragment reports the identity it wrote — the tuple, not a number.
+        let Some(key) = report.edges.first().cloned() else {
+            return Err(IngestError::Storage(
+                "the write fragment reported no edge".to_string(),
+            ));
+        };
         let mut batch = Batch::default();
         // The edge's open attributes (okm ADR-0034 §4): the 0x01 segment is the
         // GRAPH's, and `replace_into` deletes the previous assertion's segment
         // first — props belong to the claim being written, never to the one it
         // replaces.
         self.facts()
-            .replace_into(&mut batch, edge_id, &crate::document::dict(props))
+            .replace_into(&mut batch, &key, &crate::document::dict(props))
             .map_err(|e| IngestError::Storage(e.to_string()))?;
         self.store
             .commit_batch(batch)
-            .map_err(|e| IngestError::Storage(e.to_string()))
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
+        Ok(key)
+    }
+
+    /// Remove one assertion outright: its row, every derived face entry and its
+    /// open attributes, in one batch (okm's `retract`).
+    ///
+    /// The delete verb takes a head by predicate NAME while a read answers one by
+    /// predicate ID, so the name comes back through the graph's own vocabulary —
+    /// one 0x04 read, and a predicate no edge ever carried is nothing to do.
+    fn purge_head(&mut self, key: &EdgeKey) -> Result<(), IngestError> {
+        let mut facts = self.facts();
+        let Some(predicate) = facts
+            .predicate_vocab_name(key.predicate)
+            .map_err(|e| IngestError::Storage(e.to_string()))?
+        else {
+            return Ok(());
+        };
+        let mut fragment = Fragment::<Facts>::new([]);
+        fragment.delete_edge(EdgeHead {
+            src: key.src.clone(),
+            dst: key.dst.clone(),
+            predicate,
+        });
+        facts
+            .retract(fragment)
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
+        Ok(())
     }
 
     /// The fact's open props (its dynamic segment), when it has one — the
     /// graph's own read (okm ADR-0034 §4), not a second decoder beside it.
     pub fn fact_props(
         &self,
-        edge_id: u64,
+        key: &EdgeKey,
     ) -> Result<Option<BTreeMap<String, Variant>>, IngestError> {
         // `attrs` answers okm's name map (`Dict`); this crate's bag is the
         // sorted one, so the conversion is here, at the okm door.
         Ok(self
             .facts()
-            .attrs(edge_id)
+            .attrs(key)
             .map_err(|e| IngestError::Storage(e.to_string()))?
             .map(|names| names.into_iter().collect()))
     }
@@ -2892,18 +3094,18 @@ impl GraphStore {
         let members: HashSet<u64> = local.keys().copied().collect();
         let mut adjacency: HashMap<u64, Vec<(u64, f64)>> = HashMap::new();
         for &node in &members {
-            let mut ids = self.out_edges(scope, node)?;
-            ids.extend(self.in_edges(scope, node)?);
+            let mut keys = self.out_edges(scope, node)?;
+            keys.extend(self.in_edges(scope, node)?);
             let mut seen = HashSet::new();
-            for edge_id in ids {
-                if !seen.insert(edge_id) {
+            for key in keys {
+                if !seen.insert(key.clone()) {
                     continue;
                 }
-                // An id whose edge is gone is absence (the ref list outlived
+                // A head whose edge is gone is absence (the ref list outlived
                 // its row), not a failure of the pass.
                 let Some(body) = self
                     .facts()
-                    .get_edge(edge_id)
+                    .get_edge(&key)
                     .map_err(|e| IngestError::Storage(e.to_string()))?
                 else {
                     continue;
@@ -3016,13 +3218,13 @@ impl GraphStore {
         for _ in 0..LPA_RADIUS {
             let mut next = Vec::new();
             for node in frontier.drain(..) {
-                let mut ids = self.out_edges(scope, node)?;
-                ids.extend(self.in_edges(scope, node)?);
-                for edge_id in ids {
-                    // An id whose edge is gone is absence, not a failure.
+                let mut keys = self.out_edges(scope, node)?;
+                keys.extend(self.in_edges(scope, node)?);
+                for key in keys {
+                    // A head whose edge is gone is absence, not a failure.
                     let Some(body) = self
                         .facts()
-                        .get_edge(edge_id)
+                        .get_edge(&key)
                         .map_err(|e| IngestError::Storage(e.to_string()))?
                     else {
                         continue;
@@ -3094,7 +3296,7 @@ impl GraphStore {
                     .id
                     .entity_id()
                     .is_some_and(|id| in_community.contains(&id))
-                    && seen.insert(view.edge_id)
+                    && seen.insert(view.key.clone())
                 {
                     facts.push(view);
                 }
