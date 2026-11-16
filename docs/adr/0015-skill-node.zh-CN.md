@@ -41,8 +41,7 @@ skill 就是一行、说它当前是什么；要历史的时候，历史是第�
 
 - **`preconditions`**——TEXT JSON 字符串数组：第一步之前必须成立的事。谁规划谁去查（用
   `recall_memory`）；求值不是 store 的职责。
-- **`steps`**——TEXT JSON 对象数组，按执行顺序：`[{"code_id": 7, "note": "…"}]`。可执行的
-  身份是 ns 35 的那行，所以 skill 永不复制 script 的语言与参数定义。
+- **`steps`**——TEXT JSON 对象数组：组合本身（gravity ADR-0011）。每个步骤带 `id`、`kind`（`code` / `ask` / `approve`）、它自己的部件（`code_id`，或两种交互节点各自的 schema）、一张 `inputs` 映射（code row 的形参名 → 引用或字面量），以及 `out_edges`——每条出边可带 `when`（selector 相等）、回边上的 `budget`、同一 selector 至多一条 fallback。可执行的身份仍然是 ns 35 的那行，所以 skill 永不复制 script 的语言与参数定义；store 仍然不解析这份清单。
 - **`verification`**——TEXT JSON 字符串数组：一步之后、下一步之前要检查什么。
 - **`experience`**——**不是** prop。它是 skill 节点的**关联事实**：跑过什么、结果如何、
   在什么上面失败过。权重系统（ADR-0005）本来就在数 read/write/tool 并按时间衰减，经验
@@ -70,9 +69,7 @@ skill 就是一行、说它当前是什么；要历史的时候，历史是第�
 （默认 5，上限 20）。因为部署没有引擎就答「没有 skill」是错误答案，而这样一份语料按构造
 就不大，扫一遍很便宜。
 
-这份 JSON 清单是**过渡**形状，不是终点。把若干步合成一个体是别处裁决的（gravity
-ADR-0005）：体是已有语言写的一段脚本，步之间的边从体推导，而不是在这里维护成一份平行的
-清单。在体存在之前，`steps` 就是 resolver 报告的、`invoke_skill` 走的东西。
+这份清单是**定义**，不是中转站。它被写成过渡形状，是因为当时的计划是一段脚本体、边由解析器从体推导（gravity ADR-0005）；gravity ADR-0011 替换了那个结论——图是定义，代码是叶子，一个 skill 的组合只有一种表达。`steps` 就是 `resolve` 回答的、一次 run 执行的东西。
 
 每个候选都带着 `steps`，因为**选**就需要它：消费者是面前摆着一列候选的模型，而「这个会让
 我做什么」是挑选的一部分。`preconditions` 与 `verification` 不带——那两样是选定之后、走

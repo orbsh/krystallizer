@@ -50,9 +50,7 @@ that and needs nothing of its own.
 - **`preconditions`** — TEXT JSON array of strings: what must hold before the first
   step. The planner checks them (with `recall_memory`); evaluating them is not the
   store's job.
-- **`steps`** — TEXT JSON array of objects, execution order: `[{"code_id": 7,
-  "note": "…"}]`. The executable identity is ns 35's row, so a skill never
-  duplicates a script's language or parameter definition.
+- **`steps`** — TEXT JSON array of objects: the composition itself (gravity ADR-0011). A step carries an `id`, a `kind` (`code` / `ask` / `approve`), its own parts (`code_id`, or a schema for the two interaction kinds), an `inputs` map from the code row's parameter names to references or literals, and `out_edges` — each with an optional `when` selector equality, a `budget` on a back edge, and at most one fallback per selector. The executable identity is still ns 35's row, so a skill never duplicates a script's language or parameter definition; the store still does not parse the list.
 - **`verification`** — TEXT JSON array of strings: what to check after a step,
   before the next one.
 - **`experience`** — NOT a prop. It is the skill node's INCIDENT FACTS: runs,
@@ -86,11 +84,7 @@ landing distance — it falls back to the `by_kind` face in id order, cut at `li
 deployment has no engine is a wrong answer, and the corpus is small by
 construction, so the scan is cheap.
 
-The JSON list is the INTERIM shape, not the destination. Composing several steps
-into one is settled elsewhere (gravity ADR-0005): the body is a script in an
-existing language, and the step edges are derived from that body rather than
-maintained here as a parallel list. Until a body exists, `steps` is what a
-resolver reports and what `invoke_skill` walks.
+The list is the DEFINITION, not a way station. It was written as an interim, when the plan was a script body whose edges a parser would derive (gravity ADR-0005); gravity ADR-0011 replaced that conclusion — the graph is the definition, code is a leaf, and a skill's composition has exactly one expression. `steps` is what `resolve` answers and what a run executes.
 
 Each candidate carries its `steps`, because deciding needs them: the consumer is
 a model with a candidate list in front of it, and "what would this make me do" is
