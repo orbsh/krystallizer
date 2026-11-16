@@ -75,8 +75,8 @@ use okm_core::parts;
 use okm_core::Uuid7;
 use okm_core::{
     scan_suffix_kv, write_slot, Batch, Cluster, Collection, Decl, Document, DocumentEncode,
-    EdgeHead, EdgeKey, FjallStore, Fragment, Graph, GraphEncode, Hyperedges, KeyEncode, Kind,
-    KvIndex, NodeRef, Vector, VectorElem, VirtualStorage, Vocab, PRIMARY_SLOT,
+    ClusterRef, EdgeHead, EdgeKey, FjallStore, Fragment, Graph, GraphEncode, Hyperedges,
+    KeyEncode, Kind, KvIndex, NodeRef, Vector, VectorElem, VirtualStorage, Vocab, PRIMARY_SLOT,
 };
 use okm_lake::bridge::EdgeTable;
 use okm_lake::snapshot::parquet_io::EdgeRestore;
@@ -270,7 +270,6 @@ pub struct NodeVector {
     pub embedding: Vector<f32>,
 }
 
-use __OkmIndex_EntityRow_by_community as ByCommunity;
 use __OkmIndex_EntityRow_by_name as ByName;
 /// The scope-prefixed weight face: one probe yields a scope's keys in weight
 /// order, so the progressive read decodes k rows for k answers.
@@ -1278,6 +1277,39 @@ impl GraphStore {
             .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
+    /// The communities one entity sits in, in the order its edges name them.
+    ///
+    /// The edges are the authority (okm ADR-0066): membership is a row per
+    /// EDGE, so a node's communities are the clusters of the edges that touch
+    /// it, both directions. A node with no edges sits in none — which is also
+    /// why an isolated node has nothing to recall from its bucket.
+    fn communities_of_node(
+        &mut self,
+        scope: u64,
+        node_id: u64,
+    ) -> Result<Vec<u64>, IngestError> {
+        let kind = self.community_kind()?;
+        let node = self.node_ref(scope, node_id);
+        let mut keys = self
+            .facts()
+            .out_edges(&node)
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
+        keys.extend(
+            self.facts()
+                .in_edges(&node)
+                .map_err(|e| IngestError::Storage(e.to_string()))?,
+        );
+        let mut communities = Vec::new();
+        for key in keys {
+            for cluster in self.hyper().clusters_of(&key) {
+                if cluster.kind == kind && !communities.contains(&cluster.id) {
+                    communities.push(cluster.id);
+                }
+            }
+        }
+        Ok(communities)
+    }
+
     /// The community BOTH endpoints sit in, when they agree.
     ///
     /// A fact belongs to a community only when both of its ends do (ADR-0010
@@ -1657,15 +1689,24 @@ impl GraphStore {
     /// community yet (a fresh row) answers its own neighbourhood and nothing
     /// else: `community_id == 0` means "not binned", not "community zero".
     pub fn anchored(&mut self, scope: u64, node_id: u64) -> Result<Option<Anchored>, IngestError> {
-        let Some(row) = self.entity(scope, node_id)? else {
+        // Presence is the answer's precondition: an unknown node anchors nothing.
+        if self.entity(scope, node_id)?.is_none() {
             return Ok(None);
-        };
+        }
         let own = self.neighbours(scope, node_id)?;
         let mut seen: HashSet<EdgeKey> = own.iter().map(|f| f.key.clone()).collect();
         let mut facts = own;
-        if row.community_id != 0 {
+        // The node's community is the one its facts belong to (okm ADR-0066);
+        // a node with no edges, or one not yet binned, answers its own
+        // neighbourhood and nothing else.
+        let community = self
+            .communities_of_node(scope, node_id)?
+            .first()
+            .copied()
+            .unwrap_or(0);
+        if community != 0 {
             let mut rest: Vec<FactView> = self
-                .community_facts(scope, row.community_id)?
+                .community_facts(scope, community)?
                 .into_iter()
                 .filter(|view| seen.insert(view.key.clone()))
                 .collect();
@@ -1679,7 +1720,7 @@ impl GraphStore {
         }
         Ok(Some(Anchored {
             node_id,
-            community: row.community_id,
+            community,
             facts,
         }))
     }
@@ -2027,9 +2068,12 @@ impl GraphStore {
         let seeds = self.retrieve(scope, query, k)?;
         let mut communities: Vec<u64> = Vec::new();
         for seed in &seeds {
-            if let Some(row) = self.entity(scope, seed.node_id)? {
-                if row.community_id != 0 && !communities.contains(&row.community_id) {
-                    communities.push(row.community_id);
+            // A seed's communities are the clusters of the edges that touch it
+            // (okm ADR-0066): the node row carries no bin, because membership is
+            // a property of FACTS, and one node can sit in more than one.
+            for community in self.communities_of_node(scope, seed.node_id)? {
+                if !communities.contains(&community) {
+                    communities.push(community);
                 }
             }
         }
@@ -2038,8 +2082,15 @@ impl GraphStore {
         // once (the same edge is reachable from both endpoints).
         let mut seen = HashSet::new();
         let mut slices: Vec<CommunitySlice> = Vec::new();
+        let kind = self.community_kind()?;
         for &community in &communities {
-            let members = self.community_members(scope, community)?.len();
+            // The denominator is the cluster's own maintained count of MEMBER
+            // EDGES — the same unit as the hits below, and no scan.
+            let members = self
+                .hyper()
+                .lookup(ClusterRef::new(kind, community))
+                .map_err(|e| IngestError::Storage(e.to_string()))?
+                .map_or(0, |row| row.member_count() as usize);
             let mut facts: Vec<FactView> = self
                 .community_facts(scope, community)?
                 .into_iter()
@@ -3251,7 +3302,95 @@ impl GraphStore {
         self.write_community_seq_into(&mut batch, scope);
         self.store
             .commit_batch(batch)
-            .map_err(|e| IngestError::Storage(e.to_string()))
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
+        // The community CLUSTERS follow the bins (okm ADR-0066): a node that
+        // moved takes its edges' memberships with it, or the bucket read would
+        // answer from the previous pass.
+        self.sync_membership(scope, &members)
+    }
+
+    /// Re-point the community memberships of a neighbourhood's edges at the
+    /// bins the pass just wrote.
+    ///
+    /// The write path sets a membership from its endpoints' bins at the moment
+    /// the edge lands; a later vote can move either endpoint, so the membership
+    /// has to move too. Each edge's desired community is "both ends agree",
+    /// the same rule [`shared_community`](Self::shared_community) applies —
+    /// otherwise the two reads would disagree about what is in a bucket.
+    ///
+    /// One fragment per (old clusters -> new cluster) group carries the removal
+    /// and the addition together, so an edge is never in two bins at once and
+    /// never in neither: `remove` and `cluster` land in one commit.
+    fn sync_membership(
+        &mut self,
+        scope: u64,
+        members: &HashSet<u64>,
+    ) -> Result<(), IngestError> {
+        let kind = self.community_kind()?;
+        let mut heads: Vec<(EdgeKey, EdgeHead, u64)> = Vec::new();
+        let mut seen: HashSet<EdgeKey> = HashSet::new();
+        for &node in members {
+            let mut keys = self.out_edges(scope, node)?;
+            keys.extend(self.in_edges(scope, node)?);
+            for key in keys {
+                if !seen.insert(key.clone()) {
+                    continue;
+                }
+                let Some(view) = self.fact_view(&key)? else {
+                    continue;
+                };
+                let (Some(src), Some(dst)) = (
+                    view.src.id.entity_id(),
+                    view.dst.id.entity_id(),
+                ) else {
+                    continue;
+                };
+                let (Some(&a), Some(&b)) = (
+                    self.entity(scope, src)?.map(|r| r.community_id).as_ref(),
+                    self.entity(scope, dst)?.map(|r| r.community_id).as_ref(),
+                ) else {
+                    continue;
+                };
+                if a == 0 || a != b {
+                    continue;
+                }
+                let head = EdgeHead {
+                    src: self.node_ref(scope, src),
+                    dst: self.node_ref(scope, dst),
+                    predicate: view.kind.clone(),
+                };
+                heads.push((view.key.clone(), head, a));
+            }
+        }
+        // Group by the (new cluster, old clusters) pair: one fragment per group.
+        let mut groups: BTreeMap<(u64, Vec<u64>), Vec<EdgeHead>> = BTreeMap::new();
+        for (key, head, wanted) in heads {
+            let current: Vec<u64> = self
+                .hyper()
+                .clusters_of(&key)
+                .filter(|cluster| cluster.kind == kind)
+                .map(|cluster| cluster.id)
+                .collect();
+            if current.len() == 1 && current[0] == wanted {
+                continue;
+            }
+            groups.entry((wanted, current)).or_default().push(head);
+        }
+        for ((wanted, old), edges) in groups {
+            let mut fragment = Fragment::<Facts>::new(edges.into_iter().map(Decl::edge));
+            for cluster in old {
+                fragment.remove(ClusterRef::new(kind, cluster));
+            }
+            fragment.cluster(Cluster::into(
+                kind,
+                wanted,
+                crate::document::dict(&BTreeMap::new()),
+            ));
+            self.facts()
+                .incorporate(fragment)
+                .map_err(|e| IngestError::Storage(e.to_string()))?;
+        }
+        Ok(())
     }
 
     /// The nodes within `LPA_RADIUS` hops of the touched ones, loaded with
@@ -3314,18 +3453,23 @@ impl GraphStore {
         scope: u64,
         community: u64,
     ) -> Result<Vec<(u64, EntityRow)>, IngestError> {
-        let hits = self
-            .entities
-            .scan::<ByCommunity>(&community.to_be_bytes())
-            .parts::<(parts::Key, parts::Row)>()
-            .collect::<okm_core::error::Result<Vec<_>>>()
-            .map_err(|e| IngestError::Storage(e.to_string()))?;
-        Ok(hits
-            .into_iter()
-            .filter_map(|(key, row)| row.map(|row| (key.decoded, row)))
-            .filter(|(key, row)| key.scope == scope && row.community_id == community)
-            .map(|(key, row)| (key.node_id, row))
-            .collect())
+        let mut nodes: Vec<u64> = Vec::new();
+        for view in self.community_facts(scope, community)? {
+            for end in [&view.src, &view.dst] {
+                if let Some(id) = end.id.entity_id() {
+                    if !nodes.contains(&id) {
+                        nodes.push(id);
+                    }
+                }
+            }
+        }
+        let mut members = Vec::with_capacity(nodes.len());
+        for node_id in nodes {
+            if let Some(row) = self.entity(scope, node_id)? {
+                members.push((node_id, row));
+            }
+        }
+        Ok(members)
     }
 
     /// The facts INSIDE one community (both endpoints members), endpoints
@@ -3335,22 +3479,15 @@ impl GraphStore {
         scope: u64,
         community: u64,
     ) -> Result<Vec<FactView>, IngestError> {
-        let in_community: HashSet<u64> = self
-            .community_members(scope, community)?
-            .into_iter()
-            .map(|(node, _)| node)
-            .collect();
-        let mut seen = HashSet::new();
+        let kind = self.community_kind()?;
+        let edges = self
+            .hyper()
+            .members(ClusterRef::new(kind, community))
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
         let mut facts = Vec::new();
-        for &node in &in_community {
-            for view in self.out_facts(scope, node)? {
-                if view
-                    .dst
-                    .id
-                    .entity_id()
-                    .is_some_and(|id| in_community.contains(&id))
-                    && seen.insert(view.key.clone())
-                {
+        for edge in edges {
+            if let Some(view) = self.fact_view(&edge)? {
+                if view.edge.scope == scope {
                     facts.push(view);
                 }
             }
