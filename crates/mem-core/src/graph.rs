@@ -74,9 +74,9 @@ use okm_core::okm_value::Variant;
 use okm_core::parts;
 use okm_core::Uuid7;
 use okm_core::{
-    scan_suffix_kv, write_slot, Batch, Collection, Decl, Document, DocumentEncode, EdgeHead,
-    EdgeKey, FjallStore, Fragment, Graph, GraphEncode, KeyEncode, KvIndex, NodeRef, Vector,
-    VectorElem, VirtualStorage, Vocab, PRIMARY_SLOT,
+    scan_suffix_kv, write_slot, Batch, Cluster, Collection, Decl, Document, DocumentEncode,
+    EdgeHead, EdgeKey, FjallStore, Fragment, Graph, GraphEncode, Hyperedges, KeyEncode, Kind,
+    KvIndex, NodeRef, Vector, VectorElem, VirtualStorage, Vocab, PRIMARY_SLOT,
 };
 use okm_lake::bridge::EdgeTable;
 use okm_lake::snapshot::parquet_io::EdgeRestore;
@@ -287,6 +287,10 @@ const BY_SINCE_FIELDS: usize = 8;
 /// fields are `(scope, weight)` in declaration order, so the probe eats `scope`
 /// (`u64`, 8) and `weight` (`u32`, 4) is what is left in front of the head.
 const BY_WEIGHT_FIELD: usize = 4;
+
+/// k10r's label for the community cluster kind (okm ADR-0066). The store only
+/// interns it; nothing in okm reads the word.
+const COMMUNITY_KIND: &str = "community";
 
 /// A fact: an edge of the graph. The declared fields are `since` (the
 /// caller's clock, the adjudication input), `confidence` (the write-side's,
@@ -1254,6 +1258,46 @@ impl GraphStore {
     /// only grow).
     fn facts(&self) -> Graph<FjallStore, Facts> {
         Graph::new(self.store.clone())
+    }
+
+    /// The same namespace's clusters (okm ADR-0066). A cluster lives in the
+    /// graph's ns and holds EDGES, so the handle is built from the same
+    /// declaration as `facts()`.
+    fn hyper(&self) -> Hyperedges<FjallStore> {
+        Hyperedges::of::<Facts>(self.store.clone())
+    }
+
+    /// k10r's cluster kind for communities, interned on first use.
+    ///
+    /// okm assigns the number no meaning — the label is k10r's word, the store
+    /// keeps the dictionary (ADR-0066 §1). Interning is idempotent, so every
+    /// call answers the same id and a restart cannot renumber it.
+    fn community_kind(&mut self) -> Result<Kind, IngestError> {
+        self.hyper()
+            .kind_id(COMMUNITY_KIND)
+            .map_err(|e| IngestError::Storage(e.to_string()))
+    }
+
+    /// The community BOTH endpoints sit in, when they agree.
+    ///
+    /// A fact belongs to a community only when both of its ends do (ADR-0010
+    /// §5's bucket read); a fact whose ends sit in different bins belongs to
+    /// neither, and a fact touching a non-entity or an unbinned node belongs to
+    /// none. `community_id == 0` means "not binned yet", never "community 0".
+    fn shared_community(
+        &self,
+        scope: u64,
+        src: Endpoint,
+        dst: Endpoint,
+    ) -> Result<Option<u64>, IngestError> {
+        let (Some(src), Some(dst)) = (src.entity_id(), dst.entity_id()) else {
+            return Ok(None);
+        };
+        let (Some(a), Some(b)) = (self.entity(scope, src)?, self.entity(scope, dst)?) else {
+            return Ok(None);
+        };
+        let community = a.community_id;
+        Ok((community != 0 && community == b.community_id).then_some(community))
     }
 
     /// The declaration's width table — how a head's bytes split into endpoints.
@@ -2866,6 +2910,15 @@ impl GraphStore {
         let next = edge.clone();
         let mut fragment = Fragment::<Facts>::new([Decl::edge(head)]);
         fragment.on_edge_conflict(move |_stored, _declared| next.clone());
+        // The fact's community, written as a cluster membership (okm ADR-0066):
+        // a cluster holds EDGES, so membership is the edge's own row on 0x0D,
+        // and it rides the fragment that writes the edge — an edge is never in
+        // a cluster the same commit did not write. Which cluster is the
+        // endpoints' answer, not the writer's.
+        if let Some(community) = self.shared_community(scope, src, dst)? {
+            let kind = self.community_kind()?;
+            fragment.cluster(Cluster::into(kind, community, crate::document::dict(&BTreeMap::new())));
+        }
         let report = self
             .facts()
             .incorporate(fragment)

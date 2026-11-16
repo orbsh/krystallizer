@@ -24,14 +24,14 @@ fn the_reverse_read_is_a_lead_face_over_the_key() {
         Some(FaceKind::Lead),
         "a payload index here would need a copied member column"
     );
-    assert_eq!(face.slot, 0x5001, "the lead family, first declaration");
+    assert_eq!(face.slot, 0x6001, "the lead family (ADR-0054), first declaration");
     assert_eq!(face.fields, vec!["member_id".to_string()]);
     assert!(
         face.includes.is_empty() && face.func.is_empty(),
         "a lead face has no payload half"
     );
     assert_eq!(
-        schema.slots.declared_lead_base, 0x5001,
+        schema.slots.declared_lead_base, 0x6001,
         "the export names the family base"
     );
 }
