@@ -9,7 +9,7 @@
 //!   `[scope][node_id]` primary, `kind` + `literal_num` as declared
 //!   fields, `name` as the cold segment, and three declared 0x1 faces —
 //!   `by_name` (the exact name/alias entrance), `by_kind` (the node-kind
-//!   face) and `by_community` (the bucket read). The kind is a CATEGORICAL
+//!   face). The kind is a CATEGORICAL
 //!   FIELD — `kind: Vocab<u16>` (okm ADR-0032): the label set is that
 //!   field's own data vocabulary, so the write path interns it and the read
 //!   path resolves it back with no allocation code and no reserved faces,
@@ -51,8 +51,9 @@
 //! text in `name` and its integer projection in `literal_num`.
 //!
 //! ADR-0010's steps 3–4 are here: incremental LPA and community binning
-//! run inside `ingest`, the node row carries `community_id` with its
-//! `by_community` face, and a per-scope SEQUENCE row issues community ids.
+//! run inside `ingest`, and the bins live where okm keeps groupings: a cluster
+//! whose members are EDGES (ADR-0066). The node row carries no community, and
+//! k10r keeps no counter — the store allocates cluster ids itself.
 //! What is NOT here is a summary: the read side renders the community
 //! (crate::view), so there is no capsule table to keep in step.
 //!
@@ -181,10 +182,10 @@ pub struct EntityKey {
 /// allocation code and the field needs no reserved faces. Named `kind`, not
 /// `kind_id`: the value is the label, the id is only its encoding.
 ///
-/// `community_id` is the write-side binning result (ADR-0010 §2): a node
-/// is seeded with a fresh id the moment it lands and re-binned by the
-/// incremental LPA pass, which is why the `by_community` face exists —
-/// the bucket read is a face scan, never a full-table filter.
+/// The node carries NO community column: a community is an okm cluster over
+/// EDGES (ADR-0066), so membership is the edge's row and the pass writes it
+/// there. A node's communities are therefore the clusters of the facts that
+/// touch it, and one node can sit in several.
 ///
 /// `name` is an ATTRIBUTE (never key material): the human identity reaches
 /// the exact entrance through the `by_name` face. `literal_num` is a
@@ -195,17 +196,15 @@ pub struct EntityKey {
 #[ok_ref(EntityKey)]
 #[ok_ns(36)]
 #[ok_name("entities")]
-#[ok_layout(version = 1)]
+#[ok_layout(version = 2)]
 #[ok_index(
     // Payload fields only: the key tail appends the primary key, so the
-    // entries land as `[kind][scope][node_id]`,
-    // `[name][scope][node_id]` and `[community_id][scope][node_id]`.
+    // entries land as `[kind][scope][node_id]` and `[name][scope][node_id]`.
     // Text-first regime: an exact match re-verifies the row's name and the
     // decoded key's scope — a prefix scan for `alpha` also reaches
     // `alphabet`, which is what dictionary order means.
     by_kind { fields(kind) },
     by_name { fields(name) },
-    by_community { fields(community_id) },
 )]
 pub struct EntityRow {
     pub kind: Vocab<u16>,
@@ -222,12 +221,6 @@ pub struct EntityRow {
     /// declared over it yet — the face lands with the read that scans it.
     #[ok_default(0)]
     pub literal_num: i64,
-    /// The node's community (ADR-0010 §2): a fresh seed when the node
-    /// lands, then whatever the local LPA vote assigns. 0 means "not yet
-    /// seeded" — a row that predates this field decodes to it and the next
-    /// ingest re-bins it.
-    #[ok_default(0)]
-    pub community_id: u64,
     pub name: String,
     // The vector is NOT here (ADR-0019). It moved to `NodeVector` (ns 43)
     // because this row is written WHOLE by every prop merge — the usage counters
@@ -572,27 +565,6 @@ pub const LPA_ROUNDS: usize = 3;
 /// The neighbourhood radius the local subgraph is loaded at, in hops.
 pub const LPA_RADIUS: usize = 2;
 
-/// The community sequence key: `[scope]`.
-#[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
-#[ok_ns(38)]
-pub struct CommunitySeqKey {
-    pub scope: u64,
-}
-
-/// The scope's community high water: the last id issued, never lowered.
-///
-/// It is a COUNTER row, not "the maximum of the communities that exist":
-/// a community's last member can leave, so an issuer reading live data
-/// would hand that id out again after a restart — two different
-/// communities sharing one id. Single writer, monotonic, never reused.
-#[derive(DocumentEncode, Clone, PartialEq, Debug, Default)]
-#[ok_ref(CommunitySeqKey)]
-#[ok_ns(38)]
-#[ok_name("community_seq")]
-pub struct CommunitySeqRow {
-    #[ok_default(0)]
-    pub high_water: u64,
-}
 
 /// One end of a fact: a value, its type label, and its props (the
 /// entity's attributes — they land on the node row, shared by every fact
@@ -1161,10 +1133,6 @@ pub struct GraphStore {
     /// The scan is okm-vector's; this map only decides when to rebuild and how
     /// much derived state may be held — see `TABLE_BUDGET_BYTES`.
     tables: ScopeTables,
-    /// Next community id per scope (ADR-0010 §1 — a fresh seed per landed
-    /// node). The SEQUENCE row is the source of truth and only ever grows;
-    /// this map is the in-process cache of it.
-    next_community: HashMap<u64, u64>,
 }
 
 impl GraphStore {
@@ -1215,7 +1183,6 @@ impl GraphStore {
             embedder: None,
             members: None,
             tables: ScopeTables::default(),
-            next_community: HashMap::new(),
         })
     }
 
@@ -1277,6 +1244,15 @@ impl GraphStore {
             .map_err(|e| IngestError::Storage(e.to_string()))
     }
 
+    /// The communities one node sits in, in the order its edges name them.
+    ///
+    /// Public because "which community is this in" is a question about the
+    /// corpus, and the answer lives on the edges (okm ADR-0066) — a caller
+    /// should not have to walk them itself. Empty means "in none yet".
+    pub fn communities(&mut self, scope: u64, node_id: u64) -> Result<Vec<u64>, IngestError> {
+        self.communities_of_node(scope, node_id)
+    }
+
     /// The communities one entity sits in, in the order its edges name them.
     ///
     /// The edges are the authority (okm ADR-0066): membership is a row per
@@ -1310,27 +1286,6 @@ impl GraphStore {
         Ok(communities)
     }
 
-    /// The community BOTH endpoints sit in, when they agree.
-    ///
-    /// A fact belongs to a community only when both of its ends do (ADR-0010
-    /// §5's bucket read); a fact whose ends sit in different bins belongs to
-    /// neither, and a fact touching a non-entity or an unbinned node belongs to
-    /// none. `community_id == 0` means "not binned yet", never "community 0".
-    fn shared_community(
-        &self,
-        scope: u64,
-        src: Endpoint,
-        dst: Endpoint,
-    ) -> Result<Option<u64>, IngestError> {
-        let (Some(src), Some(dst)) = (src.entity_id(), dst.entity_id()) else {
-            return Ok(None);
-        };
-        let (Some(a), Some(b)) = (self.entity(scope, src)?, self.entity(scope, dst)?) else {
-            return Ok(None);
-        };
-        let community = a.community_id;
-        Ok((community != 0 && community == b.community_id).then_some(community))
-    }
 
     /// The declaration's width table — how a head's bytes split into endpoints.
     fn members(&self) -> okm_core::Members {
@@ -1473,10 +1428,6 @@ impl GraphStore {
                 <Facts as Document>::TABLE_NAME,
                 crate::export::ns(Facts::NS_PREFIX),
             ),
-            (
-                <CommunitySeqRow as Document>::TABLE_NAME,
-                crate::export::ns(CommunitySeqRow::NS_PREFIX),
-            ),
         ]
     }
 
@@ -1511,9 +1462,6 @@ impl GraphStore {
                 }
             }
             Ok(rows)
-        } else if table == <CommunitySeqRow as Document>::TABLE_NAME {
-            let mut seq = <CommunitySeqRow as Document>::collection(self.store.clone()).rebased(ns);
-            crate::export::land_into(&mut seq, batches)
         } else if table == <crate::code::CodeRow as Document>::TABLE_NAME
             || table == crate::export::CODE_REDUCES
         {
@@ -1544,9 +1492,6 @@ impl GraphStore {
                     .map(|edges| !edges)
                     .map_err(|e| e.to_string()),
             )
-        } else if table == <CommunitySeqRow as Document>::TABLE_NAME {
-            let seq = <CommunitySeqRow as Document>::collection(self.store.clone()).rebased(ns);
-            Some(crate::export::ns_is_empty_into(&seq))
         } else if table == <crate::code::CodeRow as Document>::TABLE_NAME
             || table == crate::export::CODE_REDUCES
         {
@@ -1581,11 +1526,6 @@ impl GraphStore {
             // An EDGE batch, not a document table: its identity is the triple the edge set
             // is keyed by, which this layer does not restate.
             Some(crate::export::batch_bytes(&batch))
-        } else if name == <CommunitySeqRow as Document>::TABLE_NAME {
-            // An ISSUER row, not data: a restored graph without it re-issues
-            // community ids the restored nodes already carry.
-            let mut seq = <CommunitySeqRow as Document>::collection(self.store.clone());
-            Some(crate::export::table_bytes(&mut seq))
         } else if name == <crate::code::CodeRow as Document>::TABLE_NAME {
             // The code sheets (k10r ADR-0023): a table of this graph's family,
             // so the lake carries it with the rest of the corpus.
@@ -1608,7 +1548,6 @@ impl GraphStore {
             .last()
             .map_or(1, |k| k.node_id.saturating_add(1));
         self.next_node = next_node;
-        self.next_community.clear();
         self.tables.clear();
         Ok(())
     }
@@ -1687,7 +1626,8 @@ impl GraphStore {
     /// first, then the rest of its community — the same slice a recalled landing
     /// renders, entered by IDENTITY instead of by similarity. A node with no
     /// community yet (a fresh row) answers its own neighbourhood and nothing
-    /// else: `community_id == 0` means "not binned", not "community zero".
+    /// else. A node with no edges, or one whose facts are not in a cluster yet,
+    /// answers its own neighbourhood and nothing more.
     pub fn anchored(&mut self, scope: u64, node_id: u64) -> Result<Option<Anchored>, IngestError> {
         // Presence is the answer's precondition: an unknown node anchors nothing.
         if self.entity(scope, node_id)?.is_none() {
@@ -2039,7 +1979,7 @@ impl GraphStore {
     }
 
     /// Landing + the landed COMMUNITY (ADR-0010 §5): the query lands, the
-    /// seeds' communities are read as buckets (the `by_community` face plus
+    /// seeds' communities are read as buckets (the cluster over their edges
     /// the facts whose endpoints are both members), and the answer is those
     /// facts rendered as id-bearing text. There is no traversal policy and
     /// no N-hop: a community is a bounded slice by construction, and
@@ -2719,11 +2659,9 @@ impl GraphStore {
             ),
             None => Vector::new(Vec::new()),
         };
-        let community_id = self.next_community_id(scope)?;
         let row = EntityRow {
             kind: Vocab::of(term.type_label.clone()),
             literal_num: literal_num(term),
-            community_id,
             name: term.value.clone(),
             // A fresh node has been used zero times; a merge onto an existing
             // node keeps whatever it had (this path only creates).
@@ -2760,9 +2698,6 @@ impl GraphStore {
         self.store
             .commit_batch(batch)
             .map_err(|e| IngestError::Storage(e.to_string()))?;
-        // The seeded id is durable before anything can read it back: one
-        // small row, written through rather than batched.
-        self.persist_community_seq(scope)?;
         // The scope's in-memory vector table is derived state: drop it rather
         // than maintain it row by row (it reloads on the next retrieval).
         self.tables.forget(scope);
@@ -2961,15 +2896,6 @@ impl GraphStore {
         let next = edge.clone();
         let mut fragment = Fragment::<Facts>::new([Decl::edge(head)]);
         fragment.on_edge_conflict(move |_stored, _declared| next.clone());
-        // The fact's community, written as a cluster membership (okm ADR-0066):
-        // a cluster holds EDGES, so membership is the edge's own row on 0x0D,
-        // and it rides the fragment that writes the edge — an edge is never in
-        // a cluster the same commit did not write. Which cluster is the
-        // endpoints' answer, not the writer's.
-        if let Some(community) = self.shared_community(scope, src, dst)? {
-            let kind = self.community_kind()?;
-            fragment.cluster(Cluster::into(kind, community, crate::document::dict(&BTreeMap::new())));
-        }
         let report = self
             .facts()
             .incorporate(fragment)
@@ -3059,130 +2985,16 @@ fn literal_num(term: &Term) -> i64 {
 
 impl GraphStore {
     /// The sequence row's handle.
-    fn seq(&self) -> Collection<FjallStore, CommunitySeqKey, CommunitySeqRow> {
-        <CommunitySeqRow as Document>::collection(self.store.clone())
-    }
-
-    /// The next community id of one scope.
-    ///
-    /// The sequence row is the source of truth and it only ever grows, so an
-    /// id is never reused — not even when a community's last member leaves,
-    /// which is what reading "the maximum that exists" would get wrong. The
-    /// in-memory copy is a cache; [`persist_community_seq`](Self::persist_community_seq)
-    /// (or the batch variant) makes it durable.
-    ///
-    /// A corpus written before the sequence row existed is bootstrapped from
-    /// the highest community id any of its nodes carries, so the first
-    /// post-upgrade ingest cannot collide with a live bin.
-    fn next_community_id(&mut self, scope: u64) -> Result<u64, IngestError> {
-        // Seed BEFORE taking the mutable borrow: the floor is a read of the
-        // store, the slot is a write to the cache. `entry` then hands back
-        // the slot whether it existed or was just created, so there is no
-        // "the map must contain it now" invariant to state (or to trust).
-        let seed = match self.next_community.get(&scope) {
-            Some(&n) => n,
-            None => {
-                let stored = self
-                    .seq()
-                    .get_row(&CommunitySeqKey { scope })
-                    .map_err(|e| IngestError::Storage(e.to_string()))?
-                    .map_or(0, |row| row.high_water);
-                let live = self
-                    .scope_entities(scope)?
-                    .into_iter()
-                    .map(|(_, row)| row.community_id)
-                    .max()
-                    .unwrap_or(0);
-                stored.max(live) + 1
-            }
-        };
-        // Issuing ADVANCES the watermark — a cached "next" that did not move
-        // hands the same id to every node landed after it, which silently
-        // puts unrelated seeds in one community.
-        let next = self.next_community.entry(scope).or_insert(seed);
-        let id = *next;
-        *next = id.saturating_add(1);
-        Ok(id)
-    }
-
-    /// Flush the scope's issued high water on its own (the single-row write
-    /// path: a node landing before any batch exists).
-    fn persist_community_seq(&self, scope: u64) -> Result<(), IngestError> {
-        let Some(next) = self.next_community.get(&scope) else {
-            return Ok(());
-        };
-        self.seq()
-            .put(
-                &CommunitySeqKey { scope },
-                &CommunitySeqRow {
-                    high_water: next.saturating_sub(1),
-                },
-            )
-            .map_err(|e| IngestError::Storage(e.to_string()))
-    }
-
-    /// The same flush into a caller-owned batch, so the ids and the rows
-    /// that carry them commit together.
-    fn write_community_seq_into(&self, batch: &mut Batch, scope: u64) {
-        let Some(next) = self.next_community.get(&scope) else {
-            return;
-        };
-        let key = CommunitySeqKey { scope };
-        let mut pkey = Vec::with_capacity(3 + 8);
-        pkey.extend_from_slice(CommunitySeqRow::NS_PREFIX);
-        write_slot(&mut pkey, PRIMARY_SLOT);
-        pkey.extend_from_slice(&key.encode());
-        let row = CommunitySeqRow {
-            high_water: next.saturating_sub(1),
-        };
-        batch.put(pkey, row.encode_payload());
-    }
-
-    /// The entity primary key `[ns 2B][0x00][scope][node_id]`.
-    fn entity_pkey(&self, key: &EntityKey) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(3 + 16);
-        buf.extend_from_slice(EntityRow::NS_PREFIX);
-        write_slot(&mut buf, PRIMARY_SLOT);
-        buf.extend_from_slice(&key.encode());
-        buf
-    }
-
-    /// Write one entity row (primary + every declared face) into an owned
-    /// batch. The OLD row's face entries are deleted first when they are no
-    /// longer produced by the new one — okm's document overwrite leaves a
-    /// stale index entry dangling (the entry key encodes the indexed value,
-    /// so a changed value lands at a new key), and a re-binned node's old
-    /// `by_community` entry is exactly that case.
-    fn write_entity_into(
-        &self,
-        batch: &mut Batch,
-        key: &EntityKey,
-        row: &EntityRow,
-        old: Option<&EntityRow>,
-    ) {
-        let header = EntityRow::NS_PREFIX;
-        if let Some(old) = old {
-            let stale: HashSet<Vec<u8>> = EntityRow::index_entries(key, row, header)
-                .into_iter()
-                .map(|(k, _)| k)
-                .collect();
-            for (face, _) in EntityRow::index_entries(key, old, header) {
-                if !stale.contains(&face) {
-                    batch.del(&face);
-                }
-            }
-        }
-        batch.put(self.entity_pkey(key), row.encode_payload());
-        for (face, value) in EntityRow::index_entries(key, row, header) {
-            batch.put(face, value);
-        }
-    }
 
     /// ADR-0010 §2's binning pass, run after a fact lands: load the 2-hop
-    /// neighbourhood, run incremental LPA over it, and write the winning
-    /// community on every node that moved. One engine batch covers the pass
-    /// (the sequence row included). Nothing here is a summary — the read
-    /// side renders the community when it is read (ADR-0010 §5).
+    /// neighbourhood, run incremental LPA over it, and move the community
+    /// clusters to whatever the vote decided (okm ADR-0066).
+    ///
+    /// The pass OWNS the bins. A node row carries no community (membership is a
+    /// property of edges), so the seeds are read back from the clusters of the
+    /// edges already written, and a neighbourhood nobody has binned yet gets a
+    /// fresh cluster per connected component — allocated by okm's own
+    /// `next_free_cluster`, which is why k10r keeps no counter of its own.
     ///
     /// No LLM, no transport, no global graph: the vote is local and the
     /// weights are ADR-0005's — a fresh assertion weighs `ln(2)×0.5`, so a
@@ -3196,67 +3008,80 @@ impl GraphStore {
             return Ok(());
         }
         let members: HashSet<u64> = local.keys().copied().collect();
+        let kind = self.community_kind()?;
+
+        // One walk over the neighbourhood's edges: the vote's adjacency, the
+        // head that names them (the membership rows are keyed by it) and the
+        // cluster each one is in today — the pass reads its own previous
+        // answer, because the write path no longer leaves one.
         let mut adjacency: HashMap<u64, Vec<(u64, f64)>> = HashMap::new();
+        let mut edges: BTreeMap<EdgeKey, (EdgeHead, u64, u64)> = BTreeMap::new();
         for &node in &members {
             let mut keys = self.out_edges(scope, node)?;
             keys.extend(self.in_edges(scope, node)?);
-            let mut seen = HashSet::new();
             for key in keys {
-                if !seen.insert(key.clone()) {
+                if edges.contains_key(&key) {
                     continue;
                 }
                 // A head whose edge is gone is absence (the ref list outlived
                 // its row), not a failure of the pass.
-                let Some(body) = self
-                    .facts()
-                    .get_edge(&key)
-                    .map_err(|e| IngestError::Storage(e.to_string()))?
+                let Some(view) = self.fact_view(&key)? else {
+                    continue;
+                };
+                let (Some(src), Some(dst)) = (view.src.id.entity_id(), view.dst.id.entity_id())
                 else {
                     continue;
                 };
-                // A fact may name a user endpoint; only entity endpoints take
-                // part in the vote, so a ref from another collection decodes
-                // to `None` rather than to a bogus node id.
-                let (Some(src), Some(dst)) = (entity_node_of(&body.src), entity_node_of(&body.dst))
-                else {
-                    continue;
-                };
-                let other = if src == node { dst } else { src };
-                if other == node || !members.contains(&other) {
+                if src == dst || !members.contains(&src) || !members.contains(&dst) {
                     continue;
                 }
-                let edge = Facts::decode_payload(&body.payload);
-                let vote = (edge.weight as f64 / WEIGHT_SCALE) * (edge.confidence as f64 / 255.0);
-                adjacency.entry(node).or_default().push((other, vote));
+                let head = EdgeHead {
+                    src: self.node_ref(scope, src),
+                    dst: self.node_ref(scope, dst),
+                    predicate: view.kind.clone(),
+                };
+                let vote = (view.edge.weight as f64 / WEIGHT_SCALE)
+                    * (view.edge.confidence as f64 / 255.0);
+                adjacency.entry(src).or_default().push((dst, vote));
+                adjacency.entry(dst).or_default().push((src, vote));
+                edges.insert(view.key.clone(), (head, src, dst));
             }
         }
 
-        let mut assign: HashMap<u64, u64> = local
-            .iter()
-            .map(|(id, row)| (*id, row.community_id))
-            .collect();
-        // A row that predates the field (community 0) is seeded here rather
-        // than voting for "unassigned".
-        let mut ids: Vec<u64> = assign.keys().copied().collect();
-        ids.sort_unstable();
-        for id in &ids {
-            if assign[id] == 0 {
-                let fresh = self.next_community_id(scope)?;
-                assign.insert(*id, fresh);
+        // Seeds: the first edge's cluster that touches a node. A node whose
+        // every edge is unbinned starts at 0 ("no community yet"), and the
+        // component allocation below gives it one.
+        let mut assign: HashMap<u64, u64> = HashMap::new();
+        for (key, (_, src, dst)) in &edges {
+            let current = self
+                .hyper()
+                .clusters_of(key)
+                .find(|cluster| cluster.kind == kind)
+                .map_or(0, |cluster| cluster.id);
+            if current == 0 {
+                continue;
+            }
+            for node in [*src, *dst] {
+                assign.entry(node).or_insert(current);
             }
         }
+        for &node in &members {
+            assign.entry(node).or_insert(0);
+        }
+        let mut ids: Vec<u64> = assign.keys().copied().collect();
+        ids.sort_unstable();
 
         for _ in 0..LPA_ROUNDS {
             let mut changed = false;
             for node in &ids {
-                let Some(neighbors) = adjacency.get(node) else {
+                let Some(neighbours) = adjacency.get(node) else {
                     continue;
                 };
-                if neighbors.is_empty() {
+                if neighbours.is_empty() {
                     continue;
                 }
                 let mut votes: BTreeMap<u64, f64> = BTreeMap::new();
-                for (other, weight) in neighbors {
+                for (other, weight) in neighbours {
                     *votes.entry(assign[other]).or_insert(0.0) += *weight;
                 }
                 // Highest accumulated vote wins; a tie goes to the SMALLER
@@ -3281,111 +3106,111 @@ impl GraphStore {
             }
         }
 
-        let mut batch = Batch::default();
-        for node in &ids {
-            let row = &local[node];
-            let winning = assign[node];
-            if row.community_id != winning {
-                let mut next = row.clone();
-                next.community_id = winning;
-                let key = EntityKey {
-                    scope,
-                    node_id: *node,
-                };
-                self.write_entity_into(&mut batch, &key, &next, Some(row));
+        // Whatever the vote left at zero is a community nobody has created
+        // yet: one fresh cluster per connected component of those nodes, and
+        // okm hands out the id.
+        let mut unassigned: HashSet<u64> = ids
+            .iter()
+            .copied()
+            .filter(|node| assign[node] == 0)
+            .collect();
+        while let Some(&start) = unassigned.iter().next() {
+            unassigned.remove(&start);
+            let mut component = vec![start];
+            let mut cursor = 0;
+            while cursor < component.len() {
+                let node = component[cursor];
+                cursor += 1;
+                if let Some(neighbours) = adjacency.get(&node) {
+                    for (other, _) in neighbours {
+                        if unassigned.remove(other) {
+                            component.push(*other);
+                        }
+                    }
+                }
+            }
+            let inside = component.iter().copied().collect::<HashSet<u64>>();
+            let Some((_, (head, _, _))) = edges.iter().find(|(_, (_, src, dst))| {
+                inside.contains(src) && inside.contains(dst)
+            }) else {
+                // An isolated node: no edge to name it, so no cluster either.
+                continue;
+            };
+            let mut fragment = Fragment::<Facts>::new([Decl::edge(head.clone())]);
+            fragment.cluster(Cluster::new(
+                kind,
+                crate::document::dict(&BTreeMap::new()),
+            ));
+            let report = self
+                .facts()
+                .incorporate(fragment)
+                .map_err(|e| IngestError::Storage(e.to_string()))?;
+            let Some(id) = report.hyper_ids.first().copied() else {
+                continue;
+            };
+            for node in component {
+                assign.insert(node, id);
             }
         }
 
-        // The ids this pass issued must be durable WITH the rows that use
-        // them: the sequence row rides the same batch, so a restart can
-        // never hand the same id to another community.
-        self.write_community_seq_into(&mut batch, scope);
-        self.store
-            .commit_batch(batch)
-            .map_err(|e| IngestError::Storage(e.to_string()))?;
-        // The community CLUSTERS follow the bins (okm ADR-0066): a node that
-        // moved takes its edges' memberships with it, or the bucket read would
-        // answer from the previous pass.
-        self.sync_membership(scope, &members)
+        // The memberships follow the bins: an edge whose two ends now share a
+        // different community leaves its old cluster and joins the new one in
+        // ONE fragment, so no reader sees it in both.
+        self.sync_membership(kind, &edges, &assign)
     }
 
-    /// Re-point the community memberships of a neighbourhood's edges at the
-    /// bins the pass just wrote.
+    /// Move every neighbourhood edge's membership to the community its two
+    /// ends now share.
     ///
-    /// The write path sets a membership from its endpoints' bins at the moment
-    /// the edge lands; a later vote can move either endpoint, so the membership
-    /// has to move too. Each edge's desired community is "both ends agree",
-    /// the same rule [`shared_community`](Self::shared_community) applies —
-    /// otherwise the two reads would disagree about what is in a bucket.
-    ///
-    /// One fragment per (old clusters -> new cluster) group carries the removal
-    /// and the addition together, so an edge is never in two bins at once and
-    /// never in neither: `remove` and `cluster` land in one commit.
+    /// The desired community is "both ends agree", which is the same rule the
+    /// bucket read applies — otherwise the two would disagree about what is in
+    /// a bucket. One fragment per (old clusters -> new cluster) group carries
+    /// the removal and the addition together.
     fn sync_membership(
         &mut self,
-        scope: u64,
-        members: &HashSet<u64>,
+        kind: Kind,
+        edges: &BTreeMap<EdgeKey, (EdgeHead, u64, u64)>,
+        assign: &HashMap<u64, u64>,
     ) -> Result<(), IngestError> {
-        let kind = self.community_kind()?;
-        let mut heads: Vec<(EdgeKey, EdgeHead, u64)> = Vec::new();
-        let mut seen: HashSet<EdgeKey> = HashSet::new();
-        for &node in members {
-            let mut keys = self.out_edges(scope, node)?;
-            keys.extend(self.in_edges(scope, node)?);
-            for key in keys {
-                if !seen.insert(key.clone()) {
-                    continue;
-                }
-                let Some(view) = self.fact_view(&key)? else {
-                    continue;
-                };
-                let (Some(src), Some(dst)) = (
-                    view.src.id.entity_id(),
-                    view.dst.id.entity_id(),
-                ) else {
-                    continue;
-                };
-                let (Some(&a), Some(&b)) = (
-                    self.entity(scope, src)?.map(|r| r.community_id).as_ref(),
-                    self.entity(scope, dst)?.map(|r| r.community_id).as_ref(),
-                ) else {
-                    continue;
-                };
-                if a == 0 || a != b {
-                    continue;
-                }
-                let head = EdgeHead {
-                    src: self.node_ref(scope, src),
-                    dst: self.node_ref(scope, dst),
-                    predicate: view.kind.clone(),
-                };
-                heads.push((view.key.clone(), head, a));
-            }
-        }
-        // Group by the (new cluster, old clusters) pair: one fragment per group.
         let mut groups: BTreeMap<(u64, Vec<u64>), Vec<EdgeHead>> = BTreeMap::new();
-        for (key, head, wanted) in heads {
+        for (key, (head, src, dst)) in edges {
+            let (a, b) = (assign.get(src).copied(), assign.get(dst).copied());
+            let wanted = match (a, b) {
+                (Some(a), Some(b)) if a == b && a != 0 => a,
+                // A fact across two communities belongs to neither, and one
+                // whose ends are not binned yet belongs to none.
+                _ => 0,
+            };
             let current: Vec<u64> = self
                 .hyper()
-                .clusters_of(&key)
+                .clusters_of(key)
                 .filter(|cluster| cluster.kind == kind)
                 .map(|cluster| cluster.id)
                 .collect();
-            if current.len() == 1 && current[0] == wanted {
+            let settled = match wanted {
+                0 => current.is_empty(),
+                id => current.len() == 1 && current[0] == id,
+            };
+            if settled {
                 continue;
             }
-            groups.entry((wanted, current)).or_default().push(head);
+            groups
+                .entry((wanted, current))
+                .or_default()
+                .push(head.clone());
         }
-        for ((wanted, old), edges) in groups {
-            let mut fragment = Fragment::<Facts>::new(edges.into_iter().map(Decl::edge));
+        for ((wanted, old), heads) in groups {
+            let mut fragment = Fragment::<Facts>::new(heads.into_iter().map(Decl::edge));
             for cluster in old {
                 fragment.remove(ClusterRef::new(kind, cluster));
             }
-            fragment.cluster(Cluster::into(
-                kind,
-                wanted,
-                crate::document::dict(&BTreeMap::new()),
-            ));
+            if wanted != 0 {
+                fragment.cluster(Cluster::into(
+                    kind,
+                    wanted,
+                    crate::document::dict(&BTreeMap::new()),
+                ));
+            }
             self.facts()
                 .incorporate(fragment)
                 .map_err(|e| IngestError::Storage(e.to_string()))?;
@@ -3443,11 +3268,10 @@ impl GraphStore {
         Ok(local)
     }
 
-    /// The community's members (the `by_community` face — the drafts'
-    /// `index:community:`, now a declared access method). The row's own
-    /// `community_id` is re-checked: the face entry is derived, and a
-    /// re-bin deletes the stale one, so this is a belt-and-braces compare,
-    /// not a filter over a table scan.
+    /// The community's members: the endpoints of the edges in its cluster
+    /// (ADR-0066). A member is an EDGE, so a node is here because a fact of
+    /// its is — an isolated node belongs to no bucket, and has nothing to
+    /// contribute to one.
     pub fn community_members(
         &mut self,
         scope: u64,

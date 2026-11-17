@@ -898,26 +898,24 @@ fn a_landed_fact_bins_both_endpoints() {
 
     let (alpha, _) = graph.entity_by_name(1, "alpha").unwrap().unwrap();
     let (beta, _) = graph.entity_by_name(1, "beta").unwrap().unwrap();
-    let community = graph.entity(1, alpha).unwrap().unwrap().community_id;
-    assert_eq!(
-        community,
-        graph.entity(1, beta).unwrap().unwrap().community_id
-    );
-    assert!(community != 0, "every node is seeded with a real community");
+    // The community is read from the edges, not from the node row (ADR-0066).
+    let community = graph.communities(1, alpha).unwrap()[0];
+    assert_eq!(community, graph.communities(1, beta).unwrap()[0]);
+    assert!(community != 0, "every binned node names a real community");
 
     let members = graph.community_members(1, community).unwrap();
     let ids: Vec<u64> = members.iter().map(|(node, _)| *node).collect();
     assert_eq!(members.len(), 2);
     assert!(ids.contains(&alpha) && ids.contains(&beta));
 
-    // The abandoned seed (the lower id, absorbed by the higher one) has no
-    // member left under it.
-    let (orphan, _) = graph.entity_by_name(1, "alpha").unwrap().unwrap();
-    let _ = orphan;
-    assert!(
-        graph.community_members(1, 1).unwrap().is_empty(),
-        "the stale by_community entry is gone"
+    // One community, one cluster: the vote moved both ends into the winner and
+    // left no membership behind under the seed it absorbed.
+    assert_eq!(
+        graph.communities(1, alpha).unwrap().len(),
+        1,
+        "a node sits in one community here, not in its old one and the new one"
     );
+    assert_eq!(graph.communities(1, beta).unwrap().len(), 1);
 }
 
 /// The answer's size is a BUDGET on fact lines (ADR-0010 §5: a few hundred
@@ -994,7 +992,7 @@ fn community_ids_are_never_reused_across_a_reopen() {
             )
             .unwrap();
         let (alpha, _) = graph.entity_by_name(1, "alpha").unwrap().unwrap();
-        graph.entity(1, alpha).unwrap().unwrap().community_id
+        graph.communities(1, alpha).unwrap()[0]
     };
 
     let mut graph = GraphStore::open(dir.path()).unwrap();
@@ -1005,10 +1003,10 @@ fn community_ids_are_never_reused_across_a_reopen() {
         )
         .unwrap();
     let (gamma, _) = graph.entity_by_name(1, "gamma").unwrap().unwrap();
-    let later = graph.entity(1, gamma).unwrap().unwrap().community_id;
+    let later = graph.communities(1, gamma).unwrap()[0];
     assert!(
         later > first,
-        "the sequence survives the reopen: {later} > {first}"
+        "the allocator is the store's, so a reopen cannot re-issue a live id: {later} > {first}"
     );
 }
 
@@ -1024,8 +1022,8 @@ fn communities_are_per_scope() {
 
     let (alpha_one, _) = graph.entity_by_name(1, "alpha").unwrap().unwrap();
     let (alpha_two, _) = graph.entity_by_name(2, "alpha").unwrap().unwrap();
-    let one = graph.entity(1, alpha_one).unwrap().unwrap().community_id;
-    let two = graph.entity(2, alpha_two).unwrap().unwrap().community_id;
+    let one = graph.communities(1, alpha_one).unwrap()[0];
+    let two = graph.communities(2, alpha_two).unwrap()[0];
 
     let members_one: Vec<u64> = graph
         .community_members(1, one)

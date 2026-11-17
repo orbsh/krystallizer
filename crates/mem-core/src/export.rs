@@ -16,7 +16,7 @@ use okm_lake::snapshot::parquet_io;
 
 use crate::channel::{CheckpointRow, CursorRow, MemberRow, MessageRow};
 use crate::code::CodeRow;
-use crate::graph::{CommunitySeqRow, EntityRow, Facts};
+use crate::graph::{EntityRow, Facts};
 use crate::log::LogRow;
 
 /// The ns a table declares, read off its prefix — so a dispatcher keyed by name
@@ -52,10 +52,6 @@ pub const CATALOG: &[(&str, u16)] = &[
     ),
     (<Facts as Document>::TABLE_NAME, ns(Facts::NS_PREFIX)),
     (<LogRow as Document>::TABLE_NAME, ns(LogRow::NS_PREFIX)),
-    (
-        <CommunitySeqRow as Document>::TABLE_NAME,
-        ns(CommunitySeqRow::NS_PREFIX),
-    ),
 ];
 
 /// The derived reduce tables (ADR-0034 §5). A reduce is not a row, so it is not
