@@ -1,6 +1,6 @@
 # Granularity: letting the graph be re-cut
 
-Status: idea, not planned. Depends on okm `replace` / `repoint` / `subgraph` (landed 2026-11-17).
+Status: idea, not planned. Depends on okm `replace` / `repoint` / `cut` (landed 2026-11-17).
 
 ## The problem
 
@@ -8,11 +8,11 @@ Granularity is not a schema constant. A fixed one is wrong in both directions: t
 
 So the graph has to be re-cuttable at run time, and a model is the only thing that can propose where to cut.
 
-## The mechanism is subgraph replacement, not a merger
+## The mechanism is cutting a selection and re-attaching it, not a merger
 
 okm gives three pieces and no fourth:
 
-- `subgraph(NodeSet)` — one selection read, three answers: the members, the edges with both ends inside, and the crossings (one end in, one end out, with the end a rewrite replaces).
+- `cut(NodeSet)` — asked of a selection you already hold, so it is not a read of "what the subgraph is": it answers one half-edge per edge crossing the boundary (the member end, which is the end re-attached, plus the far end) and the edges that die inside.
 - `Fragment::repoint(from, to)` — an assertion moved to a new head WITH its payload. An edge's head is its identity, so this is the only way to re-attach: delete-plus-declare would land the type's default payload.
 - `Graph::replace(fragment)` — one batch that both retracts and declares. Atomic: no reader sees the gap. A replacement that deletes an entity must state every edge incident to it (repoint it or delete it) or the batch is refused.
 
@@ -23,11 +23,11 @@ Every case is that one verb:
 | merge two nodes | delete one node, repoint its crossings to the survivor, delete the edge that becomes a self-loop, delete the loser's row |
 | split one node | declare the second node, repoint the crossings each one keeps, declare the edges that move, no node deletion |
 | replace edges between nodes that stay | repoint or delete and declare, no node deletion at all — the completeness rule never fires |
-| replace a whole subgraph | the general case: internal edges go, crossings are re-attached to whatever replaces them |
+| replace a whole selection | the general case: interior edges go, the boundary half-edges are re-attached to whatever replaces them |
 
-Two degenerate shapes are ordinary, not special cases. A selection at the END OF A CHAIN has exactly one crossing; it is re-attached like any other. A DETACHED selection has none; there is nothing to re-attach, and a merge inside it is pure internal work (the edges between the merged pair collapse to self-loops and must be deleted explicitly, since they are incident to the retired node).
+Two degenerate shapes are ordinary, not special cases. A selection at the END OF A CHAIN has exactly one half-edge on its boundary; it is re-attached like any other. A DETACHED selection has none; there is nothing to re-attach, and a merge inside it is pure internal work (the edges between the merged pair collapse to self-loops and must be deleted explicitly, since they are incident to the retired node).
 
-The one thing the primitive will not decide is which half of a split a single crossing belongs to. That is judgement, and it stays with the caller.
+The one thing the primitive will not decide is which half of a split a single boundary half-edge belongs to. That is judgement, and it stays with the caller.
 
 ## What the record has to keep
 
