@@ -75,9 +75,9 @@ use okm_core::okm_value::Variant;
 use okm_core::parts;
 use okm_core::Uuid7;
 use okm_core::{
-    scan_suffix_kv, write_slot, Batch, Cluster, Collection, Decl, Document, DocumentEncode,
+    scan_suffix_kv, Batch, Cluster, Collection, Decl, Document, DocumentEncode,
     ClusterRef, EdgeHead, EdgeKey, FjallStore, Fragment, Graph, GraphEncode, Hyperedges,
-    KeyEncode, Kind, KvIndex, NodeRef, Vector, VectorElem, VirtualStorage, Vocab, PRIMARY_SLOT,
+    KeyEncode, Kind, KvIndex, NodeRef, Vector, VectorElem, VirtualStorage, Vocab,
 };
 use okm_lake::bridge::EdgeTable;
 use okm_lake::snapshot::parquet_io::EdgeRestore;
