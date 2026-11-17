@@ -95,6 +95,66 @@ async fn a_run_snapshot_is_stored_whole_and_revised() {
     assert_eq!(body["doc"].as_str().unwrap(), second.to_string());
 }
 
+/// A conditional write is how two writers keep one row: the second write, made
+/// against a revision that has moved, is refused and writes nothing — the run's
+/// log is the whole record, so a silently lost completion is a lost fact.
+#[tokio::test]
+async fn a_write_against_a_stale_revision_is_refused() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+
+    let first = json!({"ready": ["a"]}).to_string();
+    let res = client
+        .put(format!("{base}/runs/7/2"))
+        .json(&json!({"doc": first, "ts_ms": 1}))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["revision"], 1);
+
+    // The writer that read revision 1 writes back: it still is current.
+    let res = client
+        .put(format!("{base}/runs/7/2"))
+        .json(&json!({"doc": json!({"ready": ["b"]}).to_string(), "ts_ms": 2, "rev": 1}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["revision"], 2);
+
+    // A second writer that ALSO read revision 1 is out of date now: 409, and the
+    // row keeps what the first write put there.
+    let res = client
+        .put(format!("{base}/runs/7/2"))
+        .json(&json!({"doc": json!({"ready": ["c"]}).to_string(), "ts_ms": 3, "rev": 1}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409, "a stale premise is a race, not a mistake");
+    let error: Value = res.json().await.unwrap();
+    assert!(
+        error["error"].as_str().unwrap().contains("expected 1, stored 2"),
+        "{error}"
+    );
+
+    let body: Value = client
+        .get(format!("{base}/runs/7/2"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["revision"], 2, "nothing was written");
+    assert_eq!(
+        body["doc"].as_str().unwrap(),
+        json!({"ready": ["b"]}).to_string(),
+        "the first write's document stands"
+    );
+}
+
 /// A run is addressed by (scope, id): the same id in another scope is another
 /// run, and one that was never written is a 404 — "no such run" and "a run with
 /// nothing in it" must not look alike to an engine that is resuming.

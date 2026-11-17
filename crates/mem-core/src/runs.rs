@@ -52,12 +52,40 @@ impl GraphStore {
         doc: String,
         now: u64,
     ) -> Result<u32, IngestError> {
+        self.put_run_if(scope, run_id, doc, now, None)
+    }
+
+    /// The same write, conditional on the revision the caller last read
+    /// (`None` = unconditional, for the first write).
+    ///
+    /// A run is advanced by reading it, appending one completion, and writing it
+    /// back. Without the condition two writers each read revision N and the second
+    /// write silently erases the first completion — and a run's log is the whole
+    /// record of what happened, so a lost entry is a lost fact. The condition
+    /// turns that race into a refusal the caller can retry.
+    pub fn put_run_if(
+        &mut self,
+        scope: u64,
+        run_id: u64,
+        doc: String,
+        now: u64,
+        expect: Option<u32>,
+    ) -> Result<u32, IngestError> {
         let key = RunKey { scope, run_id };
-        let previous = self
+        let stored = self
             .runs
             .get_row(&key)
             .map_err(|e| IngestError::Storage(e.to_string()))?
             .map_or(0, |row| row.revision);
+        if let Some(expected) = expect {
+            if expected != stored {
+                return Err(IngestError::Conflict {
+                    expected,
+                    stored,
+                });
+            }
+        }
+        let previous = stored;
         let row = RunRow {
             doc,
             revision: previous.saturating_add(1),

@@ -1325,6 +1325,11 @@ pub struct PutRunBody {
     pub doc: String,
     #[serde(default)]
     pub ts_ms: Option<u64>,
+    /// The revision the caller READ. Present means "write only if this is still
+    /// current" — a stale value is a 409, never a silent overwrite. Absent is the
+    /// first write of a run, which has nothing to compare against.
+    #[serde(default)]
+    pub rev: Option<u32>,
 }
 
 /// The answer to a run write: the revision the store assigned, so the caller
@@ -1355,7 +1360,7 @@ async fn put_run(
     let now = body.ts_ms.unwrap_or_else(crate::now_ms);
     let mut graph = state.graph.lock().await;
     let revision = graph
-        .put_run(scope, run_id, body.doc, now)
+        .put_run_if(scope, run_id, body.doc, now, body.rev)
         .map_err(FactError::from)?;
     Ok(Json(RunRevisionDto { revision }))
 }
@@ -1853,6 +1858,10 @@ impl From<IngestError> for FactError {
     fn from(e: IngestError) -> Self {
         let status = match e {
             IngestError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            // 409, not 400: the request was well formed, the row moved. Retrying
+            // against a fresh read is the answer, and the caller needs to know it
+            // was a race rather than a mistake.
+            IngestError::Conflict { .. } => StatusCode::CONFLICT,
             _ => StatusCode::BAD_REQUEST,
         };
         Self {

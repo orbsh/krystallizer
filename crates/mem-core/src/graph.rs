@@ -752,6 +752,11 @@ pub enum IngestError {
     /// a caller error, never a storage failure.
     #[error("refused: {0}")]
     Refused(String),
+    /// A conditional write whose premise is gone: the caller named the revision
+    /// it read, and the stored row has moved on. Nothing is written — the caller
+    /// re-reads and decides, which is the only way two writers keep one row.
+    #[error("revision conflict: expected {expected}, stored {stored}")]
+    Conflict { expected: u32, stored: u32 },
 }
 
 /// A decoded fact, read back from storage.
