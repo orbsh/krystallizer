@@ -3048,21 +3048,27 @@ impl GraphStore {
             }
         }
 
-        // Seeds: the first edge's cluster that touches a node. A node whose
-        // every edge is unbinned starts at 0 ("no community yet"), and the
-        // component allocation below gives it one.
+        // Seeds: the SMALLEST of the clusters that touch a node — the same
+        // tie-break the vote uses, so the pass does not depend on which edge
+        // happened to come first in key order. A node none of whose edges is
+        // binned starts at 0 ("no community yet"), and the component
+        // allocation below gives it one.
         let mut assign: HashMap<u64, u64> = HashMap::new();
         for (key, (_, src, dst)) in &edges {
-            let current = self
+            let Some(current) = self
                 .hyper()
                 .clusters_of(key)
-                .find(|cluster| cluster.kind == kind)
-                .map_or(0, |cluster| cluster.id);
-            if current == 0 {
+                .filter(|cluster| cluster.kind == kind)
+                .map(|cluster| cluster.id)
+                .min()
+            else {
                 continue;
-            }
+            };
             for node in [*src, *dst] {
-                assign.entry(node).or_insert(current);
+                assign
+                    .entry(node)
+                    .and_modify(|low| *low = (*low).min(current))
+                    .or_insert(current);
             }
         }
         for &node in &members {
