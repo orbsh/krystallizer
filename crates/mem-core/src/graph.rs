@@ -76,7 +76,8 @@ use okm_core::parts;
 use okm_core::Uuid7;
 use okm_core::{
     scan_suffix_kv, Batch, Cluster, Collection, Decl, Document, DocumentEncode,
-    ClusterRef, EdgeHead, EdgeKey, FjallStore, Fragment, Graph, GraphEncode, Hyperedges,
+    ClusterRef, EdgeHead, EdgeKey, EdgeSet, FjallStore, Fragment, Graph, GraphEncode,
+    Hyperedges,
     KeyEncode, Kind, KvIndex, NodeRef, Vector, VectorElem, VirtualStorage, Vocab,
 };
 use okm_lake::bridge::EdgeTable;
@@ -1299,9 +1300,9 @@ impl GraphStore {
         );
         let mut communities = Vec::new();
         for key in keys {
-            for cluster in self.hyper().clusters_of(&key) {
-                if cluster.kind == kind && !communities.contains(&cluster.id) {
-                    communities.push(cluster.id);
+            for set in self.hyper().edge_sets_of(&key) {
+                if set.kind == kind && !communities.contains(&set.id) {
+                    communities.push(set.id);
                 }
             }
         }
@@ -2055,7 +2056,7 @@ impl GraphStore {
                 .hyper()
                 .lookup(ClusterRef::new(kind, community))
                 .map_err(|e| IngestError::Storage(e.to_string()))?
-                .map_or(0, |row| row.member_count() as usize);
+                .map_or(0, |row| row.edge_count() as usize);
             let mut facts: Vec<FactView> = self
                 .community_facts(scope, community)?
                 .into_iter()
@@ -3082,9 +3083,9 @@ impl GraphStore {
         for (key, (_, src, dst)) in &edges {
             let Some(current) = self
                 .hyper()
-                .clusters_of(key)
-                .filter(|cluster| cluster.kind == kind)
-                .map(|cluster| cluster.id)
+                .edge_sets_of(key)
+                .filter(|set| set.kind == kind)
+                .map(|set| set.id)
                 .min()
             else {
                 continue;
@@ -3168,15 +3169,15 @@ impl GraphStore {
                 continue;
             };
             let mut fragment = Fragment::<Facts>::new([Decl::edge(head.clone())]);
-            fragment.cluster(Cluster::new(
-                kind,
+            fragment.cluster(Cluster::edges(
+                COMMUNITY_KIND,
                 crate::document::dict(&BTreeMap::new()),
             ));
             let report = self
                 .facts()
                 .incorporate(fragment)
                 .map_err(|e| IngestError::Storage(e.to_string()))?;
-            let Some(id) = report.hyper_ids.first().copied() else {
+            let Some(id) = report.edge_sets.first().map(|set| set.id) else {
                 continue;
             };
             for node in component {
@@ -3214,9 +3215,9 @@ impl GraphStore {
             };
             let current: Vec<u64> = self
                 .hyper()
-                .clusters_of(key)
-                .filter(|cluster| cluster.kind == kind)
-                .map(|cluster| cluster.id)
+                .edge_sets_of(key)
+                .filter(|set| set.kind == kind)
+                .map(|set| set.id)
                 .collect();
             let settled = match wanted {
                 0 => current.is_empty(),
@@ -3233,14 +3234,13 @@ impl GraphStore {
         for ((wanted, old), heads) in groups {
             let mut fragment = Fragment::<Facts>::new(heads.into_iter().map(Decl::edge));
             for cluster in old {
-                fragment.remove(ClusterRef::new(kind, cluster));
+                fragment.remove_edges(EdgeSet::new(kind, cluster));
             }
             if wanted != 0 {
-                fragment.cluster(Cluster::into(
-                    kind,
-                    wanted,
-                    crate::document::dict(&BTreeMap::new()),
-                ));
+                fragment.cluster(
+                    Cluster::edges(COMMUNITY_KIND, crate::document::dict(&BTreeMap::new()))
+                        .at(wanted),
+                );
             }
             self.facts()
                 .incorporate(fragment)
@@ -3337,7 +3337,7 @@ impl GraphStore {
         let kind = self.community_kind()?;
         let edges = self
             .hyper()
-            .members(ClusterRef::new(kind, community))
+            .edge_members(EdgeSet::new(kind, community))
             .map_err(|e| IngestError::Storage(e.to_string()))?;
         let mut facts = Vec::new();
         for edge in edges {
