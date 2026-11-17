@@ -38,6 +38,7 @@ pub mod log;
 pub mod proposals;
 pub mod render;
 pub mod restore;
+pub mod runs;
 pub mod service;
 pub mod skills;
 pub mod tasks;

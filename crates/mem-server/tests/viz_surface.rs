@@ -95,8 +95,9 @@ async fn the_graph_door_answers_the_shape_the_page_draws() {
         assert!(node.get("id").is_some());
         assert!(node.get("kind").is_some());
         assert!(
-            node.get("community_id").is_some(),
-            "the colour source travels: {node}"
+            node.get("communities").is_some_and(|c| c.is_array()),
+            "the colour source travels — a list now, because a node can sit in \
+             more than one community and a node with no facts sits in none: {node}"
         );
     }
     let links = graph["links"].as_array().unwrap();

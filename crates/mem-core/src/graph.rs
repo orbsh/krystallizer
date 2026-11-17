@@ -1108,6 +1108,9 @@ pub struct GraphStore {
     /// same key type, so "is this node a task" is answered by a row's presence
     /// and no join pairs a task with its state.
     sheets: Collection<FjallStore, EntityKey, TaskSheet>,
+    /// The run snapshots (gravity ADR-0011 §7): an engine's serialised state,
+    /// keyed by the pair it speaks in and never joined to the corpus.
+    pub(crate) runs: Collection<FjallStore, crate::runs::RunKey, crate::runs::RunRow>,
     /// The identity collection (ns 42), on the CHANNEL keyspace — `None` when
     /// the caller attached only the memory side. Reads are point reads across
     /// handles; a fact's batch never spans the two keyspaces (okm's
@@ -1133,6 +1136,11 @@ pub struct GraphStore {
     /// The scan is okm-vector's; this map only decides when to rebuild and how
     /// much derived state may be held — see `TABLE_BUDGET_BYTES`.
     tables: ScopeTables,
+    /// The interned id of k10r's community kind. Interning a label is a
+    /// write-side read of the store's dictionary with the SAME answer every
+    /// time, so the pass asks once per handle: `bin` and the write path would
+    /// otherwise look the label up on every fact.
+    community_kind: Option<Kind>,
 }
 
 impl GraphStore {
@@ -1149,6 +1157,7 @@ impl GraphStore {
         let entities = <EntityRow as Document>::collection(store.clone());
         let vectors = <NodeVector as Document>::collection(store.clone());
         let sheets = <TaskSheet as Document>::collection(store.clone());
+        let runs = <crate::runs::RunRow as Document>::collection(store.clone());
         let codes = crate::code::code_collection(store.clone());
         // Code ids are a watermark over the code sheets (k10r ADR-0023): the
         // highest id EVER written, so a deleted row does not free its id. One
@@ -1176,6 +1185,7 @@ impl GraphStore {
             entities,
             vectors,
             sheets,
+            runs,
             codes,
             store,
             next_node,
@@ -1183,6 +1193,7 @@ impl GraphStore {
             embedder: None,
             members: None,
             tables: ScopeTables::default(),
+            community_kind: None,
         })
     }
 
@@ -1239,9 +1250,15 @@ impl GraphStore {
     /// keeps the dictionary (ADR-0066 §1). Interning is idempotent, so every
     /// call answers the same id and a restart cannot renumber it.
     fn community_kind(&mut self) -> Result<Kind, IngestError> {
-        self.hyper()
+        if let Some(kind) = self.community_kind {
+            return Ok(kind);
+        }
+        let kind = self
+            .hyper()
             .kind_id(COMMUNITY_KIND)
-            .map_err(|e| IngestError::Storage(e.to_string()))
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
+        self.community_kind = Some(kind);
+        Ok(kind)
     }
 
     /// The communities one node sits in, in the order its edges name them.
@@ -1549,6 +1566,9 @@ impl GraphStore {
             .map_or(1, |k| k.node_id.saturating_add(1));
         self.next_node = next_node;
         self.tables.clear();
+        // The dictionary is the store's: a restored corpus can carry a
+        // different numbering, so the cached id goes with the other caches.
+        self.community_kind = None;
         Ok(())
     }
 

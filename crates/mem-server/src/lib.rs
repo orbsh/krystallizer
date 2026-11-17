@@ -328,6 +328,9 @@ fn build(
         .route("/skills/{scope}/{node_id}", get(fetch_skill))
         .route("/tasks/{scope}", post(open_task).get(list_tasks))
         .route("/tasks/{scope}/{node_id}/move", post(move_task))
+        // The run snapshot (gravity ADR-0011 §7): PUT replaces the whole
+        // document, GET answers it whole — the engine owns the shape.
+        .route("/runs/{scope}/{run_id}", get(fetch_run).put(put_run))
         .route("/memories/{scope}", post(ingest_facts))
         .route("/graph/{scope}/search", post(search_facts))
         .route("/graph/{scope}/top", get(top_facts))
@@ -1315,6 +1318,70 @@ async fn promote_skill(
 // are ordinary edges and ride `POST /memories/{scope}` like any other fact — a
 // door per relation would be a second vocabulary for one graph.
 
+/// Request body of `PUT /runs/{scope}/{run_id}` — the engine's document as it
+/// stands at this suspension point, plus the caller's clock.
+#[derive(Debug, Deserialize)]
+pub struct PutRunBody {
+    pub doc: String,
+    #[serde(default)]
+    pub ts_ms: Option<u64>,
+}
+
+/// The answer to a run write: the revision the store assigned, so the caller
+/// knows which snapshot is now current without reading it back.
+#[derive(Debug, Serialize)]
+pub struct RunRevisionDto {
+    pub revision: u32,
+}
+
+/// The answer to a run read: the document and the revision it carries.
+#[derive(Debug, Serialize)]
+pub struct RunDto {
+    pub doc: String,
+    pub revision: u32,
+    pub updated_at: u64,
+}
+
+/// `PUT /runs/{scope}/{run_id}` — write a run's snapshot whole.
+///
+/// Idempotent in effect and not in identity: writing the same document twice
+/// bumps the revision, because the second write is the engine saying "this is
+/// still the state" — a reader that watches the revision learns that too.
+async fn put_run(
+    State(state): State<Arc<MemState>>,
+    Path((scope, run_id)): Path<(u64, u64)>,
+    Json(body): Json<PutRunBody>,
+) -> Result<Json<RunRevisionDto>, FactError> {
+    let now = body.ts_ms.unwrap_or_else(crate::now_ms);
+    let mut graph = state.graph.lock().await;
+    let revision = graph
+        .put_run(scope, run_id, body.doc, now)
+        .map_err(FactError::from)?;
+    Ok(Json(RunRevisionDto { revision }))
+}
+
+/// `GET /runs/{scope}/{run_id}` — one run's snapshot. 404 when the run was
+/// never written: an engine that resumes is asking about a run it started.
+async fn fetch_run(
+    State(state): State<Arc<MemState>>,
+    Path((scope, run_id)): Path<(u64, u64)>,
+) -> axum::response::Response {
+    let mut graph = state.graph.lock().await;
+    match graph.run(scope, run_id) {
+        Ok(Some(row)) => Json(RunDto {
+            doc: row.doc,
+            revision: row.revision,
+            updated_at: row.updated_at,
+        })
+        .into_response(),
+        // Not 400: a run that was never written and a run with an empty
+        // document are different answers, and an engine resuming must see which
+        // it is holding.
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => FactError::from(e).into_response(),
+    }
+}
+
 /// Request body of `POST /tasks/{scope}`. `ts_ms` is the caller's clock, the same
 /// discipline the checkpoint and touch doors follow: k10r has no clock of its own.
 #[derive(Debug, Deserialize)]
@@ -2284,9 +2351,11 @@ pub struct GraphNodeDto {
     pub name: String,
     pub kind: String,
     pub literal_num: i64,
-    /// The node's community (ADR-0010 §2) — the color cluster, and the
-    /// reason the binning is inspectable at all.
-    pub community_id: u64,
+    /// The node's communities (ADR-0010 §2 as okm clusters): the clusters of
+    /// the facts that touch it. Empty is a real answer — a node with no edges
+    /// belongs to none — and more than one is possible, which the old single
+    /// column could not say.
+    pub communities: Vec<u64>,
     /// The node's usage telemetry (ADR-0018, a declared field set since the
     /// 2026-10-27 amendment): how many times it was invoked and when. A graph
     /// view reads them to say "alive" or "abandoned" without opening the node.
@@ -2370,12 +2439,13 @@ async fn fetch_graph(
                     .collect()
             })
             .unwrap_or_default();
+        let communities = graph.communities(scope, node_id).unwrap_or_default();
         nodes.push(GraphNodeDto {
             id: node_id,
             kind: row.kind.as_str().unwrap_or_default().to_string(),
             literal_num: row.literal_num,
             name: row.name,
-            community_id: row.community_id,
+            communities,
             invoke_calls: row.invoke_calls,
             invoke_ok: row.invoke_ok,
             last_invoked: row.last_invoked,
