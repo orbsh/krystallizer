@@ -187,3 +187,48 @@ async fn runs_are_per_scope_and_absent_is_not_empty() {
     let other = client.get(format!("{base}/runs/2/9")).send().await.unwrap();
     assert_eq!(other.status(), 404, "another scope, another run");
 }
+
+/// A run is addressable by id, but a page showing work in progress cannot know the
+/// ids: they belong to runs started elsewhere. The list door answers "what is here",
+/// and it answers only this scope's runs.
+#[tokio::test]
+async fn the_runs_of_a_scope_can_be_listed() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    for (scope, run_id) in [(7u64, 9u64), (7, 5), (8, 1)] {
+        let res = client
+            .put(format!("{base}/runs/{scope}/{run_id}"))
+            .json(&json!({ "doc": format!("{{\"run\":{run_id}}}"), "ts_ms": 10 + run_id }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200, "seed {scope}/{run_id}");
+    }
+
+    let listed: Value = client
+        .get(format!("{base}/runs/7"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let rows = listed.as_array().expect("a list");
+    assert_eq!(rows.len(), 2, "only scope 7: {listed}");
+    assert_eq!(rows[0]["run_id"], 5, "oldest id first: {listed}");
+    assert_eq!(rows[1]["run_id"], 9);
+    assert_eq!(rows[0]["revision"], 1);
+    assert_eq!(rows[0]["updated_at"], 15, "the caller's clock, as recorded");
+    assert_eq!(rows[0].get("doc"), None, "a listing is not a dump");
+
+    // An empty scope is an empty list, not a 404: the question was answered.
+    let none: Value = client
+        .get(format!("{base}/runs/99"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(none, json!([]));
+}

@@ -330,6 +330,7 @@ fn build(
         .route("/tasks/{scope}/{node_id}/move", post(move_task))
         // The run snapshot (gravity ADR-0011 §7): PUT replaces the whole
         // document, GET answers it whole — the engine owns the shape.
+        .route("/runs/{scope}", get(list_runs))
         .route("/runs/{scope}/{run_id}", get(fetch_run).put(put_run))
         .route("/memories/{scope}", post(ingest_facts))
         .route("/graph/{scope}/search", post(search_facts))
@@ -1318,6 +1319,16 @@ async fn promote_skill(
 // are ordinary edges and ride `POST /memories/{scope}` like any other fact — a
 // door per relation would be a second vocabulary for one graph.
 
+/// One row of the run list: the address, how many times it has been written, and
+/// when. Deliberately not the document — a listing that carried every run's log
+/// would be a database dump, and the caller that wants one run knows its id.
+#[derive(Debug, Serialize)]
+pub struct RunSummaryDto {
+    pub run_id: u64,
+    pub revision: u32,
+    pub updated_at: u64,
+}
+
 /// Request body of `PUT /runs/{scope}/{run_id}` — the engine's document as it
 /// stands at this suspension point, plus the caller's clock.
 #[derive(Debug, Deserialize)]
@@ -1363,6 +1374,29 @@ async fn put_run(
         .put_run_if(scope, run_id, body.doc, now, body.rev)
         .map_err(FactError::from)?;
     Ok(Json(RunRevisionDto { revision }))
+}
+
+/// `GET /runs/{scope}` — what runs exist here, newest last.
+///
+/// Continuing a run needs only its address, but a page that shows work in progress
+/// cannot ask by address: the ids belong to runs started elsewhere. This door answers
+/// "what is here", and the engine folds each document to find out which are waiting —
+/// k10r does not know what waiting means.
+async fn list_runs(
+    State(state): State<Arc<MemState>>,
+    Path(scope): Path<u64>,
+) -> Result<Json<Vec<RunSummaryDto>>, FactError> {
+    let mut graph = state.graph.lock().await;
+    let runs = graph.runs_of(scope).map_err(FactError::from)?;
+    Ok(Json(
+        runs.into_iter()
+            .map(|(run_id, row)| RunSummaryDto {
+                run_id,
+                revision: row.revision,
+                updated_at: row.updated_at,
+            })
+            .collect(),
+    ))
 }
 
 /// `GET /runs/{scope}/{run_id}` — one run's snapshot. 404 when the run was

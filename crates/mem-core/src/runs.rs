@@ -97,6 +97,50 @@ impl GraphStore {
         Ok(row.revision)
     }
 
+    /// Every run in one scope, oldest id first.
+    ///
+    /// A run is addressed by (scope, id) and that is enough to CONTINUE one — but not
+    /// enough to SHOW what is waiting: nobody holds the ids of runs started on another
+    /// device, and a page that lists work in progress must ask "what is here", not
+    /// "what is at this address". The scan is over this table's own prefix; the scope
+    /// rides the key's first eight bytes.
+    /// Every run in one scope, oldest id first.
+    ///
+    /// A run is addressed by (scope, id) and that is enough to CONTINUE one — but not
+    /// enough to SHOW what is waiting: nobody holds the ids of runs started on another
+    /// device, and a page that lists work in progress asks "what is here", not "what is
+    /// at this address". The ids come from this table's own key prefix (the scope rides
+    /// its first eight bytes); each row is then read the ordinary way, which keeps the
+    /// decoding in one place.
+    pub fn runs_of(&mut self, scope: u64) -> Result<Vec<(u64, RunRow)>, IngestError> {
+        let prefix = scope.to_be_bytes();
+        let raw = self
+            .runs
+            .scan_documents_raw()
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
+        let mut ids = Vec::new();
+        for (suffix, payload) in raw {
+            if !suffix.starts_with(&prefix) || payload.is_none() {
+                continue;
+            }
+            let Some(id) = suffix.get(8..16) else {
+                continue;
+            };
+            let Ok(id) = <[u8; 8]>::try_from(id) else {
+                continue;
+            };
+            ids.push(u64::from_be_bytes(id));
+        }
+        ids.sort_unstable();
+        let mut out = Vec::with_capacity(ids.len());
+        for run_id in ids {
+            if let Some(row) = self.run(scope, run_id)? {
+                out.push((run_id, row));
+            }
+        }
+        Ok(out)
+    }
+
     /// One run's snapshot, or `None` when no such run was ever written.
     pub fn run(&mut self, scope: u64, run_id: u64) -> Result<Option<RunRow>, IngestError> {
         self.runs
