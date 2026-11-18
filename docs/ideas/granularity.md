@@ -1,6 +1,7 @@
 # Granularity: letting the graph be re-cut
 
-Status: idea, not planned. Depends on okm `replace` / `repoint` / `cut` (landed 2026-11-17).
+Status: idea, not planned. Depends on okm `subgraph` / `cut` / `repoint` / `replace` / `materialize`
+(landed 2026-11-17).
 
 ## The problem
 
@@ -12,7 +13,9 @@ So the graph has to be re-cuttable at run time, and a model is the only thing th
 
 okm gives three pieces and no fourth:
 
-- `cut(NodeSet)` — asked of a selection you already hold, so it is not a read of "what the subgraph is": it answers one half-edge per edge crossing the boundary (the member end, which is the end re-attached, plus the far end) and the edges that die inside.
+- `subgraph(seed, hops, predicates)` — names a selection nothing had written: breadth-first, answering the cut directly. `hops` counts the rings INSIDE the selection, so the boundary is what leaves them.
+- `cut(selection)` — asked of a selection you already hold, so it is not a read of "what the subgraph is": it answers one half-edge per edge crossing the boundary (the member end, which is the end re-attached, plus the far end) and the edges that die inside.
+- `materialize(selection, kind, payload)` — the one step that stores a computed selection as a node set, for when the partition has to be asked about again.
 - `Fragment::repoint(from, to)` — an assertion moved to a new head WITH its payload. An edge's head is its identity, so this is the only way to re-attach: delete-plus-declare would land the type's default payload.
 - `Graph::replace(fragment)` — one batch that both retracts and declares. Atomic: no reader sees the gap. A replacement that deletes an entity must state every edge incident to it (repoint it or delete it) or the batch is refused.
 
@@ -29,16 +32,24 @@ Two degenerate shapes are ordinary, not special cases. A selection at the END OF
 
 The one thing the primitive will not decide is which half of a split a single boundary half-edge belongs to. That is judgement, and it stays with the caller.
 
-## What the record has to keep
+## No ledger: the current shape is the only truth
 
-A merge is expensive and irreversible; a split is cheap and reversible. That asymmetry drives the whole policy:
+A merge is expensive and irreversible; a split is cheap and reversible. That asymmetry decides the policy:
 
 - **Splits are gated on evidence about shape** — the node's edges fall into two groups with few edges between them. Cheap to do, cheap to undo.
 - **Merges are gated on evidence about identity** — same external id, a name that differs only in spelling, attributes that do not contradict. "These look similar" is not evidence: a model's similarity judgement is not calibrated, and the cost of a wrong merge is a payload merged by a conflict hook into a row nobody can un-merge.
-- **Both leave a record**: which nodes, which edges were the evidence, when. A year later "why is PG the same node as PostgreSQL" has to be answerable, and a split's criterion is read back out of the merge record's edge groups.
-- **Anti-oscillation is by record, not by prompt**: the same pair may be merged once; merging again requires new evidence. Merge/split ping-pong is the stable failure mode of this kind of system, and asking a model to be careful does not stop it.
 
 The model proposes; the application commits. Proposal is free and reversible, commitment is not, so the gate belongs where the irreversible act is.
+
+**Nothing records that a shape was changed.** Not the nodes, not an event node, not a table. Three reasons, in the order they decided it:
+
+- A ledger drifts away from the data it describes. The moment a node's edges change for any other reason, the record's "this is why" is stale, and nothing re-checks it — a second copy of the truth needs a maintenance pass that will not exist.
+- Nothing consumes it. No algorithm reads "these two were merged in March" and decides better afterwards; the granularity pass judges the current edges either way.
+- The premise is wrong on its own terms. A shape that was adjusted was unreasonable BEFORE the adjustment, and the nodes never carried a record of being unreasonable. Re-reading why is re-litigating a state that no longer exists.
+
+What that leaves is one rule, and everything else follows from it: **the latest version is the truth**. When the graph changes and something else needs to know, it reads again — shared memory exists to overcome staleness, not to preserve it.
+
+Anti-oscillation therefore cannot be a record either. It is the criterion plus the cadence: a merge or split fires only when the evidence is true of the data AS IT IS NOW. The stable failure mode (merge, split, merge, split) is answered by making the criterion harder to satisfy on the live edges, not by remembering that a pair was merged once. A split immediately after a merge means the merge criterion was wrong — and that shows up in the shape, not in a log.
 
 ## Render ids
 
@@ -46,12 +57,11 @@ The text render already carries `n<id>` per node (`render.rs`, from `NodeId::lab
 
 There is **no id→id alias face, deliberately**. A redirect would assert "this number is now that entity", and after a split, a partial re-merge and a later absorption that sentence is false — a silent rewrite of history, worse than a missing row, because a missing row at least reads as missing. okm stores what is currently true; the identity history is the application's record.
 
-So a stale id resolves to nothing, and the read path must say so rather than hide it: an id whose entity is gone renders as a tombstone naming where it went (from the merge record), or is filtered out. What must not happen is a hollow `n42  []` row sitting in a prompt for the model to name — that invites an invention.
+So a stale id resolves to nothing, and the read path FILTERS it out rather than explain it. There is no ledger to explain it with — nothing knows where the entity went, because the answer that matters is that it is not there now — and a row saying "n42 (gone)" still puts a dead name in front of the model, which is exactly the invitation to invent. What must not happen is a hollow `n42  []` row sitting in a prompt for the model to name.
 
-An action that arrives against an id no longer live is refused and answered with what happened to it, so the model re-reads instead of guessing.
+An action that arrives against an id no longer live is refused and answered with "no such node, re-read", so the model re-reads instead of guessing.
 
 ## Open questions
 
-- When is a merge "settled"? A split immediately after a merge of the same pair suggests the criterion was wrong, and the record should say which edge made it move.
-- Does the merge record live in the graph (an event node) or in the application's own tables? An event node is queryable with the same traversal as everything else; a table is cheaper to write and easier to keep out of recall.
-- Is a per-scope entity budget the right anti-oscillation brake, or does it just coarsen the wrong regions?
+- How hard should the criterion be, given that nothing remembers the last decision? Without a ledger the brake is entirely "the evidence must be true of the live edges", so the threshold is the only thing standing between a settled graph and a ping-pong.
+- Is a per-scope entity budget the right brake, or does it just coarsen the wrong regions?
