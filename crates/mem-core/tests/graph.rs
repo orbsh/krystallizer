@@ -13,10 +13,13 @@
     clippy::panic_in_result_fn
 )]
 
-use mem_core::graph::{FactTuple, GraphStore, IngestError, IngestOutcome};
+use mem_core::graph::{
+    FactTuple, GraphStore, IngestError, IngestOutcome, MergeReport, SplitReport,
+};
 use mem_core::{EntityKey, EntityRow, Facts, RenderFormat, LITERAL_KIND};
 use okm_core::okm_value::Variant;
 use okm_core::{Document, EdgeKey, KeyEncode, Members, NodeRef, Vector};
+use tempfile::tempdir;
 
 /// A member id in these tests: the identity IS a uuid (ADR-0025 §4), so a small ordinal is spelled
 /// as one — the same value the production path carries, not a test-only number.
@@ -1525,5 +1528,142 @@ fn an_identical_assertion_lands_once() {
         graph.typed_out(1, subject, "PIVOTED_TO").unwrap(),
         vec![key],
         "one assertion, one edge"
+    );
+}
+
+/// A merge folds one entity into another: the edges move onto the survivor WITH
+/// their payloads, an edge between the pair collapses, a duplicate dies, and the
+/// loser's row goes — one graph batch plus the loser's own documents.
+#[test]
+fn a_merge_moves_edges_carries_payloads_and_drops_duplicates() {
+    let dir = tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap();
+    // alice knows bob (payload: confidence 42) …
+    link(
+        &mut graph,
+        r#"["alice","person",{},"KNOWS",{"confidence":42},"bob","person",{}]"#,
+    );
+    // … and so does carol, which makes alice's assertion a duplicate after the fold
+    link(
+        &mut graph,
+        r#"["carol","person",{},"KNOWS",{},"bob","person",{}]"#,
+    );
+    // … alice knows carol, which becomes a self-loop
+    link(
+        &mut graph,
+        r#"["alice","person",{},"KNOWS",{},"carol","person",{}]"#,
+    );
+    // … and alice works at acme, which is free on carol's side
+    link(
+        &mut graph,
+        r#"["alice","person",{},"WORKS_AT",{"confidence":7},"acme","org",{}]"#,
+    );
+    let (alice, _) = graph.entity_by_name(1, "alice").unwrap().unwrap();
+    let (carol, _) = graph.entity_by_name(1, "carol").unwrap().unwrap();
+
+    let report = graph.merge(1, alice, carol).unwrap();
+    assert_eq!(
+        report,
+        MergeReport {
+            survivor: carol,
+            repointed: 1,
+            collapsed: 1,
+            absorbed: 1
+        },
+        "one moved, one collapsed into a loop, one was already stated"
+    );
+
+    // The loser is gone: no row, no faces.
+    assert!(
+        graph.entity(1, alice).unwrap().is_none(),
+        "the loser's entity row is deleted"
+    );
+    assert!(
+        graph.out_edges(1, alice).unwrap().is_empty(),
+        "and nothing points out of it any more"
+    );
+
+    // The survivor holds what moved, with the payload the edge carried.
+    let facts = graph.out_facts(1, carol).unwrap();
+    let works_at = facts
+        .iter()
+        .find(|fact| fact.kind == "WORKS_AT")
+        .expect("the moved fact is on the survivor");
+    assert_eq!(
+        works_at.edge.confidence, 7,
+        "the payload rode along instead of landing as the type's default"
+    );
+    let knows = facts.iter().filter(|fact| fact.kind == "KNOWS").count();
+    assert_eq!(knows, 1, "the duplicate did not become a second row");
+    let incumbent = facts
+        .iter()
+        .find(|fact| fact.kind == "KNOWS")
+        .expect("the incumbent row stands");
+    assert_eq!(
+        incumbent.edge.confidence, 255,
+        "the incumbent's payload wins, not the moved duplicate's"
+    );
+    assert!(
+        facts.iter().all(|fact| fact.kind != "KNOWS"
+            || fact.dst.id.entity_id() != Some(carol)),
+        "the loop that the fold would have made is deleted, not kept"
+    );
+}
+
+/// A split moves the edges the caller names onto a NEW entity: the source keeps
+/// the rest, the payloads ride along, and nothing is recorded about the split.
+#[test]
+fn a_split_moves_the_named_edges_and_leaves_the_rest() {
+    let dir = tempdir().unwrap();
+    let mut graph = GraphStore::open(dir.path()).unwrap();
+    // "postgres" is one node doing two jobs: a database and a company.
+    let db_fact = link(
+        &mut graph,
+        r#"["postgres","technology",{},"IMPLEMENTS",{"confidence":9},"sql","standard",{}]"#,
+    );
+    link(
+        &mut graph,
+        r#"["postgres","technology",{},"ACQUIRED_BY",{},"microsoft","company",{}]"#,
+    );
+    let (source, _) = graph.entity_by_name(1, "postgres").unwrap().unwrap();
+
+    let report = graph
+        .split(1, source, "postgresql-company", "company", &[db_fact.clone()])
+        .unwrap();
+    assert_eq!(
+        report,
+        SplitReport {
+            node: source,
+            created: report.created,
+            repointed: 1
+        },
+        "one edge changed hands"
+    );
+
+    // The new entity exists, carries the name, and owns the moved edge.
+    let (created, row) = graph
+        .entity_by_name(1, "postgresql-company")
+        .unwrap()
+        .expect("the split declared the new entity");
+    assert_eq!(created, report.created, "and answers its own id");
+    assert_eq!(row.kind.as_str(), Some("company"));
+    let moved = graph.out_facts(1, created).unwrap();
+    assert_eq!(moved.len(), 1, "exactly the edge it was given");
+    assert_eq!(moved[0].kind, "IMPLEMENTS");
+    assert_eq!(
+        moved[0].edge.confidence, 9,
+        "the payload rode along (a delete-plus-declare would have reset it)"
+    );
+
+    // The source keeps what was not named — and no longer has the moved edge.
+    let left = graph.out_facts(1, source).unwrap();
+    assert_eq!(left.len(), 1, "one edge stayed");
+    assert_eq!(left[0].kind, "ACQUIRED_BY");
+
+    // An edge that does not touch the source is a caller error, not a guess.
+    let stray = graph.out_edges(1, created).unwrap();
+    assert!(
+        graph.split(1, source, "nope", "company", &stray).is_err(),
+        "splitting an edge this entity does not touch is refused"
     );
 }

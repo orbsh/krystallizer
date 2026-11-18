@@ -236,6 +236,27 @@ pub struct EntityRow {
     //
 }
 
+/// What a split did: the entity that was divided, the one it was divided into,
+/// and how many edges changed hands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SplitReport {
+    pub node: u64,
+    pub created: u64,
+    pub repointed: usize,
+}
+
+/// What a merge did, in the caller's terms: which entity stands, how many edges
+/// moved, how many died because the fold made them loops, and how many were
+/// duplicates an incumbent row already stated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MergeReport {
+    pub survivor: u64,
+    pub repointed: usize,
+    pub collapsed: usize,
+    pub absorbed: usize,
+}
+
+
 /// The node's vector, out of the entity row (ADR-0019, ns 43).
 ///
 /// Same KEY TYPE as the row it belongs to, which is what makes the side table
@@ -2961,6 +2982,287 @@ impl GraphStore {
             .retract(fragment)
             .map_err(|e| IngestError::Storage(e.to_string()))?;
         Ok(())
+    }
+
+    /// Fold one entity into another: the loser's edges move onto the survivor
+    /// WITH their payloads, its row goes, and the graph half is ONE batch
+    /// (okm `replace`: no reader sees the gap, and a refusal writes nothing).
+    ///
+    /// Three cases, and the caller decides none of them:
+    ///
+    /// - An edge between the two becomes a self-loop, so it is DELETED, not moved.
+    /// - Two edges that land on the same head after the fold (the survivor already
+    ///   had one, or two of the loser's do) collapse: the incumbent row wins and
+    ///   the duplicate is deleted. Silently keeping both would need a head to hold
+    ///   two payloads, which is the one thing an edge cannot do.
+    /// - Everything else is repointed — the head changes, the payload rides along.
+    ///
+    /// Every edge incident to the loser is stated in the fragment, which is what
+    /// okm's completeness check demands before it will retire a node.
+    ///
+    /// The loser's entity row and vector go afterwards, in their own batch: they
+    /// are k10r's documents, not graph rows. A crash between the two leaves an
+    /// entity with no edges — visible, and cheaper than the reverse.
+    pub fn merge(
+        &mut self,
+        scope: u64,
+        loser: u64,
+        survivor: u64,
+    ) -> Result<MergeReport, IngestError> {
+        if loser == survivor {
+            return Err(IngestError::Refused(
+                "a merge needs two different entities".to_string(),
+            ));
+        }
+        if self.entity(scope, loser)?.is_none() {
+            return Err(IngestError::Refused(format!(
+                "entity {loser} is not in scope {scope}"
+            )));
+        }
+        if self.entity(scope, survivor)?.is_none() {
+            return Err(IngestError::Refused(format!(
+                "entity {survivor} is not in scope {scope}"
+            )));
+        }
+        let loser_ref = self.node_ref(scope, loser);
+        let survivor_ref = self.node_ref(scope, survivor);
+        let mut keys = self.out_edges(scope, loser)?;
+        keys.extend(self.in_edges(scope, loser)?);
+
+        let mut facts = self.facts();
+        let mut fragment = Fragment::<Facts>::new([]);
+        let mut repointed = 0usize;
+        let mut collapsed = 0usize;
+        let mut absorbed = 0usize;
+        // The heads this batch already claims: two edges of the loser that fold
+        // onto one head is a duplicate, not two facts.
+        let mut claimed: HashSet<(u16, Vec<u8>, u16, u16, Vec<u8>)> = HashSet::new();
+        for key in keys {
+            let Some(predicate) = facts
+                .predicate_vocab_name(key.predicate)
+                .map_err(|e| IngestError::Storage(e.to_string()))?
+            else {
+                // A predicate the vocabulary no longer holds is a face without a
+                // name; nothing can be re-attached under it.
+                continue;
+            };
+            let from = EdgeHead {
+                src: key.src.clone(),
+                dst: key.dst.clone(),
+                predicate: predicate.clone(),
+            };
+            let src_is_loser = key.src == loser_ref;
+            let far = if src_is_loser {
+                key.dst.clone()
+            } else {
+                key.src.clone()
+            };
+            // Both ends are inside the fold: the edge becomes a self-loop.
+            if far == survivor_ref || far == loser_ref {
+                fragment.delete_edge(from);
+                collapsed += 1;
+                continue;
+            }
+            let to = if src_is_loser {
+                EdgeHead {
+                    src: survivor_ref.clone(),
+                    dst: key.dst.clone(),
+                    predicate,
+                }
+            } else {
+                EdgeHead {
+                    src: key.src.clone(),
+                    dst: survivor_ref.clone(),
+                    predicate,
+                }
+            };
+            let head = (
+                to.src.ns_id(),
+                to.src.pkey.clone(),
+                key.predicate,
+                to.dst.ns_id(),
+                to.dst.pkey.clone(),
+            );
+            if !claimed.insert(head.clone()) {
+                fragment.delete_edge(from);
+                absorbed += 1;
+                continue;
+            }
+            let incumbent = facts
+                .key_of(&to)
+                .map_err(|e| IngestError::Storage(e.to_string()))?
+                .is_some_and(|existing| {
+                    facts.get_edge(&existing).ok().flatten().is_some()
+                });
+            if incumbent {
+                fragment.delete_edge(from);
+                absorbed += 1;
+                continue;
+            }
+            fragment.repoint(from, to);
+            repointed += 1;
+        }
+        fragment.delete_node(loser_ref);
+        facts
+            .replace(fragment)
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
+
+        // k10r's own rows for the loser: the entity and its vector. Nothing
+        // cascades, and nothing else refers to them.
+        let key = EntityKey {
+            scope,
+            node_id: loser,
+        };
+        self.entities
+            .purge(&key)
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
+        self.vectors
+            .purge(&key)
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
+        Ok(MergeReport {
+            survivor,
+            repointed,
+            collapsed,
+            absorbed,
+        })
+    }
+
+    /// Divide one entity: a new entity is declared, and the edges the caller names
+    /// move onto it — payloads and all (okm `repoint`).
+    ///
+    /// The caller decides WHICH edges change hands; that is judgement, and it stays
+    /// with whoever proposed the split. Everything else is mechanical: the row
+    /// lands first (its own batch), the graph batch second, so a failure between
+    /// them leaves an isolated entity rather than an edge pointing at a node with
+    /// no row.
+    ///
+    /// Nothing is recorded about the split — no ledger, no alias. The shape that is
+    /// is the shape; the old cut was unreasonable by definition, or it would not
+    /// have been cut.
+    ///
+    /// The graph half is ONE batch and is okm's `replace`, not `incorporate`:
+    /// repointing is a retraction of the old head, and `incorporate` refuses to
+    /// retract.
+    pub fn split(
+        &mut self,
+        scope: u64,
+        node: u64,
+        name: &str,
+        kind: &str,
+        moving: &[EdgeKey],
+    ) -> Result<SplitReport, IngestError> {
+        if self.entity(scope, node)?.is_none() {
+            return Err(IngestError::Refused(format!(
+                "entity {node} is not in scope {scope}"
+            )));
+        }
+        let source_ref = self.node_ref(scope, node);
+        let created = self.next_node;
+        let new_ref = self.node_ref(scope, created);
+
+        // The new entity's row, before the graph learns its name: an isolated
+        // entity is visible and harmless, a dangling endpoint is not.
+        self.next_node += 1;
+        let embedding = match &self.embedder {
+            Some(engine) => Vector::new(
+                engine
+                    .embed(name)
+                    .map_err(|e| IngestError::Embedding(e.to_string()))?,
+            ),
+            None => Vector::new(Vec::new()),
+        };
+        let row = EntityRow {
+            kind: Vocab::of(kind.to_string()),
+            literal_num: 0,
+            name: name.to_string(),
+            invoke_calls: 0,
+            invoke_ok: 0,
+            last_invoked: 0,
+        };
+        let key = EntityKey {
+            scope,
+            node_id: created,
+        };
+        let mut batch = Batch::default();
+        self.entities
+            .save_with_prev_into(&mut batch, &key, &row, None)
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
+        if row.kind.as_str() == Some(TASK_KIND) {
+            let sheet = TaskSheet::opened();
+            self.sheets
+                .save_with_prev_into(&mut batch, &key, &sheet, None)
+                .map_err(|e| IngestError::Storage(e.to_string()))?;
+        }
+        if !embedding.is_empty() {
+            let vector = NodeVector { embedding };
+            self.vectors
+                .save_with_prev_into(&mut batch, &key, &vector, None)
+                .map_err(|e| IngestError::Storage(e.to_string()))?;
+        }
+        self.store
+            .commit_batch(batch)
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
+        self.tables.forget(scope);
+
+        let mut facts = self.facts();
+        let mut fragment = Fragment::<Facts>::new([]);
+        let mut repointed = 0usize;
+        for edge in moving {
+            let Some(predicate) = facts
+                .predicate_vocab_name(edge.predicate)
+                .map_err(|e| IngestError::Storage(e.to_string()))?
+            else {
+                return Err(IngestError::Refused(
+                    "an edge names a predicate the vocabulary does not hold".to_string(),
+                ));
+            };
+            let from = EdgeHead {
+                src: edge.src.clone(),
+                dst: edge.dst.clone(),
+                predicate: predicate.clone(),
+            };
+            let to = if edge.src == source_ref {
+                EdgeHead {
+                    src: new_ref.clone(),
+                    dst: edge.dst.clone(),
+                    predicate,
+                }
+            } else if edge.dst == source_ref {
+                EdgeHead {
+                    src: edge.src.clone(),
+                    dst: new_ref.clone(),
+                    predicate,
+                }
+            } else {
+                return Err(IngestError::Refused(format!(
+                    "edge {} does not touch entity {node}",
+                    key_hex(edge)
+                )));
+            };
+            // A row that is already there means this edge cannot move here: the
+            // pair is already stated, and two payloads on one head is the one
+            // thing an edge cannot do.
+            if facts
+                .key_of(&to)
+                .map_err(|e| IngestError::Storage(e.to_string()))?
+                .is_some_and(|existing| facts.get_edge(&existing).ok().flatten().is_some())
+            {
+                return Err(IngestError::Refused(format!(
+                    "the split would state an edge that already exists ({})",
+                    key_hex(edge)
+                )));
+            }
+            fragment.repoint(from, to);
+            repointed += 1;
+        }
+        facts
+            .replace(fragment)
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
+        Ok(SplitReport {
+            node,
+            created,
+            repointed,
+        })
     }
 
     /// The fact's open props (its dynamic segment), when it has one — the

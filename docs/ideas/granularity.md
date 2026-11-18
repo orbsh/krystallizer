@@ -1,7 +1,8 @@
 # Granularity: letting the graph be re-cut
 
-Status: idea, not planned. Depends on okm `subgraph` / `cut` / `repoint` / `replace` / `materialize`
-(landed 2026-11-17).
+Status: `GraphStore::merge` and `GraphStore::split` landed in mem-core on top of okm
+`subgraph` / `cut` / `repoint` / `replace` / `materialize` (2026-11-17). What is
+still an idea: the gate (who decides to cut), and the render-side work below.
 
 ## The problem
 
@@ -39,7 +40,12 @@ A merge is expensive and irreversible; a split is cheap and reversible. That asy
 - **Splits are gated on evidence about shape** — the node's edges fall into two groups with few edges between them. Cheap to do, cheap to undo.
 - **Merges are gated on evidence about identity** — same external id, a name that differs only in spelling, attributes that do not contradict. "These look similar" is not evidence: a model's similarity judgement is not calibrated, and the cost of a wrong merge is a payload merged by a conflict hook into a row nobody can un-merge.
 
-The model proposes; the application commits. Proposal is free and reversible, commitment is not, so the gate belongs where the irreversible act is.
+The model proposes; the application commits.
+
+Two cases the implementation had to decide, and neither is in the caller's hands:
+
+- An edge between the two merged entities becomes a self-loop, so it is DELETED. Keeping it would state that the survivor has a relation with itself, which is not what the merge said.
+- Two edges landing on one head after the fold (the survivor already stated one, or two of the loser's do) collapse to the incumbent's payload. An edge carries one payload, so "keep both" is not available — silently picking the last one would be the worst of the three. Proposal is free and reversible, commitment is not, so the gate belongs where the irreversible act is.
 
 **Nothing records that a shape was changed.** Not the nodes, not an event node, not a table. Three reasons, in the order they decided it:
 
