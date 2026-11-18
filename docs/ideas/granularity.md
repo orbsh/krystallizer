@@ -1,8 +1,10 @@
 # Granularity: letting the graph be re-cut
 
 Status: `GraphStore::merge` and `GraphStore::split` landed in mem-core on top of okm
-`subgraph` / `cut` / `repoint` / `replace` / `materialize` (2026-11-17). What is
-still an idea: the gate (who decides to cut), and the render-side work below.
+`subgraph` / `cut` / `repoint` / `replace` / `materialize` (2026-11-17), and both are
+reachable over HTTP (`POST /memories/{scope}/merge`, `POST /memories/{scope}/split`),
+so a re-cut is drivable from outside the process. Stale ids are filtered at the fact
+door. What is still an idea: the gate — who decides to cut.
 
 ## The problem
 

@@ -352,6 +352,15 @@ fn build(
             "/graph/{scope}/entities/{node_id}/edges",
             get(list_entity_edges),
         )
+        // A SHAPE IS RE-CUT BY TWO VERBS, and they are WRITES — so they live under
+        // `/memories`, where the corpus is written, not under `/graph`, which is
+        // read-only inspection. Each is ONE batch inside (okm ADR-0070): a merge
+        // that refuses writes nothing, and a split lands the new entity's row
+        // before the graph learns its name. Edges are addressed the way every fact
+        // is — the `key_hex` a line's `refs` tail prints — so no door needs a second
+        // address vocabulary.
+        .route("/memories/{scope}/merge", post(merge_entities))
+        .route("/memories/{scope}/split", post(split_entity))
         .route("/graph/{scope}", get(fetch_graph))
         // The graph view, served by the memory service itself: one origin, so
         // the page's fetch is same-origin and no CORS is opened on a service
@@ -2189,6 +2198,84 @@ async fn fetch_fact(
 /// row goes with every derived face entry in one batch (okm's `retract`), so no
 /// stale weight or community entry survives it. `204` on success, `404` when the
 /// address names nothing here.
+/// Request body of `POST /memories/{scope}/merge`: the entity that goes and the one
+/// that stands. Nothing says which edges move — they all do.
+#[derive(Deserialize, Serialize)]
+pub struct MergeBody {
+    pub loser: u64,
+    pub survivor: u64,
+}
+
+/// What a merge did, in the caller's terms. The counters are the caller's own
+/// question: a merge that absorbed four duplicate assertions is not the merge it
+/// asked for, and one that collapsed every edge left nothing to merge.
+#[derive(Deserialize, Serialize)]
+pub struct MergeAnswer {
+    pub survivor: u64,
+    pub repointed: usize,
+    pub collapsed: usize,
+    pub absorbed: usize,
+}
+
+/// Request body of `POST /memories/{scope}/split`: the entity that is divided, the
+/// new entity's name and kind, and the edges that change hands — which ones is
+/// judgement, so the caller names them.
+#[derive(Deserialize, Serialize)]
+pub struct SplitBody {
+    pub node: u64,
+    pub name: String,
+    pub kind: String,
+    /// The edges that move, as their tuple hex (the address `refs` prints).
+    pub moving: Vec<String>,
+}
+
+/// What a split did.
+#[derive(Deserialize, Serialize)]
+pub struct SplitAnswer {
+    pub node: u64,
+    pub created: u64,
+    pub repointed: usize,
+}
+
+async fn merge_entities(
+    State(state): State<Arc<MemState>>,
+    Path(scope): Path<u64>,
+    Json(body): Json<MergeBody>,
+) -> Result<Json<MergeAnswer>, FactError> {
+    let mut graph = state.graph.lock().await;
+    let report = graph.merge(scope, body.loser, body.survivor)?;
+    Ok(Json(MergeAnswer {
+        survivor: report.survivor,
+        repointed: report.repointed,
+        collapsed: report.collapsed,
+        absorbed: report.absorbed,
+    }))
+}
+
+async fn split_entity(
+    State(state): State<Arc<MemState>>,
+    Path(scope): Path<u64>,
+    Json(body): Json<SplitBody>,
+) -> Result<Json<SplitAnswer>, FactError> {
+    let mut graph = state.graph.lock().await;
+    // Every key is resolved BEFORE anything is written: a hex that names no fact
+    // is the caller's mistake, and a request that names one lands nothing.
+    let mut moving = Vec::with_capacity(body.moving.len());
+    for hex in &body.moving {
+        let key = graph.key_of_hex(hex).ok_or_else(|| FactError {
+            error: format!("{hex} is not a fact"),
+            status: StatusCode::BAD_REQUEST,
+        })?;
+        moving.push(key);
+    }
+    let report = graph.split(scope, body.node, &body.name, &body.kind, &moving)?;
+    Ok(Json(SplitAnswer {
+        node: report.node,
+        created: report.created,
+        repointed: report.repointed,
+    }))
+}
+
 async fn withdraw_fact(
     State(state): State<Arc<MemState>>,
     Path((scope, key)): Path<(u64, String)>,
