@@ -193,6 +193,13 @@ an actor (ADR-0007).
   weight system (ADR-0005, Phase 5), and each tool's fast/idempotent vs
   human-touch/external nature is declared at registration on gravity's side
   (gravity Phase 2.5).
+- **A turn is one unit of work** (ADR-0030). A read is a snapshot and nothing is
+  pushed into a running turn — freshness has the granularity of the read, a step
+  that acts on a premise re-checks it at the action boundary, and a long turn may
+  declare the keys it depends on. An append to a session with a turn in flight
+  queues (an interrupt is explicit); writes serialize per turn while reads may run
+  in parallel. This is an interface statement, not a mechanism: no door changes.
+
 - **A failure is a value**, not a torn write: a failed turn appends no FINAL
   record, so the rows it did write stay OPEN and the projection skips them
   (ADR-0024); every door is either called with a complete exchange or not at all.
