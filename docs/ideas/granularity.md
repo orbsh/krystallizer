@@ -63,7 +63,7 @@ The text render already carries `n<id>` per node (`render.rs`, from `NodeId::lab
 
 There is **no id→id alias face, deliberately**. A redirect would assert "this number is now that entity", and after a split, a partial re-merge and a later absorption that sentence is false — a silent rewrite of history, worse than a missing row, because a missing row at least reads as missing. okm stores what is currently true; the identity history is the application's record.
 
-So a stale id resolves to nothing, and the read path FILTERS it out rather than explain it. There is no ledger to explain it with — nothing knows where the entity went, because the answer that matters is that it is not there now — and a row saying "n42 (gone)" still puts a dead name in front of the model, which is exactly the invitation to invent. What must not happen is a hollow `n42  []` row sitting in a prompt for the model to name.
+So a stale id resolves to nothing, and the read path FILTERS it out rather than explain it — implemented at the fact door (`GraphStore::fact_view`), so no read path sees such a fact and none can render one. There is no ledger to explain it with — nothing knows where the entity went, because the answer that matters is that it is not there now — and a row saying "n42 (gone)" still puts a dead name in front of the model, which is exactly the invitation to invent. What must not happen is a hollow `n42  []` row sitting in a prompt for the model to name.
 
 An action that arrives against an id no longer live is refused and answered with "no such node, re-read", so the model re-reads instead of guessing.
 

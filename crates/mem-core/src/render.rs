@@ -20,6 +20,12 @@
 //! no number, so the only address a line prints is the `refs` tail, where each
 //! pointer is the target tuple's hex. The head carries no ids because it is
 //! injected, not cited.
+//!
+//! **A stale id never reaches a line.** The filter is at the fact door
+//! (`GraphStore::fact_view`): a fact whose endpoint row is gone is not an answer,
+//! so it does not render — no tombstone, no hollow `n42  []`. Nothing records
+//! where such an entity went (nothing records a re-cut), so there is nothing to
+//! say about it, and a dead name in a prompt is an invitation to invent.
 
 use crate::graph::{CommunitySlice, FactView, WEIGHT_SCALE};
 

@@ -245,6 +245,12 @@ pub struct SplitReport {
     pub repointed: usize,
 }
 
+/// A head in the terms a plan compares heads in: both endpoints as `(ns, pkey)`
+/// plus the predicate id. The same shape as okm's internal `EdgeIdentity`, which
+/// is not public — the merge only needs to answer "did two edges land on one
+/// head", and that is a byte comparison.
+type ClaimedHead = (u16, Vec<u8>, u16, u16, Vec<u8>);
+
 /// What a merge did, in the caller's terms: which entity stands, how many edges
 /// moved, how many died because the fold made them loops, and how many were
 /// duplicates an incumbent row already stated.
@@ -1445,11 +1451,21 @@ impl GraphStore {
             .fact_props(key)?
             .and_then(|props| props.get(REF_FIELD).map(|v| refs_of(v, &members)))
             .unwrap_or_default();
+        // A fact whose endpoint row is gone is not a fact any more. Rendering it
+        // would put a hollow `n42  []` in a prompt for the model to name — an
+        // invitation to invent — and there is no ledger that could say where the
+        // entity went, because nothing records a re-cut. The read simply does not
+        // see it. Both rows were read for the view anyway, so this costs nothing.
+        let (src, src_live) = self.resolve_live(&body.src)?;
+        let (dst, dst_live) = self.resolve_live(&body.dst)?;
+        if !src_live || !dst_live {
+            return Ok(None);
+        }
         Ok(Some(FactView {
             key: key.clone(),
             kind,
-            src: self.resolve_ref(&body.src)?,
-            dst: self.resolve_ref(&body.dst)?,
+            src,
+            dst,
             edge: Facts::decode_payload(&body.payload),
             refs,
         }))
@@ -2339,10 +2355,14 @@ impl GraphStore {
         Ok(())
     }
 
-    /// A `NodeRef` back to its node: the ref is `[ns 2B][len varint]
-    /// [entity key]`, so the entity key decodes straight out of it and
-    /// the scope rides along (nothing external is consulted).
-    pub fn resolve_ref(&mut self, node: &NodeRef) -> Result<ResolvedNode, IngestError> {
+    /// One node as a graph endpoint, plus whether the table it names still holds
+    /// it. `live == false` means a stale id: the graph kept the edge, the entity
+    /// row is gone — the state a crash between a merge's two batches leaves, and
+    /// the one a restore that moved a table can leave behind it.
+    ///
+    /// A MEMBER ref is always live: a person's identity is the uuid, so a missing
+    /// display name is a missing name, not a missing person.
+    fn resolve_live(&mut self, node: &NodeRef) -> Result<(ResolvedNode, bool), IngestError> {
         if node.ns_id() == MEMBER_NS {
             let member = member_from_pkey(&node.pkey).unwrap_or(Uuid7::from_bytes([0u8; 16]));
             // An unregistered member is absence (the ref still names the
@@ -2355,15 +2375,19 @@ impl GraphStore {
                 None => None,
             }
             .unwrap_or_default();
-            return Ok(ResolvedNode {
-                id: NodeId::User { member },
-                kind: USER_KIND.to_string(),
-                literal_num: 0,
-                name,
-            });
+            return Ok((
+                ResolvedNode {
+                    id: NodeId::User { member },
+                    kind: USER_KIND.to_string(),
+                    literal_num: 0,
+                    name,
+                },
+                true,
+            ));
         }
         let key = EntityKey::decode(&node.pkey);
         let row = self.entity(key.scope, key.node_id)?;
+        let live = row.is_some();
         let (kind, literal_num, name) = match row {
             Some(row) => (
                 row.kind.as_str().unwrap_or_default().to_string(),
@@ -2372,15 +2396,24 @@ impl GraphStore {
             ),
             None => (String::new(), 0, String::new()),
         };
-        Ok(ResolvedNode {
-            id: NodeId::Entity {
-                scope: key.scope,
-                node_id: key.node_id,
+        Ok((
+            ResolvedNode {
+                id: NodeId::Entity {
+                    scope: key.scope,
+                    node_id: key.node_id,
+                },
+                kind,
+                literal_num,
+                name,
             },
-            kind,
-            literal_num,
-            name,
-        })
+            live,
+        ))
+    }
+
+    /// One node as a graph endpoint. A stale id still answers a ref — the caller
+    /// that must know whether the entity is still there asks [`resolve_live`].
+    pub fn resolve_ref(&mut self, node: &NodeRef) -> Result<ResolvedNode, IngestError> {
+        Ok(self.resolve_live(node)?.0)
     }
 
     /// Outgoing facts of one node as heads (the traversal currency).
@@ -3036,7 +3069,7 @@ impl GraphStore {
         let mut absorbed = 0usize;
         // The heads this batch already claims: two edges of the loser that fold
         // onto one head is a duplicate, not two facts.
-        let mut claimed: HashSet<(u16, Vec<u8>, u16, u16, Vec<u8>)> = HashSet::new();
+        let mut claimed: HashSet<ClaimedHead> = HashSet::new();
         for key in keys {
             let Some(predicate) = facts
                 .predicate_vocab_name(key.predicate)
@@ -3633,4 +3666,58 @@ impl GraphStore {
         Ok(facts)
     }
 
+}
+
+#[cfg(test)]
+mod stale_id_tests {
+    //! A ref whose entity row is gone is a STALE id: the graph kept the edge, the
+    //! entity it names does not exist. The read must not render it — a hollow
+    //! `n42  []` in a prompt is an invitation to invent, and nothing records where
+    //! the entity went, because nothing records a re-cut.
+
+    use super::*;
+
+    fn tuple(text: &str) -> FactTuple {
+        FactTuple::from_json(text).expect("the tuple decodes")
+    }
+
+    #[test]
+    fn a_fact_whose_endpoint_row_is_gone_is_not_rendered() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut graph = GraphStore::open(dir.path()).unwrap();
+        let key = match graph
+            .ingest(1, &tuple(r#"["alice","person",{},"KNOWS",{},"bob","person",{}]"#))
+            .unwrap()
+        {
+            IngestOutcome::Linked { key } => key,
+            other => panic!("expected a link, got {other:?}"),
+        };
+        assert!(graph.fact_view(&key).unwrap().is_some(), "the fact renders");
+
+        // The state a crash between a merge's two batches leaves: the graph batch
+        // landed, the entity row did not go.
+        let (alice, _) = graph.entity_by_name(1, "alice").unwrap().unwrap();
+        graph
+            .entities
+            .purge(&EntityKey {
+                scope: 1,
+                node_id: alice,
+            })
+            .unwrap();
+
+        assert!(
+            graph.fact_view(&key).unwrap().is_none(),
+            "the fact is not an answer any more: its endpoint does not exist"
+        );
+        let (bob, _) = graph.entity_by_name(1, "bob").unwrap().unwrap();
+        assert!(
+            graph.neighbours(1, bob).unwrap().is_empty(),
+            "and no read path resurrects it from the other end"
+        );
+        // The ref itself still answers: the filter is at the fact door, not a panic.
+        let node = graph.node_ref(1, alice);
+        let resolved = graph.resolve_ref(&node).unwrap();
+        assert_eq!(resolved.id.label(), format!("n{alice}"));
+        assert!(resolved.name.is_empty(), "the row is what is missing");
+    }
 }
