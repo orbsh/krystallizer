@@ -76,7 +76,7 @@ use okm_core::parts;
 use okm_core::Uuid7;
 use okm_core::{
     scan_suffix_kv, Batch, Cluster, Collection, Decl, Document, DocumentEncode,
-    EdgeHead, EdgeKey, FjallStore, Fragment, Graph, GraphEncode, Hyperedges, NodeSet,
+    EdgeHead, EdgeKey, FjallStore, Fragment, Graph, GraphEncode, Hyperedges, NodeSet, Selection,
     KeyEncode, Kind, KvIndex, NodeRef, Vector, VectorElem, VirtualStorage, Vocab,
 };
 use okm_lake::bridge::EdgeTable;
@@ -3021,11 +3021,10 @@ impl GraphStore {
         // A user node never enters a community (it is not corpus knowledge):
         // the bin pass takes the entity endpoints of the fact and nothing else.
         let touched: Vec<u64> = touched.iter().filter_map(|e| e.entity_id()).collect();
-        let local = self.local_subgraph(scope, &touched)?;
-        if local.is_empty() {
+        let members = self.local_subgraph(scope, &touched)?;
+        if members.is_empty() {
             return Ok(());
         }
-        let members: HashSet<u64> = local.keys().copied().collect();
         let kind = self.community_kind()?;
 
         // One walk over the neighbourhood's edges: the vote's adjacency, the
@@ -3226,54 +3225,36 @@ impl GraphStore {
         Ok(())
     }
 
-    /// The nodes within `LPA_RADIUS` hops of the touched ones, loaded with
-    /// their rows (the temporary in-memory graph the vote runs on).
+    /// The neighbourhood the vote looks at: everything within `LPA_RADIUS` hops
+    /// of the touched entities, as entity ids.
+    ///
+    /// This is okm's `subgraph`, not a walk of our own: it answers the selection
+    /// (members, the edges inside, the half-edges crossing out) in one pass over
+    /// the traversal faces, with a `BTreeSet` visited set instead of a `Vec` scan.
+    /// The seeds are a SET — the pass starts from every endpoint the fact touched —
+    /// and `hops` counts the rings that are INSIDE the selection, so the answer is
+    /// the same depth this pass always used.
+    ///
+    /// Only the member ids are read back: the caller votes on adjacency, and the
+    /// entities' rows are never looked at.
     fn local_subgraph(
         &mut self,
         scope: u64,
         touched: &[u64],
-    ) -> Result<HashMap<u64, EntityRow>, IngestError> {
-        let mut seen: HashSet<u64> = HashSet::new();
-        let mut frontier: Vec<u64> = Vec::new();
-        for node in touched {
-            if seen.insert(*node) {
-                frontier.push(*node);
-            }
-        }
-        for _ in 0..LPA_RADIUS {
-            let mut next = Vec::new();
-            for node in frontier.drain(..) {
-                let mut keys = self.out_edges(scope, node)?;
-                keys.extend(self.in_edges(scope, node)?);
-                for key in keys {
-                    // A head whose edge is gone is absence, not a failure.
-                    let Some(body) = self
-                        .facts()
-                        .get_edge(&key)
-                        .map_err(|e| IngestError::Storage(e.to_string()))?
-                    else {
-                        continue;
-                    };
-                    let src = EntityKey::decode(&body.src.pkey).node_id;
-                    let dst = EntityKey::decode(&body.dst.pkey).node_id;
-                    let other = if src == node { dst } else { src };
-                    if seen.insert(other) {
-                        next.push(other);
-                    }
-                }
-            }
-            frontier = next;
-            if frontier.is_empty() {
-                break;
-            }
-        }
-        let mut local = HashMap::new();
-        for node in seen {
-            if let Some(row) = self.entity(scope, node)? {
-                local.insert(node, row);
-            }
-        }
-        Ok(local)
+    ) -> Result<HashSet<u64>, IngestError> {
+        let seeds: Vec<NodeRef> = touched
+            .iter()
+            .map(|node| self.node_ref(scope, *node))
+            .collect();
+        let cut = self
+            .facts()
+            .subgraph(Selection::of(seeds), LPA_RADIUS as u8, &[])
+            .map_err(|e| IngestError::Storage(e.to_string()))?;
+        Ok(cut
+            .members
+            .iter()
+            .map(|node| EntityKey::decode(&node.pkey).node_id)
+            .collect())
     }
 
     /// The community's entities, as DECLARED (okm ADR-0068): one prefix scan of
