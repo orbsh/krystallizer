@@ -413,6 +413,298 @@ async fn the_session_gives_turns_and_the_channel_gives_rows() {
     assert_eq!(rows[1]["content"], "问个事");
 }
 
+/// A ROW CAN NAME ITS SPEAKER, and the default member is only the single-party answer. A
+/// channel with two people cannot be read otherwise: every line would claim to be the same
+/// person, which is exactly what a mixed transcript must not do.
+#[tokio::test]
+async fn a_row_names_its_speaker_and_a_bad_one_is_a_bad_request() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    let alice = "6f1d3d0e-0000-4000-8000-00000000000a";
+
+    // The member exists once (ns 42) and is joined to the channel; the row then names her.
+    client
+        .post(format!("{base}/channels/9/members"))
+        .json(&serde_json::json!({
+            "member_id": alice, "display_name": "Alice", "role": 0, "since_ms": 1
+        }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    said(&client, &base, 9, 900, Some(alice), "我说的").await;
+    // A row WITHOUT a sender from the same channel: the single-party shape is untouched.
+    said(&client, &base, 9, 901, None, "默认的").await;
+
+    let rows: Vec<serde_json::Value> = client
+        .get(format!("{base}/channels/9/messages"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["sender"], alice, "{}", rows[0]);
+    assert_eq!(rows[0]["sender_name"], "Alice", "a rename re-labels history");
+    assert_eq!(
+        rows[1]["sender"], "00000000-0000-0000-0000-000000000001",
+        "no sender = the default member, as before: {}",
+        rows[1]
+    );
+
+    // The attribution the MODEL reads carries the speaker, because that bracket is the only
+    // thing telling it who is talking (ADR-0009 §2).
+    let session: serde_json::Value = client
+        .get(format!(
+            "{base}/channels/9/members/00000000-0000-0000-0000-000000000001/session"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let text = session["messages"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no text in {session}"));
+    assert!(text.contains(&format!("Alice(id={alice})")), "{text}");
+
+    // A sender that is not a uuid is refused before any write: a 400, not a row nobody owns.
+    let refused = client
+        .post(format!("{base}/channels/9/messages"))
+        .json(&serde_json::json!({
+            "ts_ms": 902u64, "sub": 0u16, "role": role::USER, "kind": 0u8,
+            "content": "谁说的", "sender": "not-a-uuid"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), reqwest::StatusCode::BAD_REQUEST);
+    let still: Vec<serde_json::Value> = client
+        .get(format!("{base}/channels/9/messages"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(still.len(), 2, "nothing was written by the refused append");
+}
+
+/// THE STORE DECIDES WHAT A READER IS GIVEN. A person's turns are a conversation — their
+/// instructions change the context in ways nobody can predict, so the model needs the record to
+/// follow them. An AGENT is a program: it acts from the current message, its skills and what it
+/// committed to memory, and the transcript is budget spent on noise. Its rows are not lost — they
+/// are the supervision record a person opens, and the person's own projection still carries them.
+#[tokio::test]
+async fn a_person_reads_the_conversation_and_an_agent_reads_none_of_it() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    let person = "6f1d3d0e-0000-4000-8000-00000000000a";
+    let agent = "01900000-0000-7000-8000-0000000000aa";
+    for (id, name, role) in [(person, "Alice", 0u8), (agent, "drift check", 1u8)] {
+        client
+            .post(format!("{base}/channels/11/members"))
+            .json(&serde_json::json!({
+                "member_id": id, "display_name": name, "role": role, "since_ms": 1
+            }))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+    }
+    post_finished_from(&client, &base, 11, 1_000, person, "do the thing").await;
+    post_finished_from(&client, &base, 11, 1_001, agent, "doing it").await;
+
+    let as_person: serde_json::Value = client
+        .get(format!("{base}/channels/11/members/{person}/session?format=plaintext"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        as_person["increment"].as_array().unwrap().len(),
+        2,
+        "a person's projection is the conversation: {as_person}"
+    );
+
+    let as_agent: serde_json::Value = client
+        .get(format!("{base}/channels/11/members/{agent}/session?format=plaintext"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        as_agent["increment"].as_array().unwrap().is_empty(),
+        "an agent is not handed the transcript: {as_agent}"
+    );
+    assert!(
+        as_agent["messages"].as_array().unwrap().is_empty(),
+        "nor the merged messages, which are the same records: {as_agent}"
+    );
+    // The rows themselves are untouched: the record is for the people watching.
+    let rows: Vec<serde_json::Value> = client
+        .get(format!("{base}/channels/11/messages"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2, "the log keeps everything: {rows:?}");
+}
+
+/// THE DIRECTORY: an agent has to find a person before it can add them to a channel, and the
+/// only reads that existed were "this id" and "this channel's members" — neither answers "who is
+/// called Alice". Names are not identities, so two hits are two rows, never a pick.
+#[tokio::test]
+async fn the_member_directory_answers_everyone_and_an_exact_name() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    for (id, name, role) in [
+        ("6f1d3d0e-0000-4000-8000-00000000000a", "Alice", 0u8),
+        ("6f1d3d0e-0000-4000-8000-00000000000b", "Alice", 0u8),
+        ("01900000-0000-7000-8000-000000000001", "gravity", 1u8),
+    ] {
+        client
+            .post(format!("{base}/channels/4/members"))
+            .json(&serde_json::json!({
+                "member_id": id, "display_name": name, "role": role, "since_ms": 1
+            }))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+    }
+
+    let everyone: Vec<serde_json::Value> = client
+        .get(format!("{base}/members"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    // The channel's own default member was seeded by the first join, so it is in the directory.
+    let names: Vec<&str> = everyone
+        .iter()
+        .map(|row| row["display_name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"Alice") && names.contains(&"gravity"), "{names:?}");
+    assert!(names.len() >= 3, "the seeded member is a member too: {names:?}");
+
+    let named: Vec<serde_json::Value> = client
+        .get(format!("{base}/members?name=Alice"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(named.len(), 2, "two people called Alice are two rows: {named:?}");
+    assert!(named.iter().all(|row| row["display_name"] == "Alice"));
+
+    let nobody: Vec<serde_json::Value> = client
+        .get(format!("{base}/members?name=Nobody"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(nobody.is_empty(), "an unknown name is an empty answer: {nobody:?}");
+
+    // ONE identity by id, and absence answered as absence: the read a caller makes when it is
+    // told who is speaking and must know whether that identity exists and which kind it is.
+    let one: serde_json::Value = client
+        .get(format!("{base}/members/01900000-0000-7000-8000-000000000001"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(one["display_name"], "gravity");
+    assert_eq!(one["role"], 1, "the agent's one role axis: {one}");
+    let missing = client
+        .get(format!("{base}/members/6f1d3d0e-0000-4000-8000-0000000000ff"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+
+    // Partial names are NOT matches: a prefix search would answer near-misses the caller then
+    // has to disambiguate, which is the guessing this door refuses to do.
+    let prefix: Vec<serde_json::Value> = client
+        .get(format!("{base}/members?name=Alic"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(prefix.is_empty(), "exact match only: {prefix:?}");
+}
+
+/// One finished turn in which `sender` said `text`: the row opens the turn, the close keeps it.
+/// A finished turn is what the session reads — an open one is still being written.
+async fn said(
+    client: &reqwest::Client,
+    base: &str,
+    channel: u64,
+    ts_ms: u64,
+    sender: Option<&str>,
+    text: &str,
+) {
+    client
+        .post(format!("{base}/channels/{channel}/messages"))
+        .json(&serde_json::json!({
+            "ts_ms": ts_ms, "sub": 0u16, "role": role::USER, "kind": 0u8,
+            "content": text, "sender": sender
+        }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let turn: u64 = turn_of(client, base, channel, ts_ms).await;
+    client
+        .post(format!("{base}/channels/{channel}/turns/{turn}/close"))
+        .json(&serde_json::json!({
+            "ts_ms": ts_ms, "sub": 1u16, "role": role::ASSISTANT, "content": "",
+            "keep": [{ "ts_ms": ts_ms, "sub": 0 }],
+        }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+}
+
+/// The last turn of a channel — the one the row just written opened.
+async fn turn_of(client: &reqwest::Client, base: &str, channel: u64, ts_ms: u64) -> u64 {
+    let rows: Vec<serde_json::Value> = client
+        .get(format!("{base}/channels/{channel}/messages"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    rows.iter()
+        .find(|row| row["key"]["ts_ms"] == ts_ms)
+        .and_then(|row| row["key"]["turn_id"].as_u64())
+        .unwrap_or_else(|| panic!("no row at ts {ts_ms} in {rows:?}"))
+}
+
 /// Phase 4's progressive read over the wire: the heaviest facts of a scope, as
 /// data, with `k` bounding the result. The touched fact ranks first and the empty
 /// scope answers an empty list rather than an error.
@@ -758,6 +1050,21 @@ async fn post_finished(
     kind: u8,
     content: &str,
 ) -> MessageKeyDto {
+    post_finished_row(client, base, channel, ts_ms, sub, role, kind, content, None).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn post_finished_row(
+    client: &reqwest::Client,
+    base: &str,
+    channel: u64,
+    ts_ms: u64,
+    sub: u16,
+    role: u8,
+    kind: u8,
+    content: &str,
+    sender: Option<&str>,
+) -> MessageKeyDto {
     let key: MessageKeyDto = client
         .post(format!("{base}/channels/{channel}/messages"))
         .json(&AppendMessage {
@@ -769,6 +1076,8 @@ async fn post_finished(
             role,
             kind,
             content: content.to_string(),
+            // `None` keeps the single-party fixture's default member; `Some` names the speaker.
+            sender: sender.map(str::to_string),
         })
         .send()
         .await
@@ -792,6 +1101,30 @@ async fn post_finished(
         .status();
     assert_eq!(closed, reqwest::StatusCode::NO_CONTENT, "closing the turn");
     key
+}
+
+/// The same finished turn, with the SPEAKER named: a channel holds more than one person now, so a
+/// row that does not say who said it is a lie the store should not have to guess at.
+async fn post_finished_from(
+    client: &reqwest::Client,
+    base: &str,
+    channel: u64,
+    ts_ms: u64,
+    sender: &str,
+    content: &str,
+) -> MessageKeyDto {
+    post_finished_row(
+        client,
+        base,
+        channel,
+        ts_ms,
+        0,
+        role::USER,
+        0u8,
+        content,
+        Some(sender),
+    )
+    .await
 }
 
 /// The channel doors: a channel is a row with the application's own scene, membership is

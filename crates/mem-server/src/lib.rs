@@ -305,6 +305,14 @@ fn build(
             post(add_member).get(list_channel_members),
         )
         .route("/members/{member_id}/channels", get(list_member_channels))
+        // THE DIRECTORY (ADR-0009 §1): who exists at all, and who is called what. An agent adds
+        // people to channels it shares with them, so it must be able to FIND one it has not met;
+        // until this door the only reads were "this id" and "this channel's members".
+        .route("/members", get(list_members))
+        // One member by id: the read a caller makes when it is TOLD who is speaking and needs to
+        // know whether that identity exists and which kind it is (a client may be an agent; it
+        // may not be a person).
+        .route("/members/{member_id}", get(fetch_member))
         .route("/code/{scope}", post(put_code))
         // A bundle is the whole store: the body limit that protects the small
         // JSON doors does not apply to it.
@@ -385,6 +393,12 @@ pub struct AppendMessage {
     pub role: u8,
     pub kind: u8,
     pub content: String,
+    /// WHO said it — a member id (ADR-0009 §1). ABSENT keeps the single-party shape: one
+    /// person's line, the row attributed to the default member. A caller that does not know
+    /// must say nothing rather than invent a speaker; a channel with more than one person has
+    /// no such default to fall back on, so a writer there names the speaker.
+    #[serde(default)]
+    pub sender: Option<String>,
 }
 
 /// `POST /channels/{id}/messages` — append one log entry; returns the
@@ -395,8 +409,15 @@ async fn append_message(
     Json(body): Json<AppendMessage>,
 ) -> Result<Json<MessageKeyDto>, FactError> {
     let mut store = state.store.lock().await;
-    let written = match body.turn_id {
-        Some(turn_id) => store.append(
+    // Parsed before the write so a malformed id is a 400 rather than a row nobody can attribute.
+    let sender = match body.sender.as_deref() {
+        Some(raw) => Some(parse_member_id(raw)?),
+        None => None,
+    };
+    // `end_ts_ms` is the row's own clock: a message is an instant, and a span (a reply being
+    // typed) arrives as a `sub` pair rather than as a wider width here.
+    let written = match (body.turn_id, sender) {
+        (Some(turn_id), None) => store.append(
             channel_id,
             turn_id,
             body.ts_ms,
@@ -405,10 +426,31 @@ async fn append_message(
             body.kind,
             &body.content,
         ),
-        None => store.append_opening(
+        (Some(turn_id), Some(sender)) => store.append_from(
+            channel_id,
+            turn_id,
+            body.ts_ms,
+            body.sub,
+            sender,
+            body.ts_ms,
+            body.role,
+            body.kind,
+            &body.content,
+        ),
+        (None, None) => store.append_opening(
             channel_id,
             body.ts_ms,
             body.sub,
+            body.role,
+            body.kind,
+            &body.content,
+        ),
+        (None, Some(sender)) => store.append_opening_from(
+            channel_id,
+            body.ts_ms,
+            body.sub,
+            sender,
+            body.ts_ms,
             body.role,
             body.kind,
             &body.content,
@@ -608,6 +650,10 @@ pub struct SessionDto {
     /// point names a RECORD, so `ts` alone is not the whole position.
     pub coverage_sub: u16,
     pub summary: Option<String>,
+    /// THE WORK THIS MEMORY STILL OWES, rendered by the store (ADR-0021): which tasks a turn sees
+    /// and in what shape is knowledge policy, so it is decided here and not in each caller. `null`
+    /// when nothing is owed — an empty heading teaches a model nothing.
+    pub owed: Option<String>,
     /// A newer node without a summary sits above the coverage point: a
     /// compression is in flight, and a second pass over the same span would be
     /// a wasted model call. The answer above is still complete — the read falls
@@ -636,6 +682,7 @@ impl SessionDto {
         format: mem_core::RenderFormat,
         compress: Option<mem_core::CompressionVerdict>,
         messages: Vec<ModelMessageDto>,
+        owed: Option<String>,
     ) -> Self {
         let head = if format.renders_text() {
             HeadDto::Text(mem_core::render::render_head(&p.head, format))
@@ -676,6 +723,7 @@ impl SessionDto {
             coverage_ts: p.view.coverage.ts_ms,
             coverage_sub: p.view.coverage.sub,
             summary: p.view.summary,
+            owed,
             compressing: p.view.compressing,
             suggested_turn: p.view.suggested.turn_id,
             suggested_ts: p.view.suggested.ts_ms,
@@ -708,6 +756,10 @@ pub struct SessionQuery {
     /// the read cursor does not move and the cache clock stays silent
     /// (the same discipline as recall's "no clock, no count").
     pub ts_ms: Option<u64>,
+    /// WHICH memory this read is about. The caller names its scope the way it names its channel —
+    /// that is a deployment fact, not a policy — and everything the projection carries (head and
+    /// owed) is read from it. Absent = the store's default scope.
+    pub scope: Option<u64>,
 }
 
 /// Parse the caller's `format` value. Absent is the default
@@ -747,6 +799,7 @@ async fn fetch_session(
 ) -> Result<Json<SessionDto>, FactError> {
     let member_id = parse_member_id(&member_raw)?;
     let format = parse_format(query.format.as_deref())?;
+    let scope = query.scope.unwrap_or(mem_core::view::DEFAULT_SCOPE);
     let mut channels = state.store.lock().await;
     let mut graph = state.graph.lock().await;
     let projection = mem_core::view::assemble(
@@ -754,7 +807,7 @@ async fn fetch_session(
         &mut graph,
         channel_id,
         member_id,
-        mem_core::view::DEFAULT_SCOPE,
+        scope,
     )?;
     let assembled = assembled_bytes(&projection);
     // The clock is the caller's (`query.ts_ms`); the POSITION is k10r's. The
@@ -774,6 +827,10 @@ async fn fetch_session(
     // The head this read assembled is what the coming compression will have
     // been produced under, so the proposal freezes it NOW (ADR-0008 §2: the
     // checkpoint carries the persona, not a re-computation of it).
+    let owed = graph
+        .list_tasks(scope, None)
+        .map_err(FactError::from)
+        .map(|tasks| mem_core::tasks::render_owed(&tasks))?;
     let head_ids: Vec<Vec<u8>> = projection.head.iter().map(|fact| fact.key.wire()).collect();
     let verdict =
         mem_core::compress::evaluate(&projection.view, assembled, idle_ms, &state.compression);
@@ -798,7 +855,13 @@ async fn fetch_session(
             .into_iter()
             .map(ModelMessageDto::from)
             .collect();
-    Ok(Json(SessionDto::new(projection, format, verdict, messages)))
+    Ok(Json(SessionDto::new(
+        projection,
+        format,
+        verdict,
+        messages,
+        owed,
+    )))
 }
 
 /// k10r's own clock, milliseconds since the epoch — the log's key (ADR-0011: a
@@ -2824,6 +2887,59 @@ async fn list_channel_members(
         .into_response(),
         Err(e) => FactError::internal(e).into_response(),
     }
+}
+
+/// `GET /members[?name=…]` — the identity directory: id, display name, and the one role axis.
+///
+/// No query answers everyone; `?name=` answers EXACT matches through the declared `by_name`
+/// index. Two people can share a name, so the answer is a list — a caller that needs one picks,
+/// and the storage layer does not guess. There is no profile row here: everything semantic
+/// (preferences, relationships) is a fact about the member node in the graph.
+#[derive(Deserialize)]
+pub struct MembersQuery {
+    pub name: Option<String>,
+}
+
+/// `GET /members/{id}` — one identity, or a 404: absence is an answer, not an error case to
+/// paper over with a default.
+async fn fetch_member(
+    State(state): State<Arc<MemState>>,
+    Path(member_raw): Path<String>,
+) -> Result<Json<MemberDto>, FactError> {
+    let member_id = parse_member_id(&member_raw)?;
+    let store = state.store.lock().await;
+    match store.member(member_id).map_err(FactError::internal)? {
+        Some(row) => Ok(Json(MemberDto {
+            member_id: member_id.to_string(),
+            display_name: row.display_name,
+            role: row.role,
+        })),
+        None => Err(FactError {
+            error: format!("no member `{member_raw}`"),
+            status: StatusCode::NOT_FOUND,
+        }),
+    }
+}
+
+async fn list_members(
+    State(state): State<Arc<MemState>>,
+    Query(query): Query<MembersQuery>,
+) -> Result<Json<Vec<MemberDto>>, FactError> {
+    let mut store = state.store.lock().await;
+    let rows = match query.name.as_deref() {
+        Some(name) => store.members_named(name),
+        None => store.all_members(),
+    }
+    .map_err(FactError::internal)?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|(key, row)| MemberDto {
+                member_id: key.member_id.to_string(),
+                display_name: row.display_name,
+                role: row.role,
+            })
+            .collect(),
+    ))
 }
 
 /// One membership as the MEMBER sees it: which channel, and since when.

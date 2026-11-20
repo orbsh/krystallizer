@@ -228,6 +228,7 @@ async fn post_finished(
             role,
             kind,
             content: content.to_string(),
+            sender: None,
         })
         .send()
         .await

@@ -229,6 +229,10 @@ pub struct MemberKey {
 #[ok_ref(MemberKey)]
 #[ok_ns(42)]
 #[ok_name("members")]
+// The directory's one useful filter: "who is called this". Exact-match by design — a name is how
+// a person is INTRODUCED, an id is how they are addressed, and a prefix search over a free-text
+// name would answer near-misses the caller then has to disambiguate anyway.
+#[ok_index(by_name { fields(display_name) })]
 pub struct MemberRow {
     /// What the model sees in the attribution bracket. Changing it rewrites
     /// nothing in the log: the log stays raw (ADR-0009 §1).
@@ -1263,6 +1267,38 @@ impl ChannelStore {
         for key in self.channels.scan_keys(&okm_core::PrefixProbe::empty()) {
             let key = key.map_err(|e| e.to_string())?;
             if let Some(row) = self.channels.get_row(&key).map_err(|e| e.to_string())? {
+                out.push((key, row));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Every member whose display name is EXACTLY `name` — the directory read an agent makes
+    /// before it adds somebody to a channel it has never shared with them.
+    ///
+    /// Two rows can share a name and both come back: a name is not an identity, and picking one
+    /// for the caller would be the storage layer guessing.
+    pub fn members_named(&mut self, name: &str) -> Result<Vec<(MemberKey, MemberRow)>, String> {
+        let hits = self
+            .members
+            .scan::<__OkmIndex_MemberRow_by_name>(name.as_bytes())
+            .parts::<(parts::Key, parts::Row)>()
+            .collect::<okm_core::error::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?;
+        Ok(hits
+            .into_iter()
+            .filter_map(|(key, row)| row.map(|row| (key.decoded, row)))
+            .filter(|(_, row)| row.display_name == name)
+            .collect())
+    }
+
+    /// Every member, in id order. The set is small by nature (one row per person or agent that
+    /// has ever spoken), and this is the read a caller makes to DISCOVER who exists.
+    pub fn all_members(&mut self) -> Result<Vec<(MemberKey, MemberRow)>, String> {
+        let mut out = Vec::new();
+        for key in self.members.scan_keys(&okm_core::PrefixProbe::empty()) {
+            let key = key.map_err(|e| e.to_string())?;
+            if let Some(row) = self.members.get_row(&key).map_err(|e| e.to_string())? {
                 out.push((key, row));
             }
         }

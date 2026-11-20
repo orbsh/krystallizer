@@ -81,6 +81,106 @@ pub struct TaskSheet {
     pub updated_at: u64,
 }
 
+/// WHAT THIS MEMORY STILL OWES, as the text a turn reads — the store's own rendering, because
+/// which tasks a prompt carries and in what shape is knowledge policy, and a caller that
+/// decided it would be deciding it again in every caller.
+///
+/// Everything NOT `done`, with the state spelled out: `blocked` and `open` mean different
+/// things to a reader, one is work that will not move without an answer and the other is work
+/// that only needs doing. The id comes first because the model needs it to call `move_task`.
+/// `None` when nothing is owed, so a caller leaves the prompt alone instead of sending an
+/// empty heading.
+pub fn render_owed(tasks: &[TaskView]) -> Option<String> {
+    let owed: Vec<&TaskView> = tasks.iter().filter(|task| task.state != "done").collect();
+    if owed.is_empty() {
+        return None;
+    }
+    let mut block =
+        String::from("Tasks this memory still holds (id - state - name - next action):");
+    for task in owed {
+        block.push_str(&format!("\n- {} - {} - {}", task.node_id, task.state, task.name));
+        if !task.next.is_empty() {
+            block.push_str(&format!(" - {}", task.next));
+        }
+        // A bound task closes ITSELF when its code row runs (ADR-0021): saying so here is what
+        // keeps the model from moving work that is about to close by itself.
+        if !task.finishes_on.is_empty() {
+            let bound: Vec<String> = task.finishes_on.iter().map(u64::to_string).collect();
+            block.push_str(&format!(" [closes when code {} runs]", bound.join(", ")));
+        }
+    }
+    block.push_str(
+        "\nMove them with `move_task`, add work with `open_task`, close with `state: done`. \
+         A task marked `[closes when code N runs]` closes by itself when that step \
+         succeeds — do not move it afterwards.",
+    );
+    Some(block)
+}
+
+
+/// The rendering's own tests, ported from the caller that used to own them: `doing` is the MOST
+/// relevant state (a list that asked the store for `open` lost the one thing in progress), a bound
+/// task says which step closes it, and nothing owed is no block at all.
+#[cfg(test)]
+mod owed {
+    use super::{render_owed, TaskView};
+
+    fn task(node_id: u64, state: &str, name: &str, next: &str, finishes_on: Vec<u64>) -> TaskView {
+        TaskView {
+            node_id,
+            name: name.to_string(),
+            state: state.to_string(),
+            next: next.to_string(),
+            created_at: 0,
+            updated_at: 0,
+            finishes_on,
+        }
+    }
+
+    #[test]
+    fn the_work_in_progress_is_not_filtered_out() {
+        let block = render_owed(&[
+            task(3, "open", "write-the-diff", "", vec![]),
+            task(9, "doing", "ship-the-face-change", "read the diff", vec![]),
+            task(12, "done", "old-thing", "", vec![]),
+        ])
+        .expect("two tasks are owed");
+        assert!(block.contains("- 9 - doing - ship-the-face-change - read the diff"));
+        assert!(block.contains("- 3 - open - write-the-diff"));
+        assert!(!block.contains("old-thing"), "done is not owed");
+    }
+
+    #[test]
+    fn a_bound_task_says_which_step_closes_it() {
+        let block = render_owed(&[
+            task(12, "doing", "a", "", vec![7, 9]),
+            task(13, "open", "b", "", vec![]),
+        ])
+        .expect("owed");
+        assert!(
+            block.contains("- 12 - doing - a [closes when code 7, 9 runs]"),
+            "{block}"
+        );
+        assert!(block.contains("- 13 - open - b\n"), "unmarked: {block}");
+        assert!(block.contains("closes by itself"), "{block}");
+    }
+
+    #[test]
+    fn nothing_owed_is_no_block_at_all() {
+        assert_eq!(render_owed(&[]), None);
+        assert_eq!(render_owed(&[task(12, "done", "old-thing", "", vec![])]), None);
+    }
+
+    #[test]
+    fn an_empty_next_action_leaves_no_trailing_dash() {
+        let block = render_owed(&[task(3, "open", "write-the-diff", "", vec![])]).expect("owed");
+        assert!(
+            block.contains("- 3 - open - write-the-diff\n"),
+            "no next action, no dash: {block}"
+        );
+    }
+}
+
 impl TaskSheet {
     /// A sheet for a task nobody has touched: open, no next action, no dates.
     pub fn opened() -> Self {

@@ -22,7 +22,7 @@
 //! with a visited policy. Deeper walks are the caller's composition over
 //! the graph's own reads (ADR-0003).
 
-use crate::channel::{role, ChannelStore, SessionView};
+use crate::channel::{member_role, role, ChannelStore, SessionView};
 use crate::graph::{FactView, GraphStore, IngestError};
 use okm_core::Uuid7;
 use std::collections::BTreeSet;
@@ -72,9 +72,26 @@ pub fn assemble(
     member_id: Uuid7,
     scope: u64,
 ) -> Result<Projection, IngestError> {
-    let view = channels
+    let mut view = channels
         .fetch_full(channel_id, member_id)
         .map_err(IngestError::Storage)?;
+    // WHAT A READER IS GIVEN IS THE STORE'S DECISION, and it stays here on purpose: a caller that
+    // assembled its own prompt would put the knowledge policy in every call site, which is the
+    // thing this side exists to prevent.
+    //
+    // A PERSON's turns are a conversation: they issue instructions that change the context in ways
+    // nobody can predict, so the model needs part of the record to follow them. An AGENT is a
+    // program running a known shape — it acts from the current message, its skills and what it
+    // committed to memory — and handing it the transcript would be budget spent on noise. Its rows
+    // are not lost: they are the supervision record a person opens.
+    if channels
+        .member(member_id)
+        .map_err(IngestError::Storage)?
+        .is_some_and(|row| row.role == member_role::AGENT)
+    {
+        view.increment.clear();
+        view.summary = None;
+    }
     // The head is the FROZEN set the checkpoint recorded (ADR-0008 §2): the
     // initialization memory is snapshotted as a set of edge ids at compression
     // time and re-rendered per request, so `?format=` still picks the
