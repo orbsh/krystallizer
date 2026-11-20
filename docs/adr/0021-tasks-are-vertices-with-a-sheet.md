@@ -112,6 +112,14 @@ a store that cannot answer does not fail the turn, and the model can still ask w
 - **A task has no owner field.** Ownership is a person node and an edge when it
   matters, which is what keeps the sheet from growing into a task tracker.
 
+### What a turn is shown about its work is rendered HERE
+
+`tasks::render_owed` is not a convenience for a caller: which tasks belong in a prompt, and in what
+shape (state spelled out, id first, `[closes when code N runs]`), is a knowledge policy — the same
+kind of decision as which facts reach the head. It rides the session projection as `session.owed`,
+so every caller renders the same block and none of them re-decides it. A caller-side copy of this
+rendering is how a deployment ends up with two ideas of what "work in progress" means.
+
 ## Related records
 
 ADR-0004 (the fixed tool list — the gaps this closes), ADR-0015 (the skill node: the
