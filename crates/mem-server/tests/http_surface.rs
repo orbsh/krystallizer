@@ -692,6 +692,82 @@ async fn a_stranger_has_no_lines_and_only_their_own_is_solo() {
     assert_eq!(owners[0]["channel_id"], 21);
 }
 
+/// A SPEAKER WITH NO NAME SET READS AS ITS ID, not as a blank. A booth joins a person with
+/// `display_name: ""` on purpose — the login name lives in the venue's auth store and is not the
+/// booth's to copy — so "the member row exists but nobody set a name" is the normal state of a
+/// fresh line, not an error. Rendering it as an empty bracket made the transcript look broken; the
+/// id is at least true, and it is the same fallback an unregistered sender already got.
+#[tokio::test]
+async fn a_speaker_nobody_named_reads_as_its_id() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    let anonymous = "6f1d3d0e-0000-4000-8000-00000000000e";
+    client
+        .post(format!("{base}/channels/31/members"))
+        .json(&serde_json::json!({
+            "member_id": anonymous, "display_name": "", "role": 0u8, "since_ms": 1u64
+        }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    post_finished_from(&client, &base, 31, 2_000, anonymous, "unattributed words").await;
+
+    let rows: Vec<serde_json::Value> = client
+        .get(format!("{base}/channels/31/messages"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        rows[0]["sender_name"],
+        format!("member-{anonymous}"),
+        "an empty name is absence, not a name: {rows:?}"
+    );
+
+    // The projection is what a model reads, and it must agree: one rule, two renderings.
+    let session: serde_json::Value = client
+        .get(format!(
+            "{base}/channels/31/members/00000000-0000-0000-0000-000000000001/session?format=plaintext"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let text = session.to_string();
+    assert!(
+        text.contains(&format!("member-{anonymous}")),
+        "the projection names the speaker the same way: {text}"
+    );
+
+    // A rename re-labels history at read time — the rule is "what somebody set wins", so this is
+    // the other half of the same decision, not a separate feature.
+    client
+        .post(format!("{base}/channels/31/members"))
+        .json(&serde_json::json!({
+            "member_id": anonymous, "display_name": "Alice", "role": 0u8, "since_ms": 1u64
+        }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let rows: Vec<serde_json::Value> = client
+        .get(format!("{base}/channels/31/messages"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(rows[0]["sender_name"], "Alice", "{rows:?}");
+}
+
 /// THE DIRECTORY: an agent has to find a person before it can add them to a channel, and the
 /// only reads that existed were "this id" and "this channel's members" — neither answers "who is
 /// called Alice". Names are not identities, so two hits are two rows, never a pick.

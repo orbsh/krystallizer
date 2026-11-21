@@ -59,6 +59,19 @@ pub fn role_name(code: u8) -> Option<&'static str> {
     }
 }
 
+/// What a transcript calls a speaker. A name is something somebody SETS: a member row may exist
+/// with nothing in that column (a booth joins a person with `display_name: ""` because the login
+/// name lives in the venue's auth store and is not its to copy), and an empty name is absence, not
+/// a name — a blank speaker reads as a broken log. So the id is the fallback in both cases: a row
+/// nobody named, and a row nobody registered. What somebody set wins, including a rename.
+pub fn member_label(display_name: &str, member: okm_core::Uuid7) -> String {
+    if display_name.is_empty() {
+        format!("member-{member}")
+    } else {
+        display_name.to_string()
+    }
+}
+
 /// Assemble one member's projection for one channel: the head from the
 /// fact graph, the checkpoint + increment from the log.
 ///
@@ -176,8 +189,8 @@ pub fn messages_of(
         // An unregistered sender is absence, not a failure: the line falls
         // back to the id-derived name.
         let name = match channels.member(row.sender).map_err(IngestError::Storage)? {
-            Some(member) => member.display_name,
-            None => format!("member-{}", row.sender),
+            Some(member) => member_label(&member.display_name, row.sender),
+            None => member_label("", row.sender),
         };
         let line = format!("[{name}(id={})] {}", row.sender, row.content);
         let ended = row.end_ts_ms.max(key.ts_ms);

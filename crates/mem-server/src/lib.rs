@@ -888,8 +888,8 @@ async fn read_channel(
         // An unregistered sender is absence, not a failure: the entry falls
         // back to the id-derived name.
         let sender_name = match store.member(row.sender).map_err(FactError::internal)? {
-            Some(member) => member.display_name,
-            None => format!("member-{}", row.sender),
+            Some(member) => mem_core::view::member_label(&member.display_name, row.sender),
+            None => mem_core::view::member_label("", row.sender),
         };
         entries.push(ChannelEntry {
             key: MessageKeyDto::from(key),
