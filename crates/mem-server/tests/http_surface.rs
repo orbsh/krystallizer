@@ -632,6 +632,66 @@ async fn a_members_own_line_is_the_solo_one_not_the_first_in_the_list() {
     assert_eq!(row["solo"], 1, "{row}");
 }
 
+/// A STRANGER HAS NO CHANNELS, and a line belongs to somebody: the two reads that decide where a
+/// turn's rows go must not answer with somebody else's channel. The stranger case is the one that
+/// matters — gravity resolves its channel BEFORE it registers the speaker, so the first message a
+/// new context ever sends is exactly this question, and an empty answer is what makes it open a new
+/// line instead of joining an existing one.
+#[tokio::test]
+async fn a_stranger_has_no_lines_and_only_their_own_is_solo() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    let owner = "6f1d3d0e-0000-4000-8000-00000000000c";
+    let stranger = "6f1d3d0e-0000-4000-8000-00000000000d";
+    let app = "4f1b6c1e-0d3a-5f2b-9c47-6a1d0e5b8c22";
+    client
+        .post(format!("{base}/channels/21"))
+        .json(&serde_json::json!({
+            "app_id": app, "scene": "conversation", "created_ms": 5u64, "solo": 1u8
+        }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    client
+        .post(format!("{base}/channels/21/members"))
+        .json(&serde_json::json!({
+            "member_id": owner, "display_name": "Alice", "role": 0u8, "since_ms": 1u64
+        }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+
+    for query in ["", "?app=4f1b6c1e-0d3a-5f2b-9c47-6a1d0e5b8c22&solo=1"] {
+        let mine: Vec<serde_json::Value> = client
+            .get(format!("{base}/members/{stranger}/channels{query}"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(
+            mine.is_empty(),
+            "a member the store has never seen has no lines (`{query}`): {mine:?}"
+        );
+    }
+
+    let owners: Vec<serde_json::Value> = client
+        .get(format!("{base}/members/{owner}/channels?solo=1"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(owners.len(), 1, "{owners:?}");
+    assert_eq!(owners[0]["channel_id"], 21);
+}
+
 /// THE DIRECTORY: an agent has to find a person before it can add them to a channel, and the
 /// only reads that existed were "this id" and "this channel's members" — neither answers "who is
 /// called Alice". Names are not identities, so two hits are two rows, never a pick.
