@@ -30,6 +30,8 @@ The edge set arrives as one table per endpoint pair (ADR-0027), and the plan's o
 
 The reduce tables (a log's `seq` watermark, a code sheet's id watermark) are not addressable on their own: they ride their parent table's ns and are skipped when the parent is. A restore without them hands out ids the restored rows already carry.
 
+The plan is `export::CATALOG`, and it has to name EVERY table the service renders — `channels` and `memberships` included. They were missing from it while the channel group still listed them, so a restored store had the messages and nobody who had said them (the members list of a channel read empty). A missing table is silent by nature, so the catalog is asserted against `ChannelStore::tables` by a test, not by trust.
+
 ## 4. Where the door is
 
 The binary, not HTTP:
@@ -37,6 +39,10 @@ The binary, not HTTP:
     krystallizer --config <file> --restore <target> [--map <table>=<ns>]...
 
 The store has one writer, so a restore is an operator action on a stopped service. It lands the lake, prints what landed where, and exits without opening the door — a service that restored and then started serving would be two writers of the same accepted state.
+
+IT RUNS OUTSIDE ANY RUNTIME, and that is a constraint rather than a style: the lake's store drives a runtime of its own, so a restore entered from inside a serving runtime panics before it reads a byte. `main` is therefore synchronous and builds a runtime only for the branch that serves.
+
+A BUCKET'S TARGET takes its key pair from the config's `lake.s3` block — the same variables the publisher resolves, through one constructor. A restore target may be a different URL than the publisher's, but the pair that opens a bucket belongs to the deployment; passing none meant "anonymous", which no bucket answers, and the first real run failed on exactly that.
 
 ## 5. Consequences
 
