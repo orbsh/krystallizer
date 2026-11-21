@@ -134,14 +134,15 @@ transformation of the other's output — they are two projections of the same ro
   `1` is seeded (default display name from one constant, `master` today) the
   first time a channel is touched. There is no sender id 0 and no "unknown"
   author to special-case; multi-party rows use ids from 10 up.
-- **A name is something somebody sets, and empty is not a name.** A member row
-  can exist with nothing in the display column — a booth joins a person with
-  `display_name: ""` because the login name lives in the venue's auth store and
-  is not the booth's to copy. Both reads then fall back to `member-<id>`
-  (`member_label`, one function): the same fallback an unregistered sender
-  already got, because a blank speaker reads as a broken log while an id is at
-  least true. A name that somebody sets wins, and a rename re-labels history at
-  read time.
+- **A name is something somebody sets, and empty is not a name.** The name a row
+  carries comes from the layer that OWNS it: a person's name is stated by the
+  venue (it holds the account registry, and puts it on the envelope), and a
+  booth passes it on rather than looking one up; an agent's name is the tag its
+  caller declared. What arrives empty is a member row nobody has named yet, and
+  both reads fall back to `member-<id>` (`member_label`, one function) — the
+  same fallback an unregistered sender already got, because a blank speaker
+  reads as a broken log while an id is at least true. A name that somebody sets
+  wins, and a rename re-labels history at read time.
 - **People read the channel.** Raw records, in log order, exactly as written —
   no checkpoint, no summary, no merging (`ChannelStore::history`). Reading it is
   a scan, not an assembly.
