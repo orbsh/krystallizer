@@ -561,6 +561,77 @@ async fn a_person_reads_the_conversation_and_an_agent_reads_none_of_it() {
     assert_eq!(rows.len(), 2, "the log keeps everything: {rows:?}");
 }
 
+/// A PERSON'S OWN LINE HAS A NAME NOW. The read used to be "the first channel this member is
+/// in", which was true only while a member had one: once an agent could add people to the channel
+/// it works in, a supervisor's own conversation resolved to the MACHINE's line and their words
+/// landed there. `solo` is the flag that says which channel is somebody's own.
+#[tokio::test]
+async fn a_members_own_line_is_the_solo_one_not_the_first_in_the_list() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    let person = "6f1d3d0e-0000-4000-8000-00000000000b";
+    let app = "4f1b6c1e-0d3a-5f2b-9c47-6a1d0e5b8c22";
+    // The machine's channel FIRST (lower id), the person's own line second: the order that made
+    // "first" answer with somebody else's channel.
+    for (id, scene, solo) in [(3u64, "context", 0u8), (4, "conversation", 1u8)] {
+        client
+            .post(format!("{base}/channels/{id}"))
+            .json(&serde_json::json!({
+                "app_id": app, "scene": scene, "created_ms": 5u64, "solo": solo
+            }))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        client
+            .post(format!("{base}/channels/{id}/members"))
+            .json(&serde_json::json!({
+                "member_id": person, "display_name": "Alice", "role": 0u8, "since_ms": 1u64
+            }))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+    }
+
+    let all: Vec<serde_json::Value> = client
+        .get(format!("{base}/members/{person}/channels"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 2, "both channels hold them: {all:?}");
+    assert_eq!(all[0]["channel_id"], 3, "id order, the machine first");
+
+    let mine: Vec<serde_json::Value> = client
+        .get(format!(
+            "{base}/members/{person}/channels?app={app}&solo=1"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(mine.len(), 1, "one own line, asked for by name: {mine:?}");
+    assert_eq!(mine[0]["channel_id"], 4, "and it is not the first row");
+
+    // The channel read says which it is, so a caller can also check one it already has.
+    let row: serde_json::Value = client
+        .get(format!("{base}/channels/4"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(row["solo"], 1, "{row}");
+}
+
 /// THE DIRECTORY: an agent has to find a person before it can add them to a channel, and the
 /// only reads that existed were "this id" and "this channel's members" — neither answers "who is
 /// called Alice". Names are not identities, so two hits are two rows, never a pick.

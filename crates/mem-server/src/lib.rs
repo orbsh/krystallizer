@@ -2725,6 +2725,11 @@ pub struct OpenChannel {
     pub app_id: String,
     pub scene: String,
     pub created_ms: u64,
+    /// 1 = this channel is ONE participant's own line (their conversation), 0 = work that
+    /// several people share. Absent reads as 0: a caller that does not say what it is opening
+    /// is not claiming somebody's line.
+    #[serde(default)]
+    pub solo: u8,
 }
 
 /// An application id is an OIDC `client_id`: a uuid, and on the wire its text, for the same
@@ -2754,6 +2759,8 @@ pub struct ChannelDto {
     pub app_id: String,
     pub scene: String,
     pub created_ms: u64,
+    /// 1 = one participant's own line, 0 = shared work (see `ChannelRow::solo`).
+    pub solo: u8,
 }
 
 impl From<(u64, mem_core::channel::ChannelRow)> for ChannelDto {
@@ -2763,6 +2770,7 @@ impl From<(u64, mem_core::channel::ChannelRow)> for ChannelDto {
             app_id: row.app_id.to_string(),
             scene: row.scene,
             created_ms: row.created_ms,
+            solo: row.solo,
         }
     }
 }
@@ -2781,6 +2789,7 @@ async fn open_channel(
             parse_app_id(&body.app_id)?,
             &body.scene,
             body.created_ms,
+            body.solo,
         )
         .map_err(FactError::internal)?;
     Ok(StatusCode::NO_CONTENT)
@@ -2806,6 +2815,10 @@ async fn read_one_channel(
 pub struct AppFilter {
     /// `?app=gravity` — the owning application. Absent means every app's channels.
     pub app: Option<String>,
+    /// `?solo=1` — only channels that are ONE participant's own line (or, with `solo=0`, only the
+    /// shared ones). Absent means both. The read that exists because of it: "which of this
+    /// person's channels is their conversation", asked instead of guessed from list order.
+    pub solo: Option<u8>,
 }
 
 async fn list_channels(
@@ -2823,6 +2836,7 @@ async fn list_channels(
     match rows {
         Ok(rows) => Json(
             rows.into_iter()
+                .filter(|(_, row)| filter.solo.is_none_or(|want| row.solo == want))
                 .map(|(key, row)| ChannelDto::from((key.channel_id, row)))
                 .collect::<Vec<_>>(),
         )
@@ -2977,6 +2991,17 @@ async fn list_member_channels(
                     if !owned {
                         continue;
                     }
+                }
+                // `?solo=1` narrows to the member's OWN line: the channel they opened for their
+                // conversation, as opposed to one an agent added them to (a supervisor's seat).
+                if filter.solo.is_some_and(|want| {
+                    !store
+                        .channel(channel_id)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|c| c.solo == want)
+                }) {
+                    continue;
                 }
                 out.push(MembershipDto {
                     channel_id,

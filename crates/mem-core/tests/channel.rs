@@ -806,14 +806,14 @@ fn a_channel_is_a_row_and_membership_reads_both_ways() {
     let (_dir, mut store) = open();
 
     store
-        .put_channel(7, m(9), "private", 1_700_000_000_000)
+        .put_channel(7, m(9), "private", 1_700_000_000_000, 1)
         .unwrap();
     store
-        .put_channel(9, m(10), "group:ops", 1_700_000_000_100)
+        .put_channel(9, m(10), "group:ops", 1_700_000_000_100, 0)
         .unwrap();
     // Re-opening with a new scene is a RENAME, not a second channel.
     store
-        .put_channel(7, m(9), "private:master", 1_700_000_000_200)
+        .put_channel(7, m(9), "private:master", 1_700_000_000_200, 0)
         .unwrap();
 
     // One member in two channels: the fan-out a person with several lines has.

@@ -259,6 +259,7 @@ pub struct ChannelKey {
 #[ok_ns(45)]
 #[ok_name("channels")]
 #[ok_index(by_app { fields(app_id) })]
+#[ok_index(by_solo { fields(solo) })]
 pub struct ChannelRow {
     /// WHICH APPLICATION owns this channel — the OIDC `client_id` value, not
     /// "which user": `gravity` opens one channel per person and must find exactly
@@ -276,6 +277,21 @@ pub struct ChannelRow {
     pub scene: String,
     /// The caller's clock when the channel was opened.
     pub created_ms: u64,
+    /// SOLO: this channel is ONE participant's own line — the conversation they open with the
+    /// agent — as opposed to a channel opened for work that several people share (a context's
+    /// line, a batch, a group).
+    ///
+    /// The flag exists because "their line" had no name, so the reader guessed it: the FIRST
+    /// channel a member is in. That was true while a member had one channel, and it became a lie
+    /// the moment an agent could add people to a channel it works in — a supervisor's own words
+    /// then landed in a machine's line. A byte rather than a bool because the row encoder has no
+    /// bool (k10r's roles are bytes for the same reason): 1 = solo, 0 = shared, and the caller
+    /// that opens a channel says which it is.
+    ///
+    /// The store does not enforce one solo channel per person — it cannot, a membership is the
+    /// only thing linking the two and a channel can hold several people. The deployment owns that
+    /// invariant; a reader that finds two reads them in id order and says so rather than picking.
+    pub solo: u8,
 }
 
 /// The OTHER half of the many-to-many (ns 46): `member → channel`.
@@ -1155,6 +1171,7 @@ impl ChannelStore {
         app_id: Uuid7,
         scene: &str,
         created_ms: u64,
+        solo: u8,
     ) -> Result<(), String> {
         self.channels
             .put(
@@ -1163,6 +1180,7 @@ impl ChannelStore {
                     app_id,
                     scene: scene.to_string(),
                     created_ms,
+                    solo,
                 },
             )
             .map_err(|e| e.to_string())
