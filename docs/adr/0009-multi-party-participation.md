@@ -134,6 +134,14 @@ transformation of the other's output — they are two projections of the same ro
   `1` is seeded (default display name from one constant, `master` today) the
   first time a channel is touched. There is no sender id 0 and no "unknown"
   author to special-case; multi-party rows use ids from 10 up.
+- **Joining again is the same membership.** A membership is `(member, channel)`,
+  so a caller that states its speaker on every turn (a booth has no memory of
+  what it wrote last time) must not create a new one: `since_ms` stays at the
+  first join — the only fact here about the past — while the member row takes
+  the current statement. A `since` that means "the last time I spoke" answers a
+  different question than the one it is asked. The name in that statement is
+  optional and ABSENT IS NOT EMPTY: absent means nobody is renaming anybody and
+  what is stored stays; `""` says nobody has named this member.
 - **A name is something somebody sets, and empty is not a name.** The name a row
   carries comes from the layer that OWNS it: a person's name is stated by the
   venue (it holds the account registry, and puts it on the envelope), and a
