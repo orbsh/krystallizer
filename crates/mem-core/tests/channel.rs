@@ -748,10 +748,10 @@ fn members_name_their_senders_and_a_rename_rewrites_nothing() {
     let (_d, mut store) = open();
     const CH: u64 = 1;
     store
-        .join(CH, m(1), "小王", mem_core::member_role::HUMAN, 10)
+        .join(CH, m(1), Some("小王"), mem_core::member_role::HUMAN, 10)
         .unwrap();
     store
-        .join(CH, m(2), "k10r", mem_core::member_role::AGENT, 11)
+        .join(CH, m(2), Some("k10r"), mem_core::member_role::AGENT, 11)
         .unwrap();
 
     // One identity row per PERSON: the name and the role are global (ADR-0051).
@@ -773,7 +773,7 @@ fn members_name_their_senders_and_a_rename_rewrites_nothing() {
         vec![m(1), m(2)]
     );
     store
-        .join(2, m(1), "小王", mem_core::member_role::HUMAN, 12)
+        .join(2, m(1), Some("小王"), mem_core::member_role::HUMAN, 12)
         .unwrap();
     assert_eq!(store.members(2).unwrap().len(), 1);
     assert_eq!(store.channels_of(m(1)).unwrap().len(), 2);
@@ -817,10 +817,10 @@ fn a_channel_is_a_row_and_membership_reads_both_ways() {
         .unwrap();
 
     // One member in two channels: the fan-out a person with several lines has.
-    store.join(7, m(1), "master", 0, 111).unwrap();
-    store.join(9, m(1), "master", 0, 222).unwrap();
+    store.join(7, m(1), Some("master"), 0, 111).unwrap();
+    store.join(9, m(1), Some("master"), 0, 222).unwrap();
     // And a second member in one of them: the many-to-many actually fans in.
-    store.join(9, m(2), "k10r", 1, 333).unwrap();
+    store.join(9, m(2), Some("k10r"), 1, 333).unwrap();
 
     // channel -> members (the direction that always existed)
     let in_nine: Vec<mem_core::Uuid7> = store

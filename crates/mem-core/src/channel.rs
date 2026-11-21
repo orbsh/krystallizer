@@ -1199,21 +1199,45 @@ impl ChannelStore {
     /// member's view of where they are. A commit that landed one and not the other would answer
     /// "yes" from one side and "no" from the other — the same failure a half-written junction has,
     /// so it is written the same way (one batch, both rows).
+    ///
+    /// JOINING AGAIN IS THE SAME MEMBERSHIP, not a new one. The member row is a statement about the
+    /// speaker and takes the latest one — a name the venue has since changed, a role — while
+    /// `since_ms` stays at the first join, because that is the only thing here that is a fact about
+    /// the past. A caller that re-states itself on every turn (a booth does: it has no memory of
+    /// what it wrote last time) would otherwise turn "since" into "the last time I spoke", which is
+    /// a different and less useful number.
+    ///
+    /// `display_name` is OPTIONAL and its absence is not the same as an empty string: absent means
+    /// this caller is not saying anything about the name (a booth re-joining a member whose tag it
+    /// did not repeat), so whatever is stored stays; `Some("")` is the explicit statement that
+    /// nobody has named this member, which is what a fresh row holds anyway.
     pub fn join(
         &self,
         channel_id: u64,
         member_id: Uuid7,
-        display_name: &str,
+        display_name: Option<&str>,
         role: u8,
         since_ms: u64,
     ) -> Result<(), String> {
+        let key = MembershipKey {
+            channel_id,
+            member_id,
+        };
+        let existing = self.memberships.get_row(&key).map_err(|e| e.to_string())?;
+        let name = match display_name {
+            Some(name) => name.to_string(),
+            None => self
+                .member(member_id)
+                .map_err(|e| e.to_string())?
+                .map_or_else(String::new, |row| row.display_name),
+        };
         let mut batch = okm_core::engine::storage::Batch::default();
         self.members
             .save_with_prev_into(
                 &mut batch,
                 &MemberKey { member_id },
                 &MemberRow {
-                    display_name: display_name.to_string(),
+                    display_name: name,
                     role,
                 },
                 None,
@@ -1222,15 +1246,12 @@ impl ChannelStore {
         self.memberships
             .save_with_prev_into(
                 &mut batch,
-                &MembershipKey {
-                    channel_id,
-                    member_id,
-                },
+                &key,
                 &MembershipRow {
                     nickname: String::new(),
-                    since_ms,
+                    since_ms: existing.as_ref().map_or(since_ms, |row| row.since_ms),
                 },
-                None,
+                existing.as_ref(),
             )
             .map_err(|e| e.to_string())?;
         self.members.commit_batch(batch).map_err(|e| e.to_string())

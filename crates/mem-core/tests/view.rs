@@ -423,7 +423,7 @@ fn the_head_comes_from_every_member_of_the_channel() {
             .join(
                 7, // the channel `projection()` assembles
                 member,
-                name,
+                Some(name),
                 mem_core::member_role::HUMAN,
                 0,
             )

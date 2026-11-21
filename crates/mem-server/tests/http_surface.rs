@@ -1458,3 +1458,66 @@ async fn a_channel_and_its_membership_over_the_wire() {
     assert_eq!(gravities.len(), 1, "and the same by app: {gravities:?}");
     assert_eq!(gravities[0]["channel_id"], 7);
 }
+
+/// JOINING AGAIN IS THE SAME MEMBERSHIP. A booth has no memory of what it wrote last time, so it
+/// re-states its speaker on every turn (the venue's name for a person, the tag for an agent). That
+/// statement is about NOW and the member row takes it; `since_ms` is the only fact about the past
+/// here, and re-stating must not move it — a "since" that means "the last time I spoke" answers a
+/// different question than the one it is asked.
+#[tokio::test]
+async fn joining_again_keeps_the_first_since_and_takes_the_current_name() {
+    let (base, _dir) = spawn_server().await;
+    let client = reqwest::Client::new();
+    let alice = "6f1d3d0e-0000-4000-8000-0000000000a1";
+
+    for (name, since) in [("Alice", 1_000u64), ("Alicia", 5_000)] {
+        client
+            .post(format!("{base}/channels/11/members"))
+            .json(&serde_json::json!({
+                "member_id": alice, "display_name": name, "role": 0, "since_ms": since
+            }))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+    }
+
+    // ABSENT IS NOT EMPTY: a caller re-joining without saying anything about the name (a booth
+    // that did not repeat the tag) must not blank it.
+    client
+        .post(format!("{base}/channels/11/members"))
+        .json(&serde_json::json!({ "member_id": alice, "role": 0, "since_ms": 9_000 }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+
+    let member: serde_json::Value = client
+        .get(format!("{base}/members/{alice}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        member["display_name"], "Alicia",
+        "the member row is about now, and the venue has since said otherwise: {member}"
+    );
+
+    let lines: Vec<serde_json::Value> = client
+        .get(format!("{base}/members/{alice}/channels"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(lines.len(), 1, "one membership, not two: {lines:?}");
+    assert_eq!(
+        lines[0]["since_ms"], 1_000,
+        "they joined once, and it was at the first statement: {lines:?}"
+    );
+}

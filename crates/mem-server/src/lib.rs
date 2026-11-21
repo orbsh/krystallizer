@@ -2850,7 +2850,10 @@ async fn list_channels(
 #[derive(Deserialize, Serialize)]
 pub struct AddMember {
     pub member_id: String,
-    pub display_name: String,
+    /// ABSENT IS NOT EMPTY: a caller that is not renaming anybody omits this, and the stored name
+    /// stays; `""` says nobody has named this member (k10r ADR-0009 §4).
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub role: u8,
     pub since_ms: u64,
 }
@@ -2866,7 +2869,7 @@ async fn add_member(
         .join(
             channel_id,
             member_id,
-            &body.display_name,
+            body.display_name.as_deref(),
             body.role,
             body.since_ms,
         )
