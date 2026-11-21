@@ -68,6 +68,21 @@ that cannot be turned back into the identity it names is a dead end for every la
 ("who wrote this"), and `Uuid7` is a fixed-width 128-bit value, so the key layout stays
 fixed-width — only wider.
 
+### One channel is somebody's own: `solo`
+
+The row carries `solo` — a byte, 1 = this channel is ONE participant's own line (the conversation
+they open with the agent), 0 = work several people share (a context's line, a batch, a group).
+
+It exists because "their line" had no name, so readers guessed it: gravity took the FIRST channel a
+member was in. That was true while a member had one channel and became a lie the day an agent could
+add people to the channel it works in — a supervisor's own words then landed in a machine's line.
+A flag says which one is whose, and `GET /members/{m}/channels?solo=1` is the read that answers it.
+
+The store does not enforce one solo row per person: a membership is the only link between the two
+and a channel can hold many people, so a store cannot state the invariant without inventing an
+owner. The deployment owns it. A reader that finds two gets them in id order and says so rather
+than picking — the same rule as two members with one name.
+
 ## Why not a junction
 
 A many-to-many relationship is an ordinary table, and okm has ordinary tables: a key made of
