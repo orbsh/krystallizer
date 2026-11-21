@@ -43,8 +43,7 @@ Everything else is the config: `storage.data-dir` (the database's directory,
 `$HOME` allowed), the `embedding` model directory, the `compression` numbers and
 the `logs` ceiling.";
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config: Option<PathBuf> = None;
     // `DEFAULT_ADDR` is this file's own literal; a broken literal is a build
     // defect, so the parse falls back to the same loopback default instead of
@@ -121,7 +120,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // has one writer, so it runs here, lands the lake, and exits before any door
     // exists (ADR-0026).
     if let Some(target) = restore {
-        let lake = okm_lake::store::open(&target, None)?;
+        // NO RUNTIME HERE, ON PURPOSE. The lake's store drives its own runtime (`block_on` inside a
+        // caller's thread), so entering this from inside a runtime is the one thing it cannot take
+        // — restore used to panic with "Cannot start a runtime from within a runtime" before it
+        // ever touched a bucket (found by `scripts/lake-s3-rehearsal.sh`, 2026-11-21). `main` is
+        // synchronous for this reason and builds a runtime only for the branch that serves.
+        //
+        // The credentials come from the config's own `lake.s3` block: the RESTORE target may be a
+        // different URL than the publisher's, but the pair that opens a bucket is the deployment's,
+        // and `None` here meant "anonymous", which no bucket answers.
+        let options = match cfg.lake.as_ref().and_then(|lake| lake.s3.as_ref()) {
+            Some(s3) => Some(s3.options()?),
+            None => None,
+        };
+        let lake = okm_lake::store::open(&target, options)?;
         let mut stores = mem_core::service::open_service(&data_dir)?;
         let mapping = (!mapping.is_empty()).then_some(&mapping);
         let landed = mem_core::restore::land(&mut stores, &*lake, mapping)?;
@@ -136,6 +148,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // The serving branch owns the runtime, and it is the only branch that needs one.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(serve(cfg, config_path, data_dir, addr))
+}
+
+/// The door: bind, say where its state lives, serve until stopped.
+async fn serve(
+    cfg: mem_core::KrystallizerConfig,
+    config_path: PathBuf,
+    data_dir: PathBuf,
+    addr: SocketAddr,
+) -> Result<(), Box<dyn std::error::Error>> {
     let app = mem_server::open_from_config(&cfg)?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     // The bound address, not the requested one: `--addr 127.0.0.1:0` is how a test

@@ -52,6 +52,19 @@ pub const CATALOG: &[(&str, u16)] = &[
     ),
     (<Facts as Document>::TABLE_NAME, ns(Facts::NS_PREFIX)),
     (<LogRow as Document>::TABLE_NAME, ns(LogRow::NS_PREFIX)),
+    // THE RELATION TABLES ARE PART OF THE STATE, not a private index of it: without `channels` and
+    // `memberships` a restored store has the messages and nobody who said them — the members list of
+    // a channel reads empty, which is exactly how this was found (`scripts/lake-s3-rehearsal.sh`,
+    // 2026-11-21). `ChannelStore::tables` always listed them; this catalog is what the publisher
+    // walks, and the two had drifted.
+    (
+        <crate::channel::ChannelRow as Document>::TABLE_NAME,
+        ns(crate::channel::ChannelRow::NS_PREFIX),
+    ),
+    (
+        <crate::channel::MembershipRow as Document>::TABLE_NAME,
+        ns(crate::channel::MembershipRow::NS_PREFIX),
+    ),
 ];
 
 /// The derived reduce tables (ADR-0034 §5). A reduce is not a row, so it is not

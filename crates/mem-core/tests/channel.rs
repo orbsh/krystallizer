@@ -887,3 +887,21 @@ fn a_channel_is_a_row_and_membership_reads_both_ways() {
         .collect();
     assert_eq!(gravities, vec![7], "gravity's own channels, and only those");
 }
+
+/// THE LAKE PUBLISHES EVERY TABLE THE STORE RENDERS, and the catalog is the one list: the publisher
+/// walks `export::lake_table_names()`, while the channel group answers `ChannelStore::tables()`. Those
+/// two drifted — `channels` and `memberships` were restored as empty tables, so a bucket-backed
+/// restore handed back the messages and nobody who said them (`scripts/lake-s3-rehearsal.sh` found it
+/// on 2026-11-21). A missing table is silent by nature, so it is asserted here rather than trusted.
+#[test]
+fn the_lake_names_every_table_the_store_can_render() {
+    let dir = tempdir().unwrap();
+    let store = ChannelStore::open(dir.path()).unwrap();
+    let published = mem_core::export::lake_table_names();
+    for (name, _ns) in store.tables() {
+        assert!(
+            published.iter().any(|table| table == name),
+            "`{name}` is a table this service renders and the lake does not publish; published: {published:?}"
+        );
+    }
+}

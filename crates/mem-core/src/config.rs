@@ -172,6 +172,21 @@ pub struct LakeS3Config {
     pub secret_env: String,
 }
 
+impl LakeS3Config {
+    /// What an S3-compatible store needs to be opened: the endpoint, the region, and the key pair
+    /// the named variables hold (never the pair itself). One constructor, because the publisher
+    /// and the RESTORE must resolve credentials the same way — a restore that went anonymous
+    /// against a bucket answered "no such table" for a lake that was right there.
+    pub fn options(&self) -> Result<okm_lake::store::S3Options, ConfigError> {
+        Ok(okm_lake::store::S3Options {
+            endpoint: self.endpoint.clone(),
+            region: self.region.clone(),
+            access_key: env_value(&self.key_env)?,
+            secret_key: env_value(&self.secret_env)?,
+        })
+    }
+}
+
 impl LakeConfig {
     /// The lake this node names, credentials resolved from the environment it names.
     ///
@@ -180,12 +195,7 @@ impl LakeConfig {
     /// and the operator would only learn it from a log line.
     pub fn open(&self) -> Result<Box<dyn okm_lake::store::LakeStore>, ConfigError> {
         let options = match &self.s3 {
-            Some(s3) => Some(okm_lake::store::S3Options {
-                endpoint: s3.endpoint.clone(),
-                region: s3.region.clone(),
-                access_key: env_value(&s3.key_env)?,
-                secret_key: env_value(&s3.secret_env)?,
-            }),
+            Some(s3) => Some(s3.options()?),
             None => None,
         };
         okm_lake::store::open(&self.target, options).map_err(|e| ConfigError::Lake { message: e })
