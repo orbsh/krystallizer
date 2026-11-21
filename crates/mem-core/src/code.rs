@@ -50,7 +50,7 @@
 //! the byte path is gravity → control path → node).
 
 use okm_core::okm_value::Variant;
-use okm_core::{Collection, Document, DocumentEncode, FjallStore, KeyEncode, ReduceCodec};
+use okm_core::{Collection, Document, DocumentEncode, FjallStore, KeyEncode};
 use std::collections::BTreeMap;
 
 use crate::graph::{GraphStore, IngestError, Term};
@@ -138,9 +138,12 @@ fn row_of(language: &str, description: &str, parameters: &str, source: &str) -> 
 }
 
 /// The sheet collection on a store handle — what the graph holds beside its
-/// vertices, the way it holds task sheets.
-pub(crate) fn code_collection(store: FjallStore) -> Collection<FjallStore, CodeKey, CodeRow> {
-    <CodeRow as Document>::collection(store)
+/// vertices, the way it holds task sheets. Attached at construction (okm
+/// ADR-0074), so the declaration is verified before the graph sees it.
+pub(crate) fn code_collection(
+    store: FjallStore,
+) -> Result<Collection<FjallStore, CodeKey, CodeRow>, String> {
+    <CodeRow as Document>::open(store).map_err(|e| e.to_string())
 }
 
 impl GraphStore {

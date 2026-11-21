@@ -447,7 +447,10 @@ async fn a_row_names_its_speaker_and_a_bad_one_is_a_bad_request() {
         .unwrap();
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["sender"], alice, "{}", rows[0]);
-    assert_eq!(rows[0]["sender_name"], "Alice", "a rename re-labels history");
+    assert_eq!(
+        rows[0]["sender_name"], "Alice",
+        "a rename re-labels history"
+    );
     assert_eq!(
         rows[1]["sender"], "00000000-0000-0000-0000-000000000001",
         "no sender = the default member, as before: {}",
@@ -520,7 +523,9 @@ async fn a_person_reads_the_conversation_and_an_agent_reads_none_of_it() {
     post_finished_from(&client, &base, 11, 1_001, agent, "doing it").await;
 
     let as_person: serde_json::Value = client
-        .get(format!("{base}/channels/11/members/{person}/session?format=plaintext"))
+        .get(format!(
+            "{base}/channels/11/members/{person}/session?format=plaintext"
+        ))
         .send()
         .await
         .unwrap()
@@ -534,7 +539,9 @@ async fn a_person_reads_the_conversation_and_an_agent_reads_none_of_it() {
     );
 
     let as_agent: serde_json::Value = client
-        .get(format!("{base}/channels/11/members/{agent}/session?format=plaintext"))
+        .get(format!(
+            "{base}/channels/11/members/{agent}/session?format=plaintext"
+        ))
         .send()
         .await
         .unwrap()
@@ -608,9 +615,7 @@ async fn a_members_own_line_is_the_solo_one_not_the_first_in_the_list() {
     assert_eq!(all[0]["channel_id"], 3, "id order, the machine first");
 
     let mine: Vec<serde_json::Value> = client
-        .get(format!(
-            "{base}/members/{person}/channels?app={app}&solo=1"
-        ))
+        .get(format!("{base}/members/{person}/channels?app={app}&solo=1"))
         .send()
         .await
         .unwrap()
@@ -805,8 +810,14 @@ async fn the_member_directory_answers_everyone_and_an_exact_name() {
         .iter()
         .map(|row| row["display_name"].as_str().unwrap())
         .collect();
-    assert!(names.contains(&"Alice") && names.contains(&"gravity"), "{names:?}");
-    assert!(names.len() >= 3, "the seeded member is a member too: {names:?}");
+    assert!(
+        names.contains(&"Alice") && names.contains(&"gravity"),
+        "{names:?}"
+    );
+    assert!(
+        names.len() >= 3,
+        "the seeded member is a member too: {names:?}"
+    );
 
     let named: Vec<serde_json::Value> = client
         .get(format!("{base}/members?name=Alice"))
@@ -816,7 +827,11 @@ async fn the_member_directory_answers_everyone_and_an_exact_name() {
         .json()
         .await
         .unwrap();
-    assert_eq!(named.len(), 2, "two people called Alice are two rows: {named:?}");
+    assert_eq!(
+        named.len(),
+        2,
+        "two people called Alice are two rows: {named:?}"
+    );
     assert!(named.iter().all(|row| row["display_name"] == "Alice"));
 
     let nobody: Vec<serde_json::Value> = client
@@ -827,12 +842,17 @@ async fn the_member_directory_answers_everyone_and_an_exact_name() {
         .json()
         .await
         .unwrap();
-    assert!(nobody.is_empty(), "an unknown name is an empty answer: {nobody:?}");
+    assert!(
+        nobody.is_empty(),
+        "an unknown name is an empty answer: {nobody:?}"
+    );
 
     // ONE identity by id, and absence answered as absence: the read a caller makes when it is
     // told who is speaking and must know whether that identity exists and which kind it is.
     let one: serde_json::Value = client
-        .get(format!("{base}/members/01900000-0000-7000-8000-000000000001"))
+        .get(format!(
+            "{base}/members/01900000-0000-7000-8000-000000000001"
+        ))
         .send()
         .await
         .unwrap()
@@ -842,7 +862,9 @@ async fn the_member_directory_answers_everyone_and_an_exact_name() {
     assert_eq!(one["display_name"], "gravity");
     assert_eq!(one["role"], 1, "the agent's one role axis: {one}");
     let missing = client
-        .get(format!("{base}/members/6f1d3d0e-0000-4000-8000-0000000000ff"))
+        .get(format!(
+            "{base}/members/6f1d3d0e-0000-4000-8000-0000000000ff"
+        ))
         .send()
         .await
         .unwrap();

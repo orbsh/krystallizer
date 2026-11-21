@@ -802,13 +802,8 @@ async fn fetch_session(
     let scope = query.scope.unwrap_or(mem_core::view::DEFAULT_SCOPE);
     let mut channels = state.store.lock().await;
     let mut graph = state.graph.lock().await;
-    let projection = mem_core::view::assemble(
-        &mut channels,
-        &mut graph,
-        channel_id,
-        member_id,
-        scope,
-    )?;
+    let projection =
+        mem_core::view::assemble(&mut channels, &mut graph, channel_id, member_id, scope)?;
     let assembled = assembled_bytes(&projection);
     // The clock is the caller's (`query.ts_ms`); the POSITION is k10r's. The
     // idle therefore measures how stale the record this member last saw has
@@ -856,11 +851,7 @@ async fn fetch_session(
             .map(ModelMessageDto::from)
             .collect();
     Ok(Json(SessionDto::new(
-        projection,
-        format,
-        verdict,
-        messages,
-        owed,
+        projection, format, verdict, messages, owed,
     )))
 }
 

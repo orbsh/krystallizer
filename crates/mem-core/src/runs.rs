@@ -79,10 +79,7 @@ impl GraphStore {
             .map_or(0, |row| row.revision);
         if let Some(expected) = expect {
             if expected != stored {
-                return Err(IngestError::Conflict {
-                    expected,
-                    stored,
-                });
+                return Err(IngestError::Conflict { expected, stored });
             }
         }
         let previous = stored;

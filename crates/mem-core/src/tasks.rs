@@ -98,7 +98,10 @@ pub fn render_owed(tasks: &[TaskView]) -> Option<String> {
     let mut block =
         String::from("Tasks this memory still holds (id - state - name - next action):");
     for task in owed {
-        block.push_str(&format!("\n- {} - {} - {}", task.node_id, task.state, task.name));
+        block.push_str(&format!(
+            "\n- {} - {} - {}",
+            task.node_id, task.state, task.name
+        ));
         if !task.next.is_empty() {
             block.push_str(&format!(" - {}", task.next));
         }
@@ -116,7 +119,6 @@ pub fn render_owed(tasks: &[TaskView]) -> Option<String> {
     );
     Some(block)
 }
-
 
 /// The rendering's own tests, ported from the caller that used to own them: `doing` is the MOST
 /// relevant state (a list that asked the store for `open` lost the one thing in progress), a bound
@@ -168,7 +170,10 @@ mod owed {
     #[test]
     fn nothing_owed_is_no_block_at_all() {
         assert_eq!(render_owed(&[]), None);
-        assert_eq!(render_owed(&[task(12, "done", "old-thing", "", vec![])]), None);
+        assert_eq!(
+            render_owed(&[task(12, "done", "old-thing", "", vec![])]),
+            None
+        );
     }
 
     #[test]

@@ -431,13 +431,17 @@ impl ChannelStore {
     /// attach point `crate::service::open_service` uses so every table
     /// group shares the process's one database.
     pub fn wrap(store: FjallStore) -> Result<Self, String> {
+        // `Document::open` attaches (okm ADR-0074): each table either lands with its
+        // declaration verified against the store's meta row or refuses here.
+        let open = |e: okm_core::Error| e.to_string();
         Ok(Self {
-            messages: <MessageRow as okm_core::Document>::collection(store.clone()),
-            checkpoints: <CheckpointRow as okm_core::Document>::collection(store.clone()),
-            cursors: <CursorRow as okm_core::Document>::collection(store.clone()),
-            members: <MemberRow as okm_core::Document>::collection(store.clone()),
-            channels: <ChannelRow as okm_core::Document>::collection(store.clone()),
-            memberships: <MembershipRow as okm_core::Document>::collection(store),
+            messages: <MessageRow as okm_core::Document>::open(store.clone()).map_err(open)?,
+            checkpoints: <CheckpointRow as okm_core::Document>::open(store.clone())
+                .map_err(open)?,
+            cursors: <CursorRow as okm_core::Document>::open(store.clone()).map_err(open)?,
+            members: <MemberRow as okm_core::Document>::open(store.clone()).map_err(open)?,
+            channels: <ChannelRow as okm_core::Document>::open(store.clone()).map_err(open)?,
+            memberships: <MembershipRow as okm_core::Document>::open(store).map_err(open)?,
         })
     }
 
@@ -1254,7 +1258,7 @@ impl ChannelStore {
                 existing.as_ref(),
             )
             .map_err(|e| e.to_string())?;
-        self.members.commit_batch(batch).map_err(|e| e.to_string())
+        self.members.commit_batch(&batch).map_err(|e| e.to_string())
     }
 
     /// Which channels this MEMBER is in — the direction the primary key cannot answer (it starts

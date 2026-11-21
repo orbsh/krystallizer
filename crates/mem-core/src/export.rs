@@ -191,10 +191,15 @@ where
     Ok(rows)
 }
 
-/// Whether the namespace this handle would write into is untouched: one key
+/// Whether the namespace this handle would write into is untouched: one DATA key
 /// under its header is enough to refuse a restore (ADR-0026: a restore only goes
 /// into an empty namespace). Faces, index entries and reduce rows share the
 /// header, so this sees them too, not just the rows a scan of documents finds.
+///
+/// The table's own meta row (fixed face 0x1F, okm ADR-0043) is the one key that
+/// does NOT count: `Document::open` attaches each table at assembly time and
+/// stamps that row, so counting it would make every namespace this process
+/// opened look occupied and no restore could ever land.
 pub fn ns_is_empty_into<S, K, R>(collection: &Collection<S, K, R>) -> Result<bool, String>
 where
     S: okm_core::engine::storage::VirtualStorage,
@@ -202,16 +207,18 @@ where
     R: Document<Key = K>,
 {
     let prefix = collection.header();
-    let end = okm_core::engine::storage::prefix_end(&prefix);
-    // One key under the header is enough, so the FIRST item is the whole answer —
+    let end = okm_core::engine::storage::prefix_end(prefix);
+    let meta = okm_core::model::meta::meta_key(prefix);
     // `scan_range` is the one streaming shape every backend answers (errors ride the
-    // items, so the first one is also where a failing engine has to be caught).
-    let mut it = collection.store().scan_range(&prefix, end.as_deref());
-    match it.next() {
-        Some(Err(e)) => Err(e.to_string()),
-        Some(Ok(_)) => Ok(false),
-        None => Ok(true),
+    // items, so a failing engine is caught at the item it fails on), and a key that
+    // is not the meta row is the whole answer — the search stops there.
+    for item in collection.store().scan_range(prefix, end.as_deref()) {
+        let (key, _) = item.map_err(|e| e.to_string())?;
+        if key != meta {
+            return Ok(false);
+        }
     }
+    Ok(true)
 }
 
 /// Land a reduce table's entries at `ns`: each row is `(reduce slot, group,

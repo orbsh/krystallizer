@@ -132,10 +132,17 @@ async fn a_write_against_a_stale_revision_is_refused() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 409, "a stale premise is a race, not a mistake");
+    assert_eq!(
+        res.status(),
+        409,
+        "a stale premise is a race, not a mistake"
+    );
     let error: Value = res.json().await.unwrap();
     assert!(
-        error["error"].as_str().unwrap().contains("expected 1, stored 2"),
+        error["error"]
+            .as_str()
+            .unwrap()
+            .contains("expected 1, stored 2"),
         "{error}"
     );
 

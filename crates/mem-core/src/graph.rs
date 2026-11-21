@@ -75,9 +75,9 @@ use okm_core::okm_value::Variant;
 use okm_core::parts;
 use okm_core::Uuid7;
 use okm_core::{
-    scan_suffix_kv, Batch, Cluster, Collection, Decl, Document, DocumentEncode,
-    EdgeHead, EdgeKey, FjallStore, Fragment, Graph, GraphEncode, Hyperedges, NodeSet, Selection,
-    KeyEncode, Kind, KvIndex, NodeRef, Vector, VectorElem, VirtualStorage, Vocab,
+    scan_suffix_kv, Batch, Cluster, Collection, Decl, Document, DocumentEncode, EdgeHead, EdgeKey,
+    FjallStore, Fragment, Graph, GraphEncode, Hyperedges, KeyEncode, Kind, KvIndex, NodeRef,
+    NodeSet, Selection, Vector, VectorElem, VirtualStorage, Vocab,
 };
 use okm_lake::bridge::EdgeTable;
 use okm_lake::snapshot::parquet_io::EdgeRestore;
@@ -261,7 +261,6 @@ pub struct MergeReport {
     pub collapsed: usize,
     pub absorbed: usize,
 }
-
 
 /// The node's vector, out of the entity row (ADR-0019, ns 43).
 ///
@@ -591,7 +590,6 @@ pub const COMMUNITY_NS: u16 = 38;
 pub const LPA_ROUNDS: usize = 3;
 /// The neighbourhood radius the local subgraph is loaded at, in hops.
 pub const LPA_RADIUS: usize = 2;
-
 
 /// One end of a fact: a value, its type label, and its props (the
 /// entity's attributes — they land on the node row, shared by every fact
@@ -1186,11 +1184,14 @@ impl GraphStore {
     /// Attach the graph tables to an already-open store handle — the
     /// attach point `crate::service::open_service` uses.
     pub fn wrap(store: FjallStore) -> Result<Self, String> {
-        let entities = <EntityRow as Document>::collection(store.clone());
-        let vectors = <NodeVector as Document>::collection(store.clone());
-        let sheets = <TaskSheet as Document>::collection(store.clone());
-        let runs = <crate::runs::RunRow as Document>::collection(store.clone());
-        let codes = crate::code::code_collection(store.clone());
+        // Every table attaches as it opens (okm ADR-0074): a store written by another
+        // declaration is refused here, at the assembly point, not at the first read.
+        let entities = <EntityRow as Document>::open(store.clone()).map_err(|e| e.to_string())?;
+        let vectors = <NodeVector as Document>::open(store.clone()).map_err(|e| e.to_string())?;
+        let sheets = <TaskSheet as Document>::open(store.clone()).map_err(|e| e.to_string())?;
+        let runs =
+            <crate::runs::RunRow as Document>::open(store.clone()).map_err(|e| e.to_string())?;
+        let codes = crate::code::code_collection(store.clone())?;
         // Code ids are a watermark over the code sheets (k10r ADR-0023): the
         // highest id EVER written, so a deleted row does not free its id. One
         // scan at open; the sheet is small by construction (a row per script).
@@ -1232,9 +1233,10 @@ impl GraphStore {
     /// Attach the CHANNEL keyspace, which is where the identity collection
     /// lives: without it the graph cannot validate or render a `user`
     /// endpoint (ADR-0014), and an ingest that names one is refused.
-    pub fn with_channel(mut self, channel_store: FjallStore) -> Self {
-        self.members = Some(<MemberRow as Document>::collection(channel_store));
-        self
+    pub fn with_channel(mut self, channel_store: FjallStore) -> Result<Self, String> {
+        self.members =
+            Some(<MemberRow as Document>::open(channel_store).map_err(|e| e.to_string())?);
+        Ok(self)
     }
 
     /// Open both keyspaces of one database directory — the standalone form a
@@ -1247,7 +1249,7 @@ impl GraphStore {
             FjallStore::from_db(db.clone(), crate::KEYSPACE_MEMORY).map_err(|e| e.to_string())?;
         let channel =
             FjallStore::from_db(db, crate::KEYSPACE_CHANNEL).map_err(|e| e.to_string())?;
-        Ok(Self::wrap(memory)?.with_channel(channel))
+        Self::wrap(memory)?.with_channel(channel)
     }
 
     /// Attach the embedding engine (ADR-0003). `open_service` cannot
@@ -1309,11 +1311,7 @@ impl GraphStore {
     /// scan of the node mirror and costs nothing per degree. That is the whole
     /// reason the pass stores entities rather than the edges between them — a
     /// node with no edge is a legal member, and a hub pays the same as a leaf.
-    fn communities_of_node(
-        &mut self,
-        scope: u64,
-        node_id: u64,
-    ) -> Result<Vec<u64>, IngestError> {
+    fn communities_of_node(&mut self, scope: u64, node_id: u64) -> Result<Vec<u64>, IngestError> {
         let kind = self.community_kind()?;
         let node = self.node_ref(scope, node_id);
         let mut communities = Vec::new();
@@ -1329,7 +1327,6 @@ impl GraphStore {
         }
         Ok(communities)
     }
-
 
     /// The declaration's width table — how a head's bytes split into endpoints.
     fn members(&self) -> okm_core::Members {
@@ -2767,7 +2764,7 @@ impl GraphStore {
                 .map_err(|e| IngestError::Storage(e.to_string()))?;
         }
         self.store
-            .commit_batch(batch)
+            .commit_batch(&batch)
             .map_err(|e| IngestError::Storage(e.to_string()))?;
         // The scope's in-memory vector table is derived state: drop it rather
         // than maintain it row by row (it reloads on the next retrieval).
@@ -2986,7 +2983,7 @@ impl GraphStore {
             .replace_into(&mut batch, &key, &crate::document::dict(props))
             .map_err(|e| IngestError::Storage(e.to_string()))?;
         self.store
-            .commit_batch(batch)
+            .commit_batch(&batch)
             .map_err(|e| IngestError::Storage(e.to_string()))?;
         Ok(key)
     }
@@ -3124,9 +3121,7 @@ impl GraphStore {
             let incumbent = facts
                 .key_of(&to)
                 .map_err(|e| IngestError::Storage(e.to_string()))?
-                .is_some_and(|existing| {
-                    facts.get_edge(&existing).ok().flatten().is_some()
-                });
+                .is_some_and(|existing| facts.get_edge(&existing).ok().flatten().is_some());
             if incumbent {
                 fragment.delete_edge(from);
                 absorbed += 1;
@@ -3233,7 +3228,7 @@ impl GraphStore {
                 .map_err(|e| IngestError::Storage(e.to_string()))?;
         }
         self.store
-            .commit_batch(batch)
+            .commit_batch(&batch)
             .map_err(|e| IngestError::Storage(e.to_string()))?;
         self.tables.forget(scope);
 
@@ -3572,11 +3567,7 @@ impl GraphStore {
     ///
     /// Only the member ids are read back: the caller votes on adjacency, and the
     /// entities' rows are never looked at.
-    fn local_subgraph(
-        &mut self,
-        scope: u64,
-        touched: &[u64],
-    ) -> Result<HashSet<u64>, IngestError> {
+    fn local_subgraph(&mut self, scope: u64, touched: &[u64]) -> Result<HashSet<u64>, IngestError> {
         let seeds: Vec<NodeRef> = touched
             .iter()
             .map(|node| self.node_ref(scope, *node))
@@ -3665,7 +3656,6 @@ impl GraphStore {
         }
         Ok(facts)
     }
-
 }
 
 #[cfg(test)]
@@ -3686,7 +3676,10 @@ mod stale_id_tests {
         let dir = tempfile::tempdir().unwrap();
         let mut graph = GraphStore::open(dir.path()).unwrap();
         let key = match graph
-            .ingest(1, &tuple(r#"["alice","person",{},"KNOWS",{},"bob","person",{}]"#))
+            .ingest(
+                1,
+                &tuple(r#"["alice","person",{},"KNOWS",{},"bob","person",{}]"#),
+            )
             .unwrap()
         {
             IngestOutcome::Linked { key } => key,

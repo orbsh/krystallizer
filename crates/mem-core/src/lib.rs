@@ -76,11 +76,11 @@ pub use config::{
 };
 pub use embedding::{l2_normalize, EmbedError, Embedder, LocalEmbedder};
 pub use graph::{
-    Anchored, ChainHop, CommunitySlice, EntityKey, EntityRow,
-    FactBody, FactTuple, Facts, GraphStore, IngestError, IngestOutcome, NodeId, Recall, Relation,
-    Seed, Term, Touch, COMMUNITY_NS, CONTENT_FIELD, ENTITY_NS, FACT_NS, FUNCTIONAL_PROP,
-    LANDING_FLOOR, LITERAL_KIND, LPA_RADIUS, LPA_ROUNDS, MEMBER_NS, REF_FIELD, SOURCE_FIELD,
-    TITLE_FIELD, USER_KIND, WEIGHT_SCALE,
+    Anchored, ChainHop, CommunitySlice, EntityKey, EntityRow, FactBody, FactTuple, Facts,
+    GraphStore, IngestError, IngestOutcome, NodeId, Recall, Relation, Seed, Term, Touch,
+    COMMUNITY_NS, CONTENT_FIELD, ENTITY_NS, FACT_NS, FUNCTIONAL_PROP, LANDING_FLOOR, LITERAL_KIND,
+    LPA_RADIUS, LPA_ROUNDS, MEMBER_NS, REF_FIELD, SOURCE_FIELD, TITLE_FIELD, USER_KIND,
+    WEIGHT_SCALE,
 };
 pub use log::{
     event as log_event, field as log_field, level as log_level, LogEntry, LogKey, LogRow, LogStore,

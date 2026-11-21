@@ -1604,8 +1604,9 @@ fn a_merge_moves_edges_carries_payloads_and_drops_duplicates() {
         "the incumbent's payload wins, not the moved duplicate's"
     );
     assert!(
-        facts.iter().all(|fact| fact.kind != "KNOWS"
-            || fact.dst.id.entity_id() != Some(carol)),
+        facts
+            .iter()
+            .all(|fact| fact.kind != "KNOWS" || fact.dst.id.entity_id() != Some(carol)),
         "the loop that the fold would have made is deleted, not kept"
     );
 }
@@ -1628,7 +1629,13 @@ fn a_split_moves_the_named_edges_and_leaves_the_rest() {
     let (source, _) = graph.entity_by_name(1, "postgres").unwrap().unwrap();
 
     let report = graph
-        .split(1, source, "postgresql-company", "company", &[db_fact.clone()])
+        .split(
+            1,
+            source,
+            "postgresql-company",
+            "company",
+            std::slice::from_ref(&db_fact),
+        )
         .unwrap();
     assert_eq!(
         report,

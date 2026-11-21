@@ -30,7 +30,7 @@
 //! the accepted price: a diagnostic table, not a ledger.
 
 use okm_core::okm_value::Variant;
-use okm_core::{Collection, Document, DocumentEncode, FjallStore, KeyEncode, ReduceCodec, Vocab};
+use okm_core::{Collection, Document, DocumentEncode, FjallStore, KeyEncode, Vocab};
 use std::collections::{BTreeMap, VecDeque};
 
 /// Severity, as a stored code. k10r never ACTS on it — a level is not a
@@ -183,7 +183,7 @@ impl LogStore {
         .into_iter()
         .next()
         .map(|(_, acc)| acc);
-        let table = <LogRow as Document>::collection(store);
+        let table = <LogRow as Document>::open(store).map_err(|e| e.to_string())?;
         let seq = water.map_or(0, |w| w.saturating_add(1));
         let recent = table
             .scan_keys(&okm_core::PrefixProbe::empty())
